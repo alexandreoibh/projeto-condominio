@@ -1,0 +1,9 @@
+node_modules/
+# src/uploads/banners
+# src/uploads/prateleira
+# src/uploads/topfundos
+# src/uploads/
+
+node_modules.tar.gz
+.env
+.envDEV
