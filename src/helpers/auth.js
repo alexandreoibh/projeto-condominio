@@ -17,6 +17,7 @@ module.exports = async (req, res, next) => {
     req.cpf = verify.cpf || "";
     req.ssss = verify.ssss || "";
     req.IdPerfil = verify.IdPerfil || null;
+    req.id_condominio = verify.id_condominio || null;
     req.empresa = verify.empresa || "condominio";
     req.nomePerfil = verify.role || "";
 

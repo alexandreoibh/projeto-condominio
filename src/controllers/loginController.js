@@ -1,20 +1,21 @@
 "use strict";
 
 const jwt = require("jsonwebtoken");
-const CryptoJS = require("crypto-js");
+const bcrypt = require("bcryptjs");
 const { QueryTypes } = require("sequelize");
 const postgres = require("../database/postgres");
 
 const JWT_SECRET = process.env.JWT_SECRET || "dev_jwt_secret_change_me";
-const CHAVE = process.env.CHAVE;
 
 class Login {
+  _normalizeCpf(value) {
+    return (value || "").toString().replace(/\D/g, "").trim();
+  }
+
   _extractCredentials(req) {
     const loginValue = (
       req.body?.login ||
       req.body?.email ||
-      req.query.dt1 ||
-      req.query.login ||
       ""
     )
       .toString()
@@ -24,8 +25,6 @@ class Login {
     const passwordValue = (
       req.body?.password ||
       req.body?.senha ||
-      req.query.dt2 ||
-      req.query.password ||
       ""
     ).toString();
 
@@ -35,6 +34,18 @@ class Login {
     };
   }
 
+  async _isPasswordValid(password, passwordHash) {
+    if (!passwordHash) {
+      return false;
+    }
+
+    if (passwordHash.startsWith("$2a$") || passwordHash.startsWith("$2b$") || passwordHash.startsWith("$2y$")) {
+      return bcrypt.compare(password, passwordHash);
+    }
+
+    return password === passwordHash;
+  }
+
   async login(req, res) {
     return this.index(req, res);
   }
@@ -42,22 +53,27 @@ class Login {
   async index(req, res) {
     try {
       const { login, password } = this._extractCredentials(req);
+      const cpf = this._normalizeCpf(login);
 
       if (!login || !password) {
         return res.status(400).send({
           check: false,
-          message: "Informe login e senha no body (POST) ou query (legado)."
+          message: "Informe login e senha no body (POST)."
         });
       }
 
       const user = await postgres.query(
-        `SELECT id, matricula, nome, email, telefone, id_perfil, cpf, status, id_empresa,
-                img, imgb, last_online, theme, idioma, senha
-           FROM sgw.tb_usuario
-          WHERE lower(email) = :login OR lower(matricula) = :login
+        `SELECT id, id_condominio, nome, sobrenome, cpf, email, telefone, tipo_perfil_id, tipo, status,
+                senha_hash, last_login_at, created_at, updated_at
+           FROM "condominio-bh"."tb-usuarios"
+          WHERE (lower(email) = :loginEmail OR cpf = :loginCpf)
+            AND status in ('ativo','Ativo')
           LIMIT 1`,
         {
-          replacements: { login },
+          replacements: {
+            loginEmail: login,
+            loginCpf: cpf
+          },
           type: QueryTypes.SELECT
         }
       );
@@ -70,12 +86,7 @@ class Login {
         });
       }
 
-      let passwordOk = result.senha === password;
-      if (!passwordOk && CHAVE && result.senha) {
-        const bytes = CryptoJS.AES.decrypt(result.senha, CHAVE);
-        const originalText = bytes.toString(CryptoJS.enc.Utf8);
-        passwordOk = originalText === password;
-      }
+      const passwordOk = await this._isPasswordValid(password, result.senha_hash);
 
       if (!passwordOk) {
         return res.send({
@@ -84,12 +95,25 @@ class Login {
         });
       }
 
+      await postgres.query(
+        `UPDATE "condominio-bh"."tb-usuarios"
+            SET last_login_at = now(), updated_at = now()
+          WHERE id = :id`,
+        {
+          replacements: { id: result.id },
+          type: QueryTypes.UPDATE
+        }
+      );
+
       const token = jwt.sign(
         {
-          apelido: result.email,
-          IdPerfil: result.id_perfil,
+          apelido: result.email || result.cpf,
+          IdPerfil: result.tipo_perfil_id || null,
           id: result.id,
           email: result.email,
+          cpf: result.cpf,
+          role: result.tipo,
+          id_condominio: result.id_condominio,
           empresa: "condominio"
         },
         JWT_SECRET,
@@ -98,24 +122,25 @@ class Login {
 
       return res.send({
         id: result.id,
-        matricula: result.matricula,
-        nome: result.nome,
+        id_condominio: result.id_condominio,
+        matricula: result.cpf,
+        nome: `${result.nome || ""} ${result.sobrenome || ""}`.trim(),
         email: result.email,
         telefone: result.telefone,
         token,
         msg: "",
-        id_perfil: result.id_perfil,
+        id_perfil: result.tipo_perfil_id || null,
         cpf: result.cpf,
         status: result.status,
-        id_empresa: result.id_empresa,
+        id_empresa: result.id_condominio,
         check: true,
-        role: "morador",
-        img: result.img,
-        imgb: result.imgb,
+        role: result.tipo,
+        img: null,
+        imgb: null,
         nome_empresa: "Condomínio",
-        last_online: result.last_online,
-        theme: result.theme,
-        idioma: result.idioma
+        last_online: result.last_login_at,
+        theme: null,
+        idioma: null
       });
     } catch (error) {
       return res.status(500).send({
