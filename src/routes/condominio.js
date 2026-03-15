@@ -177,6 +177,198 @@ router.delete(
 );
 
 router.get(
+	'/regulamentos',
+	auth,
+	[
+		query('page')
+			.optional()
+			.isInt({ min: 1 })
+			.withMessage('Parâmetro page deve ser numérico e maior que zero.'),
+		query('pageSize')
+			.optional()
+			.isInt({ min: 1, max: 100 })
+			.withMessage('Parâmetro pageSize deve estar entre 1 e 100.'),
+		query('ativo')
+			.optional({ nullable: true, checkFalsy: true })
+			.isBoolean()
+			.withMessage('Parâmetro ativo deve ser booleano.')
+			.toBoolean(),
+		query('q')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 200 })
+			.withMessage('Parâmetro q deve ter no máximo 200 caracteres.')
+	],
+	validate,
+	controller.listarRegulamentos.bind(controller)
+);
+
+router.get(
+	'/regulamentos/ativo',
+	auth,
+	controller.buscarRegulamentoAtivo.bind(controller)
+);
+
+router.get(
+	'/regulamentos/aceites',
+	auth,
+	[
+		query('page')
+			.optional()
+			.isInt({ min: 1 })
+			.withMessage('Parâmetro page deve ser numérico e maior que zero.'),
+		query('pageSize')
+			.optional()
+			.isInt({ min: 1, max: 100 })
+			.withMessage('Parâmetro pageSize deve estar entre 1 e 100.'),
+		query('id_regulamento')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Parâmetro id_regulamento deve ser numérico e maior que zero.'),
+		query('id_usuario')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Parâmetro id_usuario deve ser numérico e maior que zero.'),
+		query('ativo')
+			.optional({ nullable: true, checkFalsy: true })
+			.isBoolean()
+			.withMessage('Parâmetro ativo deve ser booleano.')
+			.toBoolean()
+	],
+	validate,
+	controller.listarAceitesRegulamento.bind(controller)
+);
+
+router.get(
+	'/regulamentos/aceites/ativo',
+	auth,
+	controller.buscarAceiteRegulamentoAtivo.bind(controller)
+);
+
+router.get(
+	'/regulamentos/aceites/:id(\\d+)',
+	auth,
+	[param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.')],
+	validate,
+	controller.buscarAceiteRegulamentoPorId.bind(controller)
+);
+
+router.post(
+	'/regulamentos/aceites',
+	auth,
+	[
+		body('id_regulamento')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Campo id_regulamento deve ser numérico e maior que zero.')
+	],
+	validate,
+	controller.registrarAceiteRegulamentoAtivo.bind(controller)
+);
+
+router.put(
+	'/regulamentos/aceites/:id(\\d+)',
+	auth,
+	[
+		param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.'),
+		body('id_regulamento')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Campo id_regulamento deve ser numérico e maior que zero.'),
+		body('id_usuario')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Campo id_usuario deve ser numérico e maior que zero.'),
+		body('aceito_em')
+			.optional({ nullable: true, checkFalsy: true })
+			.isISO8601()
+			.withMessage('Campo aceito_em deve estar em formato de data válido.'),
+		body('ip')
+			.optional({ nullable: true })
+			.isLength({ max: 64 })
+			.withMessage('Campo ip deve ter no máximo 64 caracteres.')
+	],
+	validate,
+	controller.editarAceiteRegulamento.bind(controller)
+);
+
+router.delete(
+	'/regulamentos/aceites/:id(\\d+)',
+	auth,
+	[param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.')],
+	validate,
+	controller.excluirAceiteRegulamento.bind(controller)
+);
+
+router.get(
+	'/regulamentos/:id(\\d+)',
+	auth,
+	[param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.')],
+	validate,
+	controller.buscarRegulamentoPorId.bind(controller)
+);
+
+router.post(
+	'/regulamentos',
+	auth,
+	[
+		body('titulo')
+			.notEmpty()
+			.withMessage('Campo titulo é obrigatório.')
+			.bail()
+			.isLength({ max: 150 })
+			.withMessage('Campo titulo deve ter no máximo 150 caracteres.'),
+		body('documento_salvo')
+			.optional({ nullable: true })
+			.isLength({ max: 255 })
+			.withMessage('Campo documento_salvo deve ter no máximo 255 caracteres.'),
+		body('ativo')
+			.optional({ nullable: true })
+			.isBoolean()
+			.withMessage('Campo ativo deve ser booleano.'),
+		body('observacao')
+			.optional({ nullable: true })
+			.isLength({ max: 4000 })
+			.withMessage('Campo observacao deve ter no máximo 4000 caracteres.')
+	],
+	validate,
+	controller.criarRegulamento.bind(controller)
+);
+
+router.put(
+	'/regulamentos/:id(\\d+)',
+	auth,
+	[
+		param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.'),
+		body('titulo')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 150 })
+			.withMessage('Campo titulo deve ter no máximo 150 caracteres.'),
+		body('documento_salvo')
+			.optional({ nullable: true })
+			.isLength({ max: 255 })
+			.withMessage('Campo documento_salvo deve ter no máximo 255 caracteres.'),
+		body('ativo')
+			.optional({ nullable: true })
+			.isBoolean()
+			.withMessage('Campo ativo deve ser booleano.'),
+		body('observacao')
+			.optional({ nullable: true })
+			.isLength({ max: 4000 })
+			.withMessage('Campo observacao deve ter no máximo 4000 caracteres.')
+	],
+	validate,
+	controller.editarRegulamento.bind(controller)
+);
+
+router.delete(
+	'/regulamentos/:id(\\d+)',
+	auth,
+	[param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.')],
+	validate,
+	controller.excluirRegulamento.bind(controller)
+);
+
+router.get(
 	'/moradores',
 	auth,
 	[

@@ -34,6 +34,19 @@ class CondominioController {
     return Number.isNaN(parsed.getTime()) ? null : parsed;
   }
 
+  _resolveRequestIp(req) {
+    const forwarded = req.headers?.['x-forwarded-for'];
+    const forwardedValue = Array.isArray(forwarded) ? forwarded[0] : forwarded;
+    const forwardedIp = forwardedValue ? String(forwardedValue).split(',')[0].trim() : null;
+    const rawIp = forwardedIp || req.ip || req.socket?.remoteAddress || null;
+
+    if (!rawIp) {
+      return null;
+    }
+
+    return String(rawIp).replace(/^::ffff:/, '');
+  }
+
   async _buscarLogsTratamentoReserva(idAgenda) {
     return postgres.query(
       `SELECT
@@ -755,24 +768,48 @@ class CondominioController {
       );
 
       const rows = await postgres.query(
-        `SELECT
-            id,
-            id_condominio,
-            nome,
-            sobrenome,
-            cpf,
-            email,
-            telefone,
-            tipo_perfil_id,
-            tipo,
-            status,
-            apartamento,
-            bloco,
-            created_at,
-            updated_at
-          FROM "condominio-bh"."tb-usuarios"
-          WHERE id_condominio = :id_condominio
-          ORDER BY id DESC
+        `WITH regulamento_ativo AS (
+            SELECT r.id
+              FROM "condominio-bh".tb_regulamento r
+             WHERE r.id_condominio = :id_condominio
+               AND r.ativo = true
+             ORDER BY r.publicado_em DESC, r.id DESC
+             LIMIT 1
+          ),
+          aceite_ativo AS (
+            SELECT
+              a.id_usuario,
+              MAX(a.aceito_em) AS aceito_em
+            FROM "condominio-bh".tb_regulamento_aceite a
+            INNER JOIN regulamento_ativo ra
+               ON ra.id = a.id_regulamento
+            GROUP BY a.id_usuario
+          )
+          SELECT
+            tu.id,
+            tu.id_condominio,
+            tu.nome,
+            tu.sobrenome,
+            tu.cpf,
+            tu.email,
+            tu.telefone,
+            tu.tipo_perfil_id,
+            tu.tipo,
+            tu.status,
+            tu.apartamento,
+            tu.bloco,
+            tu.created_at,
+            tu.updated_at,
+            ra.id AS id_regulamento_ativo,
+            CASE WHEN aa.aceito_em IS NOT NULL THEN true ELSE false END AS aceitou_regulamento_ativo,
+            aa.aceito_em AS aceite_regulamento_ativo_em
+          FROM "condominio-bh"."tb-usuarios" tu
+          LEFT JOIN regulamento_ativo ra
+            ON true
+          LEFT JOIN aceite_ativo aa
+            ON aa.id_usuario = tu.id
+          WHERE tu.id_condominio = :id_condominio
+          ORDER BY tu.id DESC
           LIMIT :limit OFFSET :offset`,
         {
           replacements: {
@@ -2392,6 +2429,1072 @@ class CondominioController {
     } catch (error) {
       return res.status(500).json({
         message: 'Falha ao listar logs de tratamento da reserva.',
+        detail: error.message
+      });
+    }
+  }
+
+  async listarRegulamentos(req, res) {
+    try {
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      if (!idCondominioToken) {
+        return res.status(403).json({
+          message: 'Token sem id_condominio para listar regulamentos.'
+        });
+      }
+
+      const page = Math.max(this._toInt(req.query.page, 1), 1);
+      const pageSize = Math.min(Math.max(this._toInt(req.query.pageSize, 25), 1), 100);
+      const offset = (page - 1) * pageSize;
+
+      const whereParts = ['r.id_condominio = :id_condominio'];
+      const replacements = {
+        id_condominio: idCondominioToken
+      };
+
+      if (req.query.ativo !== undefined) {
+        whereParts.push('r.ativo = :ativo');
+        replacements.ativo = Boolean(req.query.ativo);
+      }
+
+      if (req.query.q !== undefined && String(req.query.q).trim() !== '') {
+        whereParts.push('(r.titulo ILIKE :q OR r.observacao ILIKE :q OR r.documento_salvo ILIKE :q)');
+        replacements.q = `%${String(req.query.q).trim()}%`;
+      }
+
+      const whereClause = whereParts.join(' AND ');
+
+      const totalRows = await postgres.query(
+        `SELECT COUNT(*)::int AS total
+           FROM "condominio-bh".tb_regulamento r
+          WHERE ${whereClause}`,
+        {
+          replacements,
+          type: QueryTypes.SELECT
+        }
+      );
+
+      const data = await postgres.query(
+        `SELECT
+            r.id,
+            r.id_condominio,
+            r.titulo,
+            r.documento_salvo,
+            r.publicado_em,
+            r.publicado_por,
+            tu.nome AS nome,
+            tu.tipo AS tipo,
+            r.ativo,
+            r.observacao
+          FROM "condominio-bh".tb_regulamento r
+          LEFT JOIN "condominio-bh"."tb-usuarios" tu
+             ON tu.id = r.publicado_por
+            AND tu.id_condominio = r.id_condominio
+          WHERE ${whereClause}
+          ORDER BY r.ativo DESC, r.publicado_em DESC, r.id DESC
+          LIMIT :limit OFFSET :offset`,
+        {
+          replacements: {
+            ...replacements,
+            limit: pageSize,
+            offset
+          },
+          type: QueryTypes.SELECT
+        }
+      );
+
+      const total = totalRows[0]?.total || 0;
+      const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize);
+
+      return res.status(200).json({
+        page,
+        pageSize,
+        total,
+        totalPages,
+        data
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao listar regulamentos.',
+        detail: error.message
+      });
+    }
+  }
+
+  async buscarRegulamentoAtivo(req, res) {
+    try {
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      if (!idCondominioToken) {
+        return res.status(403).json({
+          message: 'Token sem id_condominio para buscar regulamento ativo.'
+        });
+      }
+
+      const rows = await postgres.query(
+        `SELECT
+            r.id,
+            r.id_condominio,
+            r.titulo,
+            r.documento_salvo,
+            r.publicado_em,
+            r.publicado_por,
+            tu.nome AS nome,
+            tu.tipo AS tipo,
+            r.ativo,
+            r.observacao
+           FROM "condominio-bh".tb_regulamento r
+          LEFT JOIN "condominio-bh"."tb-usuarios" tu
+             ON tu.id = r.publicado_por
+            AND tu.id_condominio = r.id_condominio
+          WHERE r.id_condominio = :id_condominio
+            AND r.ativo = true
+          ORDER BY r.publicado_em DESC, r.id DESC
+          LIMIT 1`,
+        {
+          replacements: { id_condominio: idCondominioToken },
+          type: QueryTypes.SELECT
+        }
+      );
+
+      if (!rows || rows.length === 0) {
+        return res.status(404).json({
+          message: 'Regulamento ativo não encontrado para este condomínio.'
+        });
+      }
+
+      return res.status(200).json({
+        data: rows[0]
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao buscar regulamento ativo.',
+        detail: error.message
+      });
+    }
+  }
+
+  async buscarRegulamentoPorId(req, res) {
+    try {
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      if (!idCondominioToken) {
+        return res.status(403).json({
+          message: 'Token sem id_condominio para buscar regulamento.'
+        });
+      }
+
+      const id = this._toInt(req.params.id, null);
+      if (!id) {
+        return res.status(400).json({ message: 'Id do regulamento inválido.' });
+      }
+
+      const rows = await postgres.query(
+        `SELECT
+            r.id,
+            r.id_condominio,
+            r.titulo,
+            r.documento_salvo,
+            r.publicado_em,
+            r.publicado_por,
+            tu.nome AS nome,
+            tu.tipo AS tipo,
+            r.ativo,
+            r.observacao
+           FROM "condominio-bh".tb_regulamento r
+          LEFT JOIN "condominio-bh"."tb-usuarios" tu
+             ON tu.id = r.publicado_por
+            AND tu.id_condominio = r.id_condominio
+          WHERE r.id = :id
+            AND r.id_condominio = :id_condominio
+          LIMIT 1`,
+        {
+          replacements: {
+            id,
+            id_condominio: idCondominioToken
+          },
+          type: QueryTypes.SELECT
+        }
+      );
+
+      if (!rows || rows.length === 0) {
+        return res.status(404).json({
+          message: 'Regulamento não encontrado para este condomínio.'
+        });
+      }
+
+      return res.status(200).json({
+        data: rows[0]
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao buscar regulamento.',
+        detail: error.message
+      });
+    }
+  }
+
+  async registrarAceiteRegulamentoAtivo(req, res) {
+    try {
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      if (!idCondominioToken) {
+        return res.status(403).json({
+          message: 'Token sem id_condominio para registrar aceite do regulamento.'
+        });
+      }
+
+      const idUsuarioToken = this._toInt(req.idcliente, null);
+      if (!idUsuarioToken) {
+        return res.status(403).json({
+          message: 'Token sem id de usuario para registrar aceite do regulamento.'
+        });
+      }
+
+      const idRegulamentoBody = this._toInt(req.body.id_regulamento, null);
+
+      const regulamentoAtivoRows = await postgres.query(
+        `SELECT id, id_condominio, titulo, ativo, publicado_em
+           FROM "condominio-bh".tb_regulamento
+          WHERE id_condominio = :id_condominio
+            AND ativo = true
+          ORDER BY publicado_em DESC, id DESC
+          LIMIT 1`,
+        {
+          replacements: { id_condominio: idCondominioToken },
+          type: QueryTypes.SELECT
+        }
+      );
+
+      if (!regulamentoAtivoRows || regulamentoAtivoRows.length === 0) {
+        return res.status(404).json({
+          message: 'Regulamento ativo nao encontrado para este condominio.'
+        });
+      }
+
+      const regulamentoAtivo = regulamentoAtivoRows[0];
+
+      if (idRegulamentoBody && idRegulamentoBody !== this._toInt(regulamentoAtivo.id, null)) {
+        return res.status(409).json({
+          message: 'Somente o regulamento ativo pode receber aceite.'
+        });
+      }
+
+      const usuarioRows = await postgres.query(
+        `SELECT id
+           FROM "condominio-bh"."tb-usuarios"
+          WHERE id = :id_usuario
+            AND id_condominio = :id_condominio
+          LIMIT 1`,
+        {
+          replacements: {
+            id_usuario: idUsuarioToken,
+            id_condominio: idCondominioToken
+          },
+          type: QueryTypes.SELECT
+        }
+      );
+
+      if (!usuarioRows || usuarioRows.length === 0) {
+        return res.status(403).json({
+          message: 'Usuario nao pertence ao condominio informado no token.'
+        });
+      }
+
+      const existenteRows = await postgres.query(
+        `SELECT id, id_regulamento, id_usuario, aceito_em, ip
+           FROM "condominio-bh".tb_regulamento_aceite
+          WHERE id_regulamento = :id_regulamento
+            AND id_usuario = :id_usuario
+          LIMIT 1`,
+        {
+          replacements: {
+            id_regulamento: regulamentoAtivo.id,
+            id_usuario: idUsuarioToken
+          },
+          type: QueryTypes.SELECT
+        }
+      );
+
+      if (existenteRows && existenteRows.length > 0) {
+        return res.status(200).json({
+          message: 'Aceite ja registrado para o regulamento ativo.',
+          data: existenteRows[0]
+        });
+      }
+
+      const ip = this._resolveRequestIp(req);
+
+      const insert = await postgres.query(
+        `INSERT INTO "condominio-bh".tb_regulamento_aceite (
+            id_regulamento,
+            id_usuario,
+            aceito_em,
+            ip
+        ) VALUES (
+            :id_regulamento,
+            :id_usuario,
+            now(),
+            :ip
+        )
+        RETURNING id, id_regulamento, id_usuario, aceito_em, ip`,
+        {
+          replacements: {
+            id_regulamento: regulamentoAtivo.id,
+            id_usuario: idUsuarioToken,
+            ip
+          }
+        }
+      );
+
+      return res.status(201).json({
+        message: 'Aceite do regulamento registrado com sucesso.',
+        data: insert[0][0]
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao registrar aceite do regulamento.',
+        detail: error.message
+      });
+    }
+  }
+
+  async buscarAceiteRegulamentoAtivo(req, res) {
+    try {
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      if (!idCondominioToken) {
+        return res.status(403).json({
+          message: 'Token sem id_condominio para buscar aceite do regulamento ativo.'
+        });
+      }
+
+      const idUsuarioToken = this._toInt(req.idcliente, null);
+      if (!idUsuarioToken) {
+        return res.status(403).json({
+          message: 'Token sem id de usuario para buscar aceite do regulamento ativo.'
+        });
+      }
+
+      const regulamentoAtivoRows = await postgres.query(
+        `SELECT
+            r.id,
+            r.id_condominio,
+            r.titulo,
+            r.documento_salvo,
+            r.publicado_em,
+            r.publicado_por,
+            tu.nome AS nome,
+            tu.tipo AS tipo,
+            r.ativo,
+            r.observacao
+           FROM "condominio-bh".tb_regulamento r
+          LEFT JOIN "condominio-bh"."tb-usuarios" tu
+             ON tu.id = r.publicado_por
+            AND tu.id_condominio = r.id_condominio
+          WHERE r.id_condominio = :id_condominio
+            AND r.ativo = true
+          ORDER BY r.publicado_em DESC, r.id DESC
+          LIMIT 1`,
+        {
+          replacements: { id_condominio: idCondominioToken },
+          type: QueryTypes.SELECT
+        }
+      );
+
+      if (!regulamentoAtivoRows || regulamentoAtivoRows.length === 0) {
+        return res.status(404).json({
+          message: 'Regulamento ativo nao encontrado para este condominio.'
+        });
+      }
+
+      const regulamentoAtivo = regulamentoAtivoRows[0];
+
+      const aceiteRows = await postgres.query(
+        `SELECT id, id_regulamento, id_usuario, aceito_em, ip
+           FROM "condominio-bh".tb_regulamento_aceite
+          WHERE id_regulamento = :id_regulamento
+            AND id_usuario = :id_usuario
+          ORDER BY aceito_em DESC, id DESC
+          LIMIT 1`,
+        {
+          replacements: {
+            id_regulamento: regulamentoAtivo.id,
+            id_usuario: idUsuarioToken
+          },
+          type: QueryTypes.SELECT
+        }
+      );
+
+      return res.status(200).json({
+        data: {
+          regulamento: regulamentoAtivo,
+          aceitou: Boolean(aceiteRows && aceiteRows.length > 0),
+          aceite: aceiteRows && aceiteRows.length > 0 ? aceiteRows[0] : null
+        }
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao buscar aceite do regulamento ativo.',
+        detail: error.message
+      });
+    }
+  }
+
+  async listarAceitesRegulamento(req, res) {
+    try {
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      if (!idCondominioToken) {
+        return res.status(403).json({
+          message: 'Token sem id_condominio para listar aceites do regulamento.'
+        });
+      }
+
+      const page = Math.max(this._toInt(req.query.page, 1), 1);
+      const pageSize = Math.min(Math.max(this._toInt(req.query.pageSize, 25), 1), 100);
+      const offset = (page - 1) * pageSize;
+
+      const whereParts = ['r.id_condominio = :id_condominio'];
+      const replacements = {
+        id_condominio: idCondominioToken
+      };
+
+      const idRegulamento = this._toInt(req.query.id_regulamento, null);
+      if (idRegulamento) {
+        whereParts.push('a.id_regulamento = :id_regulamento');
+        replacements.id_regulamento = idRegulamento;
+      }
+
+      const idUsuario = this._toInt(req.query.id_usuario, null);
+      if (idUsuario) {
+        whereParts.push('a.id_usuario = :id_usuario');
+        replacements.id_usuario = idUsuario;
+      }
+
+      if (req.query.ativo !== undefined) {
+        whereParts.push('r.ativo = :ativo');
+        replacements.ativo = Boolean(req.query.ativo);
+      }
+
+      const whereClause = whereParts.join(' AND ');
+
+      const totalRows = await postgres.query(
+        `SELECT COUNT(*)::int AS total
+           FROM "condominio-bh".tb_regulamento_aceite a
+           INNER JOIN "condominio-bh".tb_regulamento r
+              ON r.id = a.id_regulamento
+          WHERE ${whereClause}`,
+        {
+          replacements,
+          type: QueryTypes.SELECT
+        }
+      );
+
+      const data = await postgres.query(
+        `SELECT
+            a.id,
+            a.id_regulamento,
+            a.id_usuario,
+            a.aceito_em,
+            a.ip,
+            r.titulo AS regulamento_titulo,
+            r.ativo AS regulamento_ativo,
+            u.nome AS usuario_nome,
+            u.tipo AS usuario_tipo
+           FROM "condominio-bh".tb_regulamento_aceite a
+           INNER JOIN "condominio-bh".tb_regulamento r
+              ON r.id = a.id_regulamento
+           LEFT JOIN "condominio-bh"."tb-usuarios" u
+              ON u.id = a.id_usuario
+             AND u.id_condominio = r.id_condominio
+          WHERE ${whereClause}
+          ORDER BY a.aceito_em DESC, a.id DESC
+          LIMIT :limit OFFSET :offset`,
+        {
+          replacements: {
+            ...replacements,
+            limit: pageSize,
+            offset
+          },
+          type: QueryTypes.SELECT
+        }
+      );
+
+      const total = totalRows[0]?.total || 0;
+      const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize);
+
+      return res.status(200).json({
+        page,
+        pageSize,
+        total,
+        totalPages,
+        data
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao listar aceites do regulamento.',
+        detail: error.message
+      });
+    }
+  }
+
+  async buscarAceiteRegulamentoPorId(req, res) {
+    try {
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      if (!idCondominioToken) {
+        return res.status(403).json({
+          message: 'Token sem id_condominio para buscar aceite do regulamento.'
+        });
+      }
+
+      const id = this._toInt(req.params.id, null);
+      if (!id) {
+        return res.status(400).json({ message: 'Id do aceite invalido.' });
+      }
+
+      const rows = await postgres.query(
+        `SELECT
+            a.id,
+            a.id_regulamento,
+            a.id_usuario,
+            a.aceito_em,
+            a.ip,
+            r.id_condominio,
+            r.titulo AS regulamento_titulo,
+            r.ativo AS regulamento_ativo,
+            u.nome AS usuario_nome,
+            u.tipo AS usuario_tipo
+           FROM "condominio-bh".tb_regulamento_aceite a
+           INNER JOIN "condominio-bh".tb_regulamento r
+              ON r.id = a.id_regulamento
+           LEFT JOIN "condominio-bh"."tb-usuarios" u
+              ON u.id = a.id_usuario
+             AND u.id_condominio = r.id_condominio
+          WHERE a.id = :id
+            AND r.id_condominio = :id_condominio
+          LIMIT 1`,
+        {
+          replacements: {
+            id,
+            id_condominio: idCondominioToken
+          },
+          type: QueryTypes.SELECT
+        }
+      );
+
+      if (!rows || rows.length === 0) {
+        return res.status(404).json({
+          message: 'Aceite do regulamento nao encontrado para este condominio.'
+        });
+      }
+
+      return res.status(200).json({
+        data: rows[0]
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao buscar aceite do regulamento.',
+        detail: error.message
+      });
+    }
+  }
+
+  async editarAceiteRegulamento(req, res) {
+    try {
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      if (!idCondominioToken) {
+        return res.status(403).json({
+          message: 'Token sem id_condominio para editar aceite do regulamento.'
+        });
+      }
+
+      const id = this._toInt(req.params.id, null);
+      if (!id) {
+        return res.status(400).json({ message: 'Id do aceite invalido.' });
+      }
+
+      const atualRows = await postgres.query(
+        `SELECT a.id, a.id_regulamento, a.id_usuario, a.aceito_em, a.ip
+           FROM "condominio-bh".tb_regulamento_aceite a
+           INNER JOIN "condominio-bh".tb_regulamento r
+              ON r.id = a.id_regulamento
+          WHERE a.id = :id
+            AND r.id_condominio = :id_condominio
+          LIMIT 1`,
+        {
+          replacements: {
+            id,
+            id_condominio: idCondominioToken
+          },
+          type: QueryTypes.SELECT
+        }
+      );
+
+      if (!atualRows || atualRows.length === 0) {
+        return res.status(404).json({
+          message: 'Aceite do regulamento nao encontrado para este condominio.'
+        });
+      }
+
+      const atual = atualRows[0];
+
+      let idRegulamento = this._toInt(atual.id_regulamento, null);
+      if (req.body.id_regulamento !== undefined) {
+        idRegulamento = this._toInt(req.body.id_regulamento, null);
+        if (!idRegulamento) {
+          return res.status(400).json({ message: 'Campo id_regulamento invalido.' });
+        }
+
+        const regulamentoRows = await postgres.query(
+          `SELECT id
+             FROM "condominio-bh".tb_regulamento
+            WHERE id = :id
+              AND id_condominio = :id_condominio
+            LIMIT 1`,
+          {
+            replacements: {
+              id: idRegulamento,
+              id_condominio: idCondominioToken
+            },
+            type: QueryTypes.SELECT
+          }
+        );
+
+        if (!regulamentoRows || regulamentoRows.length === 0) {
+          return res.status(404).json({
+            message: 'Regulamento informado nao encontrado para este condominio.'
+          });
+        }
+      }
+
+      let idUsuario = this._toInt(atual.id_usuario, null);
+      if (req.body.id_usuario !== undefined) {
+        idUsuario = this._toInt(req.body.id_usuario, null);
+        if (!idUsuario) {
+          return res.status(400).json({ message: 'Campo id_usuario invalido.' });
+        }
+
+        const usuarioRows = await postgres.query(
+          `SELECT id
+             FROM "condominio-bh"."tb-usuarios"
+            WHERE id = :id_usuario
+              AND id_condominio = :id_condominio
+            LIMIT 1`,
+          {
+            replacements: {
+              id_usuario: idUsuario,
+              id_condominio: idCondominioToken
+            },
+            type: QueryTypes.SELECT
+          }
+        );
+
+        if (!usuarioRows || usuarioRows.length === 0) {
+          return res.status(404).json({
+            message: 'Usuario informado nao encontrado para este condominio.'
+          });
+        }
+      }
+
+      const conflitoRows = await postgres.query(
+        `SELECT id
+           FROM "condominio-bh".tb_regulamento_aceite
+          WHERE id <> :id
+            AND id_regulamento = :id_regulamento
+            AND id_usuario = :id_usuario
+          LIMIT 1`,
+        {
+          replacements: {
+            id,
+            id_regulamento: idRegulamento,
+            id_usuario: idUsuario
+          },
+          type: QueryTypes.SELECT
+        }
+      );
+
+      if (conflitoRows && conflitoRows.length > 0) {
+        return res.status(409).json({
+          message: 'Ja existe aceite para este usuario e regulamento.'
+        });
+      }
+
+      const aceitoEmInput = req.body.aceito_em;
+      const aceitoEm =
+        aceitoEmInput !== undefined && aceitoEmInput !== null && String(aceitoEmInput).trim() !== ''
+          ? new Date(aceitoEmInput)
+          : new Date(atual.aceito_em);
+
+      if (Number.isNaN(aceitoEm.getTime())) {
+        return res.status(400).json({ message: 'Campo aceito_em invalido.' });
+      }
+
+      const ip =
+        req.body.ip !== undefined
+          ? req.body.ip === null || String(req.body.ip).trim() === ''
+            ? null
+            : String(req.body.ip).trim()
+          : atual.ip;
+
+      const update = await postgres.query(
+        `UPDATE "condominio-bh".tb_regulamento_aceite
+            SET id_regulamento = :id_regulamento,
+                id_usuario = :id_usuario,
+                aceito_em = :aceito_em,
+                ip = :ip
+          WHERE id = :id
+        RETURNING id, id_regulamento, id_usuario, aceito_em, ip`,
+        {
+          replacements: {
+            id,
+            id_regulamento: idRegulamento,
+            id_usuario: idUsuario,
+            aceito_em: aceitoEm,
+            ip
+          }
+        }
+      );
+
+      return res.status(200).json({
+        message: 'Aceite do regulamento atualizado com sucesso.',
+        data: update[0][0]
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao editar aceite do regulamento.',
+        detail: error.message
+      });
+    }
+  }
+
+  async excluirAceiteRegulamento(req, res) {
+    try {
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      if (!idCondominioToken) {
+        return res.status(403).json({
+          message: 'Token sem id_condominio para excluir aceite do regulamento.'
+        });
+      }
+
+      const id = this._toInt(req.params.id, null);
+      if (!id) {
+        return res.status(400).json({ message: 'Id do aceite invalido.' });
+      }
+
+      const remove = await postgres.query(
+        `DELETE FROM "condominio-bh".tb_regulamento_aceite a
+          USING "condominio-bh".tb_regulamento r
+          WHERE a.id = :id
+            AND r.id = a.id_regulamento
+            AND r.id_condominio = :id_condominio
+        RETURNING a.id, a.id_regulamento, a.id_usuario, a.aceito_em, a.ip`,
+        {
+          replacements: {
+            id,
+            id_condominio: idCondominioToken
+          }
+        }
+      );
+
+      if (!remove[0] || remove[0].length === 0) {
+        return res.status(404).json({
+          message: 'Aceite do regulamento nao encontrado para este condominio.'
+        });
+      }
+
+      return res.status(200).json({
+        message: 'Aceite do regulamento excluido com sucesso.',
+        data: remove[0][0]
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao excluir aceite do regulamento.',
+        detail: error.message
+      });
+    }
+  }
+
+  async criarRegulamento(req, res) {
+    try {
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      if (!idCondominioToken) {
+        return res.status(403).json({
+          message: 'Token sem id_condominio para criar regulamento.'
+        });
+      }
+
+      const idUsuarioToken = this._toInt(req.idcliente, null);
+      const titulo = String(req.body.titulo || '').trim();
+      const documentoSalvo =
+        req.body.documento_salvo !== undefined
+          ? req.body.documento_salvo
+            ? String(req.body.documento_salvo).trim()
+            : null
+          : null;
+      const observacao =
+        req.body.observacao !== undefined ? (req.body.observacao ? String(req.body.observacao).trim() : null) : null;
+      const ativo = req.body.ativo === undefined ? true : Boolean(req.body.ativo);
+
+      let inserted;
+
+      await postgres.transaction(async (transaction) => {
+        if (ativo) {
+          await postgres.query(
+            `UPDATE "condominio-bh".tb_regulamento
+                SET ativo = false
+              WHERE id_condominio = :id_condominio
+                AND ativo = true`,
+            {
+              replacements: {
+                id_condominio: idCondominioToken
+              },
+              transaction
+            }
+          );
+        }
+
+        const insert = await postgres.query(
+          `INSERT INTO "condominio-bh".tb_regulamento (
+              id_condominio,
+              titulo,
+              documento_salvo,
+              publicado_em,
+              publicado_por,
+              ativo,
+              observacao
+          ) VALUES (
+              :id_condominio,
+              :titulo,
+              :documento_salvo,
+              now(),
+              :publicado_por,
+              :ativo,
+              :observacao
+          )
+          RETURNING *`,
+          {
+            replacements: {
+              id_condominio: idCondominioToken,
+              titulo,
+              documento_salvo: documentoSalvo,
+              publicado_por: idUsuarioToken,
+              ativo,
+              observacao
+            },
+            transaction
+          }
+        );
+
+        inserted = insert[0][0];
+      });
+
+      return res.status(201).json({
+        message: 'Regulamento criado com sucesso.',
+        data: inserted
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao criar regulamento.',
+        detail: error.message
+      });
+    }
+  }
+
+  async editarRegulamento(req, res) {
+    try {
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      if (!idCondominioToken) {
+        return res.status(403).json({
+          message: 'Token sem id_condominio para editar regulamento.'
+        });
+      }
+
+      const id = this._toInt(req.params.id, null);
+      if (!id) {
+        return res.status(400).json({ message: 'Id do regulamento inválido.' });
+      }
+
+      const idUsuarioToken = this._toInt(req.idcliente, null);
+      let updated;
+
+      await postgres.transaction(async (transaction) => {
+        const atualRows = await postgres.query(
+          `SELECT *
+             FROM "condominio-bh".tb_regulamento
+            WHERE id = :id
+              AND id_condominio = :id_condominio
+            LIMIT 1`,
+          {
+            replacements: {
+              id,
+              id_condominio: idCondominioToken
+            },
+            type: QueryTypes.SELECT,
+            transaction
+          }
+        );
+
+        if (!atualRows || atualRows.length === 0) {
+          throw new Error('NOT_FOUND');
+        }
+
+        const atual = atualRows[0];
+
+        const titulo = req.body.titulo !== undefined ? String(req.body.titulo || '').trim() : atual.titulo;
+        const documentoSalvo =
+          req.body.documento_salvo !== undefined
+            ? req.body.documento_salvo
+              ? String(req.body.documento_salvo).trim()
+              : null
+            : atual.documento_salvo;
+        const ativo = req.body.ativo !== undefined ? Boolean(req.body.ativo) : Boolean(atual.ativo);
+        const observacao =
+          req.body.observacao !== undefined
+            ? req.body.observacao
+              ? String(req.body.observacao).trim()
+              : null
+            : atual.observacao;
+
+        if (ativo) {
+          await postgres.query(
+            `UPDATE "condominio-bh".tb_regulamento
+                SET ativo = false
+              WHERE id_condominio = :id_condominio
+                AND id <> :id
+                AND ativo = true`,
+            {
+              replacements: {
+                id_condominio: idCondominioToken,
+                id
+              },
+              transaction
+            }
+          );
+        }
+
+        const update = await postgres.query(
+          `UPDATE "condominio-bh".tb_regulamento
+              SET titulo = :titulo,
+                documento_salvo = :documento_salvo,
+                  publicado_por = :publicado_por,
+                  ativo = :ativo,
+                  observacao = :observacao
+            WHERE id = :id
+              AND id_condominio = :id_condominio
+          RETURNING *`,
+          {
+            replacements: {
+              id,
+              id_condominio: idCondominioToken,
+              titulo,
+              documento_salvo: documentoSalvo,
+              publicado_por: idUsuarioToken || atual.publicado_por,
+              ativo,
+              observacao
+            },
+            transaction
+          }
+        );
+
+        updated = update[0][0];
+      });
+
+      return res.status(200).json({
+        message: 'Regulamento atualizado com sucesso.',
+        data: updated
+      });
+    } catch (error) {
+      if (error.message === 'NOT_FOUND') {
+        return res.status(404).json({
+          message: 'Regulamento não encontrado para este condomínio.'
+        });
+      }
+
+      return res.status(500).json({
+        message: 'Falha ao editar regulamento.',
+        detail: error.message
+      });
+    }
+  }
+
+  async excluirRegulamento(req, res) {
+    try {
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      if (!idCondominioToken) {
+        return res.status(403).json({
+          message: 'Token sem id_condominio para excluir regulamento.'
+        });
+      }
+
+      const id = this._toInt(req.params.id, null);
+      if (!id) {
+        return res.status(400).json({ message: 'Id do regulamento inválido.' });
+      }
+
+      let deleted;
+
+      await postgres.transaction(async (transaction) => {
+        const remove = await postgres.query(
+          `DELETE FROM "condominio-bh".tb_regulamento
+            WHERE id = :id
+              AND id_condominio = :id_condominio
+          RETURNING *`,
+          {
+            replacements: {
+              id,
+              id_condominio: idCondominioToken
+            },
+            transaction
+          }
+        );
+
+        if (!remove[0] || remove[0].length === 0) {
+          throw new Error('NOT_FOUND');
+        }
+
+        deleted = remove[0][0];
+
+        if (deleted.ativo) {
+          const regulamentoMaisRecente = await postgres.query(
+            `SELECT id
+               FROM "condominio-bh".tb_regulamento
+              WHERE id_condominio = :id_condominio
+              ORDER BY publicado_em DESC, id DESC
+              LIMIT 1`,
+            {
+              replacements: {
+                id_condominio: idCondominioToken
+              },
+              type: QueryTypes.SELECT,
+              transaction
+            }
+          );
+
+          if (regulamentoMaisRecente && regulamentoMaisRecente.length > 0) {
+            await postgres.query(
+              `UPDATE "condominio-bh".tb_regulamento
+                  SET ativo = true
+                WHERE id = :id`,
+              {
+                replacements: {
+                  id: regulamentoMaisRecente[0].id
+                },
+                transaction
+              }
+            );
+          }
+        }
+      });
+
+      return res.status(200).json({
+        message: 'Regulamento excluído com sucesso.',
+        data: deleted
+      });
+    } catch (error) {
+      if (error.message === 'NOT_FOUND') {
+        return res.status(404).json({
+          message: 'Regulamento não encontrado para este condomínio.'
+        });
+      }
+
+      return res.status(500).json({
+        message: 'Falha ao excluir regulamento.',
         detail: error.message
       });
     }
