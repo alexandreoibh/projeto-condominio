@@ -1724,15 +1724,15 @@ class CondominioController {
            LEFT JOIN "condominio-bh".tb_status_tratamento tt
              ON tt.id = ea.status
           WHERE ea.id_condominio = :idCondominio
-            AND ea.data_agendamento::date >= date_trunc('month', CURRENT_DATE)::date
-            AND ea.data_agendamento::date < (date_trunc('month', CURRENT_DATE) + interval '1 month')::date
           ORDER BY ea.data_agendamento::date ASC, ea.id ASC`,
         {
           replacements: { idCondominio: idCondominioToken },
           type: QueryTypes.SELECT
         }
       );
-
+          //  AND ea.data_agendamento::date >= date_trunc('month', CURRENT_DATE)::date
+          //   AND ea.data_agendamento::date < (date_trunc('month', CURRENT_DATE) + interval '1 month')::date
+   
       return res.status(200).json({
         total: data.length,
         data
