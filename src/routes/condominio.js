@@ -421,9 +421,7 @@ router.post(
 			.isLength({ max: 120 })
 			.withMessage('Campo nome deve ter no máximo 120 caracteres.'),
 		body('cpf')
-			.notEmpty()
-			.withMessage('Campo cpf é obrigatório.')
-			.bail()
+			.optional({ nullable: true, checkFalsy: true })
 			.custom((value) => {
 				const cpf = String(value).replace(/\D/g, '');
 				if (cpf.length !== 11) {
@@ -431,6 +429,10 @@ router.post(
 				}
 				return true;
 			}),
+		body('tipo_morador')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 100 })
+			.withMessage('Campo tipo_morador deve ter no máximo 100 caracteres.'),
 		body('password')
 			.notEmpty()
 			.withMessage('Campo password é obrigatório.')
@@ -504,6 +506,85 @@ router.put(
 				}
 				return true;
 			}),
+		body('tipo_morador')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 100 })
+			.withMessage('Campo tipo_morador deve ter no máximo 100 caracteres.'),
+		body('password')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ min: 6 })
+			.withMessage('Campo password deve ter no mínimo 6 caracteres.'),
+		body('email')
+			.optional({ nullable: true, checkFalsy: true })
+			.isEmail()
+			.withMessage('Campo email inválido.'),
+		body('tipo_perfil_id')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Campo tipo_perfil_id deve ser numérico e maior que zero.'),
+		body('endereco_logradouro')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 200 })
+			.withMessage('Campo endereco_logradouro deve ter no máximo 200 caracteres.'),
+		body('endereco_numero')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 20 })
+			.withMessage('Campo endereco_numero deve ter no máximo 20 caracteres.'),
+		body('endereco_complemento')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 100 })
+			.withMessage('Campo endereco_complemento deve ter no máximo 100 caracteres.'),
+		body('endereco_bairro')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 120 })
+			.withMessage('Campo endereco_bairro deve ter no máximo 120 caracteres.'),
+		body('endereco_cidade')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 120 })
+			.withMessage('Campo endereco_cidade deve ter no máximo 120 caracteres.'),
+		body('endereco_uf')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ min: 2, max: 2 })
+			.withMessage('Campo endereco_uf deve ter 2 caracteres.'),
+		body('endereco_cep')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 8 })
+			.withMessage('Campo endereco_cep deve ter no máximo 8 caracteres.'),
+		body('apartamento')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 50 })
+			.withMessage('Campo apartamento deve ter no máximo 50 caracteres.'),
+		body('bloco')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 50 })
+			.withMessage('Campo bloco deve ter no máximo 50 caracteres.')
+	],
+	validate,
+	controller.editarUsuario.bind(controller)
+);
+
+router.patch(
+	'/usuarios/:id(\\d+)',
+	auth,
+	[
+		param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.'),
+		body('nome')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 120 })
+			.withMessage('Campo nome deve ter no máximo 120 caracteres.'),
+		body('cpf')
+			.optional({ nullable: true, checkFalsy: true })
+			.custom((value) => {
+				const cpf = String(value).replace(/\D/g, '');
+				if (cpf.length !== 11) {
+					throw new Error('CPF deve conter 11 dígitos.');
+				}
+				return true;
+			}),
+		body('tipo_morador')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 100 })
+			.withMessage('Campo tipo_morador deve ter no máximo 100 caracteres.'),
 		body('password')
 			.optional({ nullable: true, checkFalsy: true })
 			.isLength({ min: 6 })

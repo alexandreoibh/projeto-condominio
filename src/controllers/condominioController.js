@@ -47,6 +47,59 @@ class CondominioController {
     return String(rawIp).replace(/^::ffff:/, '');
   }
 
+  _normalizarPerfil(value) {
+    return String(value || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .trim()
+      .toLowerCase();
+  }
+
+  async _podeVisualizarDadosMorador(req) {
+    const perfilToken = this._normalizarPerfil(req.nomePerfil);
+    if (perfilToken === 'admin' || perfilToken === 'sindico') {
+      return true;
+    }
+
+    const idPerfilToken = this._toInt(req.IdPerfil, null);
+    if (idPerfilToken === 1 || idPerfilToken === 3) {
+      return true;
+    }
+
+    const idUsuarioToken = this._toInt(req.idcliente, null);
+    const idCondominioToken = this._toInt(req.id_condominio, null);
+    if (!idUsuarioToken || !idCondominioToken) {
+      return false;
+    }
+
+    const usuario = await postgres.query(
+      `SELECT tipo, tipo_perfil_id
+         FROM "condominio-bh"."tb-usuarios"
+        WHERE id = :id
+          AND id_condominio = :id_condominio
+        LIMIT 1`,
+      {
+        replacements: {
+          id: idUsuarioToken,
+          id_condominio: idCondominioToken
+        },
+        type: QueryTypes.SELECT
+      }
+    );
+
+    if (!usuario || usuario.length === 0) {
+      return false;
+    }
+
+    const perfilDb = this._normalizarPerfil(usuario[0].tipo);
+    if (perfilDb === 'admin' || perfilDb === 'sindico') {
+      return true;
+    }
+
+    const idPerfilDb = this._toInt(usuario[0].tipo_perfil_id, null);
+    return idPerfilDb === 1 || idPerfilDb === 3;
+  }
+
   async _buscarLogsTratamentoReserva(idAgenda) {
     return postgres.query(
       `SELECT
@@ -793,6 +846,7 @@ class CondominioController {
             tu.cpf,
             tu.email,
             tu.telefone,
+            tu.tipo_morador,
             tu.tipo_perfil_id,
             tu.tipo,
             tu.status,
@@ -856,6 +910,7 @@ class CondominioController {
         telefone,
         data_nascimento,
         genero,
+        tipo_morador,
         tipo_perfil_id,
         tipo,
         status,
@@ -872,22 +927,26 @@ class CondominioController {
         password
       } = req.body;
 
-      const cpfLimpo = String(cpf || '').replace(/\D/g, '');
+      const cpfNumerico = String(cpf || '').replace(/\D/g, '');
+      const cpfLimpo = cpfNumerico || '';
       const emailNormalizado = email ? String(email).trim().toLowerCase() : null;
 
-      const duplicado = await postgres.query(
-        `SELECT id, cpf, email
-           FROM "condominio-bh"."tb-usuarios"
-          WHERE cpf = :cpf
-             OR (:email IS NOT NULL AND lower(email) = :email)
-          LIMIT 1`,
-        {
-          replacements: {
-            cpf: cpfLimpo,
-            email: emailNormalizado
+      let duplicado = [];
+      if (cpfLimpo || emailNormalizado) {
+        duplicado = await postgres.query(
+          `SELECT id, cpf, email
+             FROM "condominio-bh"."tb-usuarios"
+            WHERE (:cpf IS NOT NULL AND cpf = :cpf)
+               OR (:email IS NOT NULL AND lower(email) = :email)
+            LIMIT 1`,
+          {
+            replacements: {
+              cpf: cpfLimpo,
+              email: emailNormalizado
+            }
           }
-        }
-      );
+        );
+      }
 
       if (duplicado[0] && duplicado[0].length > 0) {
         return res.status(409).json({
@@ -907,6 +966,7 @@ class CondominioController {
             telefone,
             data_nascimento,
             genero,
+            tipo_morador,
             tipo_perfil_id,
             tipo,
             status,
@@ -932,6 +992,7 @@ class CondominioController {
             :telefone,
             :data_nascimento,
             :genero,
+            :tipo_morador,
             :tipo_perfil_id,
             :tipo,
             :status,
@@ -949,7 +1010,7 @@ class CondominioController {
             now(),
             now()
         )
-        RETURNING id, id_condominio, nome, sobrenome, cpf, email, telefone, tipo_perfil_id, tipo, status, apartamento, bloco, created_at`,
+        RETURNING id, id_condominio, nome, sobrenome, cpf, email, telefone, tipo_morador, tipo_perfil_id, tipo, status, apartamento, bloco, created_at`,
         {
           replacements: {
             id_condominio: idCondominioToken,
@@ -960,6 +1021,7 @@ class CondominioController {
             telefone: telefone || null,
             data_nascimento: data_nascimento || null,
             genero: genero || null,
+            tipo_morador: tipo_morador || null,
             tipo_perfil_id: this._toInt(tipo_perfil_id, null),
             tipo: tipo || 'morador',
             status: status || 'ativo',
@@ -1029,10 +1091,14 @@ class CondominioController {
 
       const nome = req.body.nome !== undefined ? req.body.nome : atual.nome;
       const sobrenome = req.body.sobrenome !== undefined ? req.body.sobrenome : atual.sobrenome;
+      const normalizarCpf = (value) => {
+        const cpfApenasDigitos = String(value || '').replace(/\D/g, '');
+        return cpfApenasDigitos || null;
+      };
+      const cpfAtual = normalizarCpf(atual.cpf) ?? '';
+      const cpfInformado = req.body.cpf !== undefined ? normalizarCpf(req.body.cpf) : undefined;
       const cpfNormalizado =
-        req.body.cpf !== undefined
-          ? String(req.body.cpf || '').replace(/\D/g, '')
-          : String(atual.cpf || '').replace(/\D/g, '');
+        cpfInformado === undefined || cpfInformado === null ? cpfAtual : cpfInformado;
       const emailNormalizado =
         req.body.email !== undefined
           ? req.body.email
@@ -1040,24 +1106,27 @@ class CondominioController {
             : null
           : atual.email;
 
-      const duplicado = await postgres.query(
-        `SELECT id, cpf, email
-           FROM "condominio-bh"."tb-usuarios"
-          WHERE id <> :id_usuario
-            AND (
-              cpf = :cpf
-              OR (:email IS NOT NULL AND lower(email) = :email)
-            )
-          LIMIT 1`,
-        {
-          replacements: {
-            id_usuario: idUsuario,
-            cpf: cpfNormalizado,
-            email: emailNormalizado
-          },
-          type: QueryTypes.SELECT
-        }
-      );
+      let duplicado = [];
+      if (cpfNormalizado || emailNormalizado) {
+        duplicado = await postgres.query(
+          `SELECT id, cpf, email
+             FROM "condominio-bh"."tb-usuarios"
+            WHERE id <> :id_usuario
+              AND (
+                (:cpf IS NOT NULL AND cpf = :cpf)
+                OR (:email IS NOT NULL AND lower(email) = :email)
+              )
+            LIMIT 1`,
+          {
+            replacements: {
+              id_usuario: idUsuario,
+              cpf: cpfNormalizado,
+              email: emailNormalizado
+            },
+            type: QueryTypes.SELECT
+          }
+        );
+      }
 
       if (duplicado && duplicado.length > 0) {
         return res.status(409).json({
@@ -1083,6 +1152,7 @@ class CondominioController {
                 telefone = :telefone,
                 data_nascimento = :data_nascimento,
                 genero = :genero,
+                tipo_morador = :tipo_morador,
                 tipo_perfil_id = :tipo_perfil_id,
                 tipo = :tipo,
                 status = :status,
@@ -1100,7 +1170,7 @@ class CondominioController {
                 updated_at = now()
           WHERE id = :id
             AND id_condominio = :id_condominio
-        RETURNING id, id_condominio, nome, sobrenome, cpf, email, telefone, tipo_perfil_id, tipo, status, apartamento, bloco, created_at, updated_at`,
+        RETURNING id, id_condominio, nome, sobrenome, cpf, email, telefone, tipo_morador, tipo_perfil_id, tipo, status, apartamento, bloco, created_at, updated_at`,
         {
           replacements: {
             id: idUsuario,
@@ -1115,6 +1185,10 @@ class CondominioController {
                 ? req.body.data_nascimento || null
                 : atual.data_nascimento,
             genero: req.body.genero !== undefined ? req.body.genero || null : atual.genero,
+            tipo_morador:
+              req.body.tipo_morador !== undefined
+                ? req.body.tipo_morador || null
+                : atual.tipo_morador,
             tipo_perfil_id:
               req.body.tipo_perfil_id !== undefined
                 ? this._toInt(req.body.tipo_perfil_id, null)
@@ -1190,6 +1264,7 @@ class CondominioController {
             cpf,
             email,
             telefone,
+            tipo_morador,
             data_nascimento,
             genero,
             tipo_perfil_id,
@@ -1674,13 +1749,23 @@ class CondominioController {
             type: QueryTypes.SELECT
           });
 
+      const podeVisualizarDadosMorador = await this._podeVisualizarDadosMorador(req);
+      const dataResposta = podeVisualizarDadosMorador
+        ? data
+        : data.map((row) => ({
+            ...row,
+            nome: '****',
+            apartamento: '****',
+            bloco: '****'
+          }));
+
       const total = totalRows[0]?.total || 0;
       const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize);
 
       if (!usePagination) {
         return res.status(200).json({
           total,
-          data
+          data: dataResposta
         });
       }
 
@@ -1689,7 +1774,7 @@ class CondominioController {
         pageSize,
         total,
         totalPages,
-        data
+        data: dataResposta
       });
     } catch (error) {
       return res.status(500).json({
@@ -1730,12 +1815,22 @@ class CondominioController {
           type: QueryTypes.SELECT
         }
       );
+
+      const podeVisualizarDadosMorador = await this._podeVisualizarDadosMorador(req);
+      const dataResposta = podeVisualizarDadosMorador
+        ? data
+        : data.map((row) => ({
+            ...row,
+            nome_usuario: '****',
+            apartamento: '****',
+            bloco: '****'
+          }));
           //  AND ea.data_agendamento::date >= date_trunc('month', CURRENT_DATE)::date
           //   AND ea.data_agendamento::date < (date_trunc('month', CURRENT_DATE) + interval '1 month')::date
    
       return res.status(200).json({
-        total: data.length,
-        data
+        total: dataResposta.length,
+        data: dataResposta
       });
     } catch (error) {
       return res.status(500).json({
