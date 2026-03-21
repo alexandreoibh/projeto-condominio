@@ -8,6 +8,272 @@ const validate = require('../helpers/validate');
 const controller = new CondominioController();
 
 router.get('/status', controller.status.bind(controller));
+router.get('/perfis', auth, controller.listarPerfis.bind(controller));
+router.get(
+	'/condominios',
+	auth,
+	[
+		query('page')
+			.optional()
+			.isInt({ min: 1 })
+			.withMessage('Parâmetro page deve ser numérico e maior que zero.'),
+		query('pageSize')
+			.optional()
+			.isInt({ min: 1, max: 100 })
+			.withMessage('Parâmetro pageSize deve estar entre 1 e 100.'),
+		query('q')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 120 })
+			.withMessage('Parâmetro q deve ter no máximo 120 caracteres.'),
+		query('ativo')
+			.optional({ nullable: true, checkFalsy: true })
+			.isBoolean()
+			.withMessage('Parâmetro ativo deve ser booleano.')
+	],
+	validate,
+	controller.listarCondominios.bind(controller)
+);
+router.get(
+	'/condominios/:id(\\d+)',
+	auth,
+	[param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.')],
+	validate,
+	controller.buscarCondominioPorId.bind(controller)
+);
+router.post(
+	'/condominios',
+	auth,
+	[
+		body().custom((value, { req }) => {
+			const qtdeBlocos = req.body.qtde_blocos !== undefined ? req.body.qtde_blocos : req.body.qtde_bloco;
+			if (qtdeBlocos === undefined || qtdeBlocos === null || String(qtdeBlocos).trim() === '') {
+				throw new Error('Campo qtde_blocos é obrigatório.');
+			}
+			return true;
+		}),
+		body('nome')
+			.notEmpty()
+			.withMessage('Campo nome é obrigatório.')
+			.bail()
+			.isLength({ max: 120 })
+			.withMessage('Campo nome deve ter no máximo 120 caracteres.'),
+		body('email')
+			.notEmpty()
+			.withMessage('Campo email é obrigatório.')
+			.bail()
+			.isEmail()
+			.withMessage('Campo email inválido.')
+			.bail()
+			.isLength({ max: 255 })
+			.withMessage('Campo email deve ter no máximo 255 caracteres.'),
+		body('telefone')
+			.notEmpty()
+			.withMessage('Campo telefone é obrigatório.')
+			.bail()
+			.isLength({ max: 20 })
+			.withMessage('Campo telefone deve ter no máximo 20 caracteres.'),
+		body('qtde_ap_andar')
+			.notEmpty()
+			.withMessage('Campo qtde_ap_andar é obrigatório.')
+			.bail()
+			.isInt({ min: 1 })
+			.withMessage('Campo qtde_ap_andar deve ser numérico e maior que zero.'),
+		body('escrita_bloco')
+			.notEmpty()
+			.withMessage('Campo escrita_bloco é obrigatório.')
+			.bail()
+			.isLength({ max: 255 })
+			.withMessage('Campo escrita_bloco deve ter no máximo 255 caracteres.'),
+		body('qtde_ap_bloco')
+			.notEmpty()
+			.withMessage('Campo qtde_ap_bloco é obrigatório.')
+			.bail()
+			.isInt({ min: 1 })
+			.withMessage('Campo qtde_ap_bloco deve ser numérico e maior que zero.'),
+		body('qtde_blocos')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Campo qtde_blocos deve ser numérico e maior que zero.'),
+		body('qtde_bloco')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Campo qtde_bloco deve ser numérico e maior que zero.'),
+		body('unidades_bloco')
+			.isArray({ min: 1 })
+			.withMessage('Campo unidades_bloco é obrigatório e deve ser um array com ao menos 1 item.'),
+		body('unidades_bloco.*')
+			.notEmpty()
+			.withMessage('Cada item de unidades_bloco deve ser informado.')
+			.bail()
+			.isLength({ max: 50 })
+			.withMessage('Cada item de unidades_bloco deve ter no máximo 50 caracteres.'),
+		body('cnpj')
+			.optional({ nullable: true, checkFalsy: true })
+			.custom((value) => {
+				const cnpj = String(value).replace(/\D/g, '');
+				if (cnpj.length > 14) {
+					throw new Error('Campo cnpj deve ter no máximo 14 dígitos.');
+				}
+				return true;
+			}),
+		body('ativo')
+			.optional({ nullable: true })
+			.isBoolean()
+			.withMessage('Campo ativo deve ser booleano.'),
+		body('modelo_fatura')
+			.notEmpty()
+			.withMessage('Campo modelo_fatura é obrigatório.')
+			.bail()
+			.isLength({ max: 255 })
+			.withMessage('Campo modelo_fatura deve ter no máximo 255 caracteres.')
+	],
+	validate,
+	controller.criarCondominio.bind(controller)
+);
+router.put(
+	'/condominios/:id(\\d+)',
+	auth,
+	[
+		param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.'),
+		body('nome')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 120 })
+			.withMessage('Campo nome deve ter no máximo 120 caracteres.'),
+		body('email')
+			.optional({ nullable: true, checkFalsy: true })
+			.isEmail()
+			.withMessage('Campo email inválido.')
+			.bail()
+			.isLength({ max: 255 })
+			.withMessage('Campo email deve ter no máximo 255 caracteres.'),
+		body('telefone')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 20 })
+			.withMessage('Campo telefone deve ter no máximo 20 caracteres.'),
+		body('qtde_ap_andar')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Campo qtde_ap_andar deve ser numérico e maior que zero.'),
+		body('escrita_bloco')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 255 })
+			.withMessage('Campo escrita_bloco deve ter no máximo 255 caracteres.'),
+		body('qtde_ap_bloco')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Campo qtde_ap_bloco deve ser numérico e maior que zero.'),
+		body('qtde_blocos')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Campo qtde_blocos deve ser numérico e maior que zero.'),
+		body('qtde_bloco')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Campo qtde_bloco deve ser numérico e maior que zero.'),
+		body('unidades_bloco')
+			.optional({ nullable: true })
+			.isArray({ min: 1 })
+			.withMessage('Campo unidades_bloco deve ser um array com ao menos 1 item.'),
+		body('unidades_bloco.*')
+			.optional({ nullable: true })
+			.notEmpty()
+			.withMessage('Cada item de unidades_bloco deve ser informado.')
+			.bail()
+			.isLength({ max: 50 })
+			.withMessage('Cada item de unidades_bloco deve ter no máximo 50 caracteres.'),
+		body('cnpj')
+			.optional({ nullable: true, checkFalsy: true })
+			.custom((value) => {
+				const cnpj = String(value).replace(/\D/g, '');
+				if (cnpj.length > 14) {
+					throw new Error('Campo cnpj deve ter no máximo 14 dígitos.');
+				}
+				return true;
+			}),
+		body('ativo')
+			.optional({ nullable: true })
+			.isBoolean()
+			.withMessage('Campo ativo deve ser booleano.'),
+		body('modelo_fatura')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 255 })
+			.withMessage('Campo modelo_fatura deve ter no máximo 255 caracteres.')
+	],
+	validate,
+	controller.editarCondominio.bind(controller)
+);
+router.patch(
+	'/condominios/:id(\\d+)',
+	auth,
+	[
+		param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.'),
+		body('nome')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 120 })
+			.withMessage('Campo nome deve ter no máximo 120 caracteres.'),
+		body('email')
+			.optional({ nullable: true, checkFalsy: true })
+			.isEmail()
+			.withMessage('Campo email inválido.')
+			.bail()
+			.isLength({ max: 255 })
+			.withMessage('Campo email deve ter no máximo 255 caracteres.'),
+		body('telefone')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 20 })
+			.withMessage('Campo telefone deve ter no máximo 20 caracteres.'),
+		body('qtde_ap_andar')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Campo qtde_ap_andar deve ser numérico e maior que zero.'),
+		body('escrita_bloco')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 255 })
+			.withMessage('Campo escrita_bloco deve ter no máximo 255 caracteres.'),
+		body('qtde_ap_bloco')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Campo qtde_ap_bloco deve ser numérico e maior que zero.'),
+		body('qtde_blocos')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Campo qtde_blocos deve ser numérico e maior que zero.'),
+		body('qtde_bloco')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Campo qtde_bloco deve ser numérico e maior que zero.'),
+		body('unidades_bloco')
+			.optional({ nullable: true })
+			.isArray({ min: 1 })
+			.withMessage('Campo unidades_bloco deve ser um array com ao menos 1 item.'),
+		body('unidades_bloco.*')
+			.optional({ nullable: true })
+			.notEmpty()
+			.withMessage('Cada item de unidades_bloco deve ser informado.')
+			.bail()
+			.isLength({ max: 50 })
+			.withMessage('Cada item de unidades_bloco deve ter no máximo 50 caracteres.'),
+		body('cnpj')
+			.optional({ nullable: true, checkFalsy: true })
+			.custom((value) => {
+				const cnpj = String(value).replace(/\D/g, '');
+				if (cnpj.length > 14) {
+					throw new Error('Campo cnpj deve ter no máximo 14 dígitos.');
+				}
+				return true;
+			}),
+		body('ativo')
+			.optional({ nullable: true })
+			.isBoolean()
+			.withMessage('Campo ativo deve ser booleano.'),
+		body('modelo_fatura')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 255 })
+			.withMessage('Campo modelo_fatura deve ter no máximo 255 caracteres.')
+	],
+	validate,
+	controller.editarCondominio.bind(controller)
+);
 router.get('/menu', auth, controller.listarMenuDinamico.bind(controller));
 router.get('/dashboard/tipos', auth, controller.listarDashboardTipos.bind(controller));
 router.get(
@@ -668,6 +934,34 @@ router.post(
 			.optional({ nullable: true })
 			.isInt({ min: 0 })
 			.withMessage('Campo periodo_noite deve ser numérico.'),
+		body('segunda')
+			.optional({ nullable: true })
+			.isInt({ min: 0, max: 1 })
+			.withMessage('Campo segunda deve ser 0 ou 1.'),
+		body('terca')
+			.optional({ nullable: true })
+			.isInt({ min: 0, max: 1 })
+			.withMessage('Campo terca deve ser 0 ou 1.'),
+		body('quarta')
+			.optional({ nullable: true })
+			.isInt({ min: 0, max: 1 })
+			.withMessage('Campo quarta deve ser 0 ou 1.'),
+		body('quinta')
+			.optional({ nullable: true })
+			.isInt({ min: 0, max: 1 })
+			.withMessage('Campo quinta deve ser 0 ou 1.'),
+		body('sexta')
+			.optional({ nullable: true })
+			.isInt({ min: 0, max: 1 })
+			.withMessage('Campo sexta deve ser 0 ou 1.'),
+		body('sabado')
+			.optional({ nullable: true })
+			.isInt({ min: 0, max: 1 })
+			.withMessage('Campo sabado deve ser 0 ou 1.'),
+		body('domingo')
+			.optional({ nullable: true })
+			.isInt({ min: 0, max: 1 })
+			.withMessage('Campo domingo deve ser 0 ou 1.'),
 		body('periodo_modo')
 			.optional({ nullable: true, checkFalsy: true })
 			.isLength({ max: 100 })
@@ -712,6 +1006,34 @@ router.put(
 			.optional({ nullable: true })
 			.isInt({ min: 0 })
 			.withMessage('Campo periodo_noite deve ser numérico.'),
+		body('segunda')
+			.optional({ nullable: true })
+			.isInt({ min: 0, max: 1 })
+			.withMessage('Campo segunda deve ser 0 ou 1.'),
+		body('terca')
+			.optional({ nullable: true })
+			.isInt({ min: 0, max: 1 })
+			.withMessage('Campo terca deve ser 0 ou 1.'),
+		body('quarta')
+			.optional({ nullable: true })
+			.isInt({ min: 0, max: 1 })
+			.withMessage('Campo quarta deve ser 0 ou 1.'),
+		body('quinta')
+			.optional({ nullable: true })
+			.isInt({ min: 0, max: 1 })
+			.withMessage('Campo quinta deve ser 0 ou 1.'),
+		body('sexta')
+			.optional({ nullable: true })
+			.isInt({ min: 0, max: 1 })
+			.withMessage('Campo sexta deve ser 0 ou 1.'),
+		body('sabado')
+			.optional({ nullable: true })
+			.isInt({ min: 0, max: 1 })
+			.withMessage('Campo sabado deve ser 0 ou 1.'),
+		body('domingo')
+			.optional({ nullable: true })
+			.isInt({ min: 0, max: 1 })
+			.withMessage('Campo domingo deve ser 0 ou 1.'),
 		body('periodo_modo')
 			.optional({ nullable: true, checkFalsy: true })
 			.isLength({ max: 100 })

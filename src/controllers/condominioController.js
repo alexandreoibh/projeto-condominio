@@ -100,6 +100,76 @@ class CondominioController {
     return idPerfilDb === 1 || idPerfilDb === 3;
   }
 
+  async _buscarCondominioComUnidades(idCondominio, transaction = null) {
+    const rows = await postgres.query(
+      `SELECT
+          c.id,
+          c.nome,
+          c.cnpj,
+          c.email,
+          c.telefone,
+          c.ativo,
+          c.qtde_ap_andar,
+          c.escrita_bloco,
+          c.qtde_ap_bloco,
+          c.qtde_blocos,
+          c.modelo_fatura,
+          c.created_at,
+          c.updated_at,
+          COALESCE(
+            (
+              SELECT ARRAY_AGG(cu.unidades_bloco ORDER BY cu.id)
+                FROM "condominio-bh".tb_condominios_unidades cu
+               WHERE cu.id_condominio = c.id
+            ),
+            ARRAY[]::varchar[]
+          ) AS unidades_bloco
+        FROM "condominio-bh"."tb-condominios" c
+       WHERE c.id = :id
+       LIMIT 1`,
+      {
+        replacements: { id: idCondominio },
+        type: QueryTypes.SELECT,
+        transaction
+      }
+    );
+
+    return rows && rows.length > 0 ? rows[0] : null;
+  }
+
+  async _sincronizarUnidadesCondominio(idCondominio, unidadesBloco, transaction) {
+    await postgres.query(
+      `DELETE FROM "condominio-bh".tb_condominios_unidades
+        WHERE id_condominio = :id_condominio`,
+      {
+        replacements: { id_condominio: idCondominio },
+        type: QueryTypes.DELETE,
+        transaction
+      }
+    );
+
+    for (const unidade of unidadesBloco) {
+      await postgres.query(
+        `INSERT INTO "condominio-bh".tb_condominios_unidades (
+            id_condominio,
+            unidades_bloco,
+            created_at
+          ) VALUES (
+            :id_condominio,
+            :unidades_bloco,
+            now()
+          )`,
+        {
+          replacements: {
+            id_condominio: idCondominio,
+            unidades_bloco: unidade
+          },
+          transaction
+        }
+      );
+    }
+  }
+
   async _buscarLogsTratamentoReserva(idAgenda) {
     return postgres.query(
       `SELECT
@@ -134,6 +204,409 @@ class CondominioController {
       module: 'condominio',
       status: 'ok'
     });
+  }
+
+  async listarPerfis(req, res) {
+    try {
+      const idPerfilToken = this._toInt(req.IdPerfil, null);
+
+      if (!idPerfilToken) {
+        return res.status(403).json({
+          message: 'Token sem perfil para listar perfis.'
+        });
+      }
+
+      let whereClause = 'p.status = true';
+      const replacements = {};
+
+      if (idPerfilToken === 1) {
+        // Admin pode ver todos os perfis ativos.
+      } else if (idPerfilToken === 3) {
+        // Sindico: não pode ver Admin.
+        whereClause += ' AND p.id NOT IN (:ids_bloqueados)';
+        replacements.ids_bloqueados = [1];
+      } else if (idPerfilToken === 4) {
+        // Sub-Sindico: não pode ver Admin e Sindico.
+        whereClause += ' AND p.id NOT IN (:ids_bloqueados)';
+        replacements.ids_bloqueados = [1, 3];
+      } else {
+        // Demais perfis: não retorna nada.
+        return res.status(200).json({
+          total: 0,
+          data: []
+        });
+      }
+
+      const data = await postgres.query(
+        `SELECT p.id, p.nome, p.status
+           FROM "condominio-bh".tb_sgw_perfil p
+          WHERE ${whereClause}
+          ORDER BY p.id ASC`,
+        {
+          replacements,
+          type: QueryTypes.SELECT
+        }
+      );
+
+      return res.status(200).json({
+        total: data.length,
+        data
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao listar perfis.',
+        detail: error.message
+      });
+    }
+  }
+
+  async listarCondominios(req, res) {
+    try {
+      const page = Math.max(this._toInt(req.query.page, 1), 1);
+      const pageSize = Math.min(Math.max(this._toInt(req.query.pageSize, 25), 1), 100);
+      const offset = (page - 1) * pageSize;
+
+      const whereParts = ['1 = 1'];
+      const replacements = { limit: pageSize, offset };
+
+      if (req.query.q) {
+        const q = String(req.query.q).trim();
+        whereParts.push('(c.nome ILIKE :q OR c.email ILIKE :q OR c.telefone ILIKE :q)');
+        replacements.q = `%${q}%`;
+      }
+
+      if (req.query.ativo !== undefined && req.query.ativo !== null && req.query.ativo !== '') {
+        const ativoRaw = String(req.query.ativo).toLowerCase();
+        const ativo = ativoRaw === 'true' || ativoRaw === '1';
+        whereParts.push('c.ativo = :ativo');
+        replacements.ativo = ativo;
+      }
+
+      const whereClause = whereParts.join(' AND ');
+
+      const totalRows = await postgres.query(
+        `SELECT COUNT(*)::int AS total
+           FROM "condominio-bh"."tb-condominios" c
+          WHERE ${whereClause}`,
+        {
+          replacements,
+          type: QueryTypes.SELECT
+        }
+      );
+
+      const data = await postgres.query(
+        `SELECT
+            c.id,
+            c.nome,
+            c.cnpj,
+            c.email,
+            c.telefone,
+            c.ativo,
+            c.qtde_ap_andar,
+            c.escrita_bloco,
+            c.qtde_ap_bloco,
+            c.qtde_blocos,
+            c.modelo_fatura,
+            c.created_at,
+            c.updated_at,
+            COALESCE(
+              (
+                SELECT ARRAY_AGG(cu.unidades_bloco ORDER BY cu.id)
+                  FROM "condominio-bh".tb_condominios_unidades cu
+                 WHERE cu.id_condominio = c.id
+              ),
+              ARRAY[]::varchar[]
+            ) AS unidades_bloco
+          FROM "condominio-bh"."tb-condominios" c
+          WHERE ${whereClause}
+          ORDER BY c.id DESC
+          LIMIT :limit OFFSET :offset`,
+        {
+          replacements,
+          type: QueryTypes.SELECT
+        }
+      );
+
+      const total = totalRows[0]?.total || 0;
+      const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize);
+
+      return res.status(200).json({
+        page,
+        pageSize,
+        total,
+        totalPages,
+        data
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao listar condomínios.',
+        detail: error.message
+      });
+    }
+  }
+
+  async buscarCondominioPorId(req, res) {
+    try {
+      const id = this._toInt(req.params.id, null);
+      if (!id) {
+        return res.status(400).json({ message: 'Id inválido.' });
+      }
+
+      const data = await postgres.query(
+        `SELECT
+            c.id,
+            c.nome,
+            c.cnpj,
+            c.email,
+            c.telefone,
+            c.ativo,
+            c.qtde_ap_andar,
+            c.escrita_bloco,
+            c.qtde_ap_bloco,
+            c.qtde_blocos,
+            c.modelo_fatura,
+            c.created_at,
+            c.updated_at,
+            COALESCE(
+              (
+                SELECT ARRAY_AGG(cu.unidades_bloco ORDER BY cu.id)
+                  FROM "condominio-bh".tb_condominios_unidades cu
+                 WHERE cu.id_condominio = c.id
+              ),
+              ARRAY[]::varchar[]
+            ) AS unidades_bloco
+          FROM "condominio-bh"."tb-condominios" c
+          WHERE c.id = :id
+          LIMIT 1`,
+        {
+          replacements: { id },
+          type: QueryTypes.SELECT
+        }
+      );
+
+      if (!data || data.length === 0) {
+        return res.status(404).json({ message: 'Condomínio não encontrado.' });
+      }
+
+      return res.status(200).json({ data: data[0] });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao buscar condomínio.',
+        detail: error.message
+      });
+    }
+  }
+
+  async criarCondominio(req, res) {
+    const transaction = await postgres.transaction();
+    try {
+      const cnpjNormalizado = req.body.cnpj ? String(req.body.cnpj).replace(/\D/g, '') : null;
+      const emailNormalizado = String(req.body.email).trim().toLowerCase();
+      const qtdeBlocosBody = req.body.qtde_blocos !== undefined ? req.body.qtde_blocos : req.body.qtde_bloco;
+      const unidadesBloco = Array.isArray(req.body.unidades_bloco)
+        ? req.body.unidades_bloco.map((item) => String(item).trim())
+        : [];
+
+      const insert = await postgres.query(
+        `INSERT INTO "condominio-bh"."tb-condominios" (
+            nome,
+            cnpj,
+            email,
+            telefone,
+            ativo,
+            qtde_ap_andar,
+            escrita_bloco,
+            qtde_ap_bloco,
+            qtde_blocos,
+            modelo_fatura,
+            created_at,
+            updated_at
+          ) VALUES (
+            :nome,
+            :cnpj,
+            :email,
+            :telefone,
+            :ativo,
+            :qtde_ap_andar,
+            :escrita_bloco,
+            :qtde_ap_bloco,
+            :qtde_blocos,
+            :modelo_fatura,
+            now(),
+            now()
+          )
+          RETURNING
+            id,
+            nome,
+            cnpj,
+            email,
+            telefone,
+            ativo,
+            qtde_ap_andar,
+            escrita_bloco,
+            qtde_ap_bloco,
+            qtde_blocos,
+            modelo_fatura,
+            created_at,
+            updated_at`,
+        {
+          replacements: {
+            nome: String(req.body.nome).trim(),
+            cnpj: cnpjNormalizado,
+            email: emailNormalizado,
+            telefone: String(req.body.telefone).trim(),
+            ativo: req.body.ativo !== undefined ? Boolean(req.body.ativo) : true,
+            qtde_ap_andar: this._toInt(req.body.qtde_ap_andar, null),
+            escrita_bloco: String(req.body.escrita_bloco).trim(),
+            qtde_ap_bloco: this._toInt(req.body.qtde_ap_bloco, null),
+            qtde_blocos: this._toInt(qtdeBlocosBody, null),
+            modelo_fatura: String(req.body.modelo_fatura).trim()
+          },
+          transaction
+        }
+      );
+
+      const idCondominio = insert[0][0].id;
+      await this._sincronizarUnidadesCondominio(idCondominio, unidadesBloco, transaction);
+
+      const data = await this._buscarCondominioComUnidades(idCondominio, transaction);
+      await transaction.commit();
+
+      return res.status(201).json({
+        message: 'Condomínio criado com sucesso.',
+        data
+      });
+    } catch (error) {
+      await transaction.rollback();
+      return res.status(500).json({
+        message: 'Falha ao criar condomínio.',
+        detail: error.message
+      });
+    }
+  }
+
+  async editarCondominio(req, res) {
+    const transaction = await postgres.transaction();
+    try {
+      const id = this._toInt(req.params.id, null);
+      if (!id) {
+        await transaction.rollback();
+        return res.status(400).json({ message: 'Id inválido.' });
+      }
+
+      const qtdeBlocosBody = req.body.qtde_blocos !== undefined ? req.body.qtde_blocos : req.body.qtde_bloco;
+      const unidadesBlocoInformadas = Array.isArray(req.body.unidades_bloco)
+        ? req.body.unidades_bloco.map((item) => String(item).trim())
+        : null;
+
+      const atual = await postgres.query(
+        `SELECT *
+           FROM "condominio-bh"."tb-condominios"
+          WHERE id = :id
+          LIMIT 1`,
+        {
+          replacements: { id },
+          type: QueryTypes.SELECT,
+          transaction
+        }
+      );
+
+      if (!atual || atual.length === 0) {
+        await transaction.rollback();
+        return res.status(404).json({ message: 'Condomínio não encontrado.' });
+      }
+
+      const registroAtual = atual[0];
+
+      const update = await postgres.query(
+        `UPDATE "condominio-bh"."tb-condominios"
+            SET nome = :nome,
+                cnpj = :cnpj,
+                email = :email,
+                telefone = :telefone,
+                ativo = :ativo,
+                qtde_ap_andar = :qtde_ap_andar,
+                escrita_bloco = :escrita_bloco,
+                qtde_ap_bloco = :qtde_ap_bloco,
+                qtde_blocos = :qtde_blocos,
+                modelo_fatura = :modelo_fatura,
+                updated_at = now()
+          WHERE id = :id
+          RETURNING
+            id,
+            nome,
+            cnpj,
+            email,
+            telefone,
+            ativo,
+            qtde_ap_andar,
+            escrita_bloco,
+            qtde_ap_bloco,
+            qtde_blocos,
+            modelo_fatura,
+            created_at,
+            updated_at`,
+        {
+          replacements: {
+            id,
+            nome:
+              req.body.nome !== undefined ? String(req.body.nome).trim() : String(registroAtual.nome || ''),
+            cnpj:
+              req.body.cnpj !== undefined
+                ? String(req.body.cnpj || '').replace(/\D/g, '') || null
+                : registroAtual.cnpj,
+            email:
+              req.body.email !== undefined
+                ? String(req.body.email || '').trim().toLowerCase() || null
+                : registroAtual.email,
+            telefone:
+              req.body.telefone !== undefined
+                ? String(req.body.telefone || '').trim() || null
+                : registroAtual.telefone,
+            ativo: req.body.ativo !== undefined ? Boolean(req.body.ativo) : Boolean(registroAtual.ativo),
+            qtde_ap_andar:
+              req.body.qtde_ap_andar !== undefined
+                ? this._toInt(req.body.qtde_ap_andar, null)
+                : this._toInt(registroAtual.qtde_ap_andar, null),
+            escrita_bloco:
+              req.body.escrita_bloco !== undefined
+                ? String(req.body.escrita_bloco || '').trim() || null
+                : registroAtual.escrita_bloco,
+            qtde_ap_bloco:
+              req.body.qtde_ap_bloco !== undefined
+                ? this._toInt(req.body.qtde_ap_bloco, null)
+                : this._toInt(registroAtual.qtde_ap_bloco, null),
+            qtde_blocos:
+              qtdeBlocosBody !== undefined
+                ? this._toInt(qtdeBlocosBody, null)
+                : this._toInt(registroAtual.qtde_blocos, null),
+            modelo_fatura:
+              req.body.modelo_fatura !== undefined
+                ? String(req.body.modelo_fatura || '').trim() || null
+                : registroAtual.modelo_fatura
+          },
+          transaction
+        }
+      );
+
+      if (unidadesBlocoInformadas) {
+        await this._sincronizarUnidadesCondominio(id, unidadesBlocoInformadas, transaction);
+      }
+
+      const data = await this._buscarCondominioComUnidades(id, transaction);
+      await transaction.commit();
+
+      return res.status(200).json({
+        message: 'Condomínio atualizado com sucesso.',
+        data
+      });
+    } catch (error) {
+      await transaction.rollback();
+      return res.status(500).json({
+        message: 'Falha ao atualizar condomínio.',
+        detail: error.message
+      });
+    }
   }
 
   async listarMenuDinamico(req, res) {
@@ -800,11 +1273,19 @@ class CondominioController {
   async listarMoradores(req, res) {
     try {
       const idCondominioToken = this._toInt(req.id_condominio, null);
-      if (!idCondominioToken) {
+      const idPerfilToken = this._toInt(req.IdPerfil, null);
+      const ehAdmin = idPerfilToken === 1;
+
+      if (!ehAdmin && !idCondominioToken) {
         return res.status(403).json({
           message: 'Token sem id_condominio para listar moradores.'
         });
       }
+
+      const replacementsBase = {
+        eh_admin: ehAdmin,
+        id_condominio: idCondominioToken
+      };
 
       const page = Math.max(this._toInt(req.query.page, 1), 1);
       const pageSize = Math.min(Math.max(this._toInt(req.query.pageSize, 25), 1), 100);
@@ -812,35 +1293,25 @@ class CondominioController {
 
       const totalRows = await postgres.query(
         `SELECT COUNT(*)::int AS total
-           FROM "condominio-bh"."tb-usuarios"
-          WHERE id_condominio = :id_condominio`,
+           FROM "condominio-bh"."tb-usuarios" tu
+          WHERE (
+            :eh_admin = true
+            OR (
+              tu.id_condominio = :id_condominio
+              AND COALESCE(tu.tipo_perfil_id::text, '0') <> '1'
+            )
+          )`,
         {
-          replacements: { id_condominio: idCondominioToken },
+          replacements: replacementsBase,
           type: QueryTypes.SELECT
         }
       );
 
       const rows = await postgres.query(
-        `WITH regulamento_ativo AS (
-            SELECT r.id
-              FROM "condominio-bh".tb_regulamento r
-             WHERE r.id_condominio = :id_condominio
-               AND r.ativo = true
-             ORDER BY r.publicado_em DESC, r.id DESC
-             LIMIT 1
-          ),
-          aceite_ativo AS (
-            SELECT
-              a.id_usuario,
-              MAX(a.aceito_em) AS aceito_em
-            FROM "condominio-bh".tb_regulamento_aceite a
-            INNER JOIN regulamento_ativo ra
-               ON ra.id = a.id_regulamento
-            GROUP BY a.id_usuario
-          )
-          SELECT
+        `SELECT
             tu.id,
             tu.id_condominio,
+            tc.nome AS nome_condominio,
             tu.nome,
             tu.sobrenome,
             tu.cpf,
@@ -854,20 +1325,56 @@ class CondominioController {
             tu.bloco,
             tu.created_at,
             tu.updated_at,
-            ra.id AS id_regulamento_ativo,
-            CASE WHEN aa.aceito_em IS NOT NULL THEN true ELSE false END AS aceitou_regulamento_ativo,
-            aa.aceito_em AS aceite_regulamento_ativo_em
+            (
+              SELECT r.id
+                FROM "condominio-bh".tb_regulamento r
+               WHERE r.id_condominio = tu.id_condominio
+                 AND r.ativo = true
+               ORDER BY r.publicado_em DESC, r.id DESC
+               LIMIT 1
+            ) AS id_regulamento_ativo,
+            CASE
+              WHEN (
+                SELECT MAX(a.aceito_em)
+                  FROM "condominio-bh".tb_regulamento_aceite a
+                 WHERE a.id_usuario = tu.id
+                   AND a.id_regulamento = (
+                     SELECT r2.id
+                       FROM "condominio-bh".tb_regulamento r2
+                      WHERE r2.id_condominio = tu.id_condominio
+                        AND r2.ativo = true
+                      ORDER BY r2.publicado_em DESC, r2.id DESC
+                      LIMIT 1
+                   )
+              ) IS NOT NULL THEN true ELSE false END AS aceitou_regulamento_ativo,
+            (
+              SELECT MAX(a.aceito_em)
+                FROM "condominio-bh".tb_regulamento_aceite a
+               WHERE a.id_usuario = tu.id
+                 AND a.id_regulamento = (
+                   SELECT r3.id
+                     FROM "condominio-bh".tb_regulamento r3
+                    WHERE r3.id_condominio = tu.id_condominio
+                      AND r3.ativo = true
+                    ORDER BY r3.publicado_em DESC, r3.id DESC
+                    LIMIT 1
+                 )
+            ) AS aceite_regulamento_ativo_em
           FROM "condominio-bh"."tb-usuarios" tu
-          LEFT JOIN regulamento_ativo ra
-            ON true
-          LEFT JOIN aceite_ativo aa
-            ON aa.id_usuario = tu.id
-          WHERE tu.id_condominio = :id_condominio
+          LEFT JOIN "condominio-bh"."tb-condominios" tc
+            ON tc.id = tu.id_condominio
+          WHERE (
+            :eh_admin = true
+            OR (
+              tu.id_condominio = :id_condominio
+              AND COALESCE(tu.tipo_perfil_id::text, '0') <> '1'
+            )
+          )
           ORDER BY tu.id DESC
           LIMIT :limit OFFSET :offset`,
         {
           replacements: {
-            id_condominio: idCondominioToken,
+            ...replacementsBase,
             limit: pageSize,
             offset
           },
@@ -928,7 +1435,38 @@ class CondominioController {
       } = req.body;
 
       const cpfNumerico = String(cpf || '').replace(/\D/g, '');
-      const cpfLimpo = cpfNumerico || '';
+      let cpfLimpo = cpfNumerico || null;
+
+      if (!cpfLimpo) {
+        for (let tentativas = 0; tentativas < 8; tentativas += 1) {
+          const base = `${Date.now()}${Math.floor(Math.random() * 1000)}`;
+          const cpfGerado = base.replace(/\D/g, '').slice(-11).padStart(11, '0');
+
+          const existente = await postgres.query(
+            `SELECT id
+               FROM "condominio-bh"."tb-usuarios"
+              WHERE cpf = :cpf
+              LIMIT 1`,
+            {
+              replacements: { cpf: cpfGerado },
+              type: QueryTypes.SELECT
+            }
+          );
+
+          if (!existente || existente.length === 0) {
+            cpfLimpo = cpfGerado;
+            break;
+          }
+        }
+      }
+
+      if (!cpfLimpo) {
+        return res.status(500).json({
+          message: 'Falha ao criar usuário.',
+          detail: 'Não foi possível gerar CPF técnico para cadastro sem CPF.'
+        });
+      }
+
       const emailNormalizado = email ? String(email).trim().toLowerCase() : null;
 
       let duplicado = [];
@@ -1333,6 +1871,13 @@ class CondominioController {
         periodo_manha,
         periodo_tarde,
         periodo_noite,
+        segunda,
+        terca,
+        quarta,
+        quinta,
+        sexta,
+        sabado,
+        domingo,
         periodo_modo,
         taxa_reserva
       } = req.body;
@@ -1351,6 +1896,13 @@ class CondominioController {
           periodo_manha,
           periodo_tarde,
           periodo_noite,
+          segunda,
+          terca,
+          quarta,
+          quinta,
+          sexta,
+          sabado,
+          domingo,
           periodo_modo,
           taxa_reserva,
           created_at,
@@ -1368,6 +1920,13 @@ class CondominioController {
           :periodo_manha,
           :periodo_tarde,
           :periodo_noite,
+          :segunda,
+          :terca,
+          :quarta,
+          :quinta,
+          :sexta,
+          :sabado,
+          :domingo,
           :periodo_modo,
           :taxa_reserva,
           now(),
@@ -1388,6 +1947,13 @@ class CondominioController {
             periodo_manha: periodo_manha ?? 0,
             periodo_tarde: periodo_tarde ?? 0,
             periodo_noite: periodo_noite ?? 0,
+            segunda: segunda ?? 0,
+            terca: terca ?? 0,
+            quarta: quarta ?? 0,
+            quinta: quinta ?? 0,
+            sexta: sexta ?? 0,
+            sabado: sabado ?? 0,
+            domingo: domingo ?? 0,
             periodo_modo: periodo_modo || null,
             taxa_reserva: taxa_reserva || null
           }
@@ -1432,6 +1998,13 @@ class CondominioController {
         periodo_manha,
         periodo_tarde,
         periodo_noite,
+        segunda,
+        terca,
+        quarta,
+        quinta,
+        sexta,
+        sabado,
+        domingo,
         periodo_modo,
         taxa_reserva
       } = req.body;
@@ -1449,6 +2022,13 @@ class CondominioController {
                     periodo_manha = :periodo_manha,
                     periodo_tarde = :periodo_tarde,
                     periodo_noite = :periodo_noite,
+                segunda = :segunda,
+                terca = :terca,
+                quarta = :quarta,
+                quinta = :quinta,
+                sexta = :sexta,
+                sabado = :sabado,
+                domingo = :domingo,
                 periodo_modo = :periodo_modo,
                 taxa_reserva = :taxa_reserva,
                 updated_at = now()
@@ -1470,6 +2050,13 @@ class CondominioController {
             periodo_manha: periodo_manha ?? 0,
             periodo_tarde: periodo_tarde ?? 0,
             periodo_noite: periodo_noite ?? 0,
+            segunda: segunda ?? 0,
+            terca: terca ?? 0,
+            quarta: quarta ?? 0,
+            quinta: quinta ?? 0,
+            sexta: sexta ?? 0,
+            sabado: sabado ?? 0,
+            domingo: domingo ?? 0,
             periodo_modo: periodo_modo || null,
             taxa_reserva: taxa_reserva || null
           }
@@ -1534,7 +2121,10 @@ class CondominioController {
   async listarEspacosPaginado(req, res) {
     try {
       const idCondominioToken = this._toInt(req.id_condominio, null);
-      if (!idCondominioToken) {
+      const idPerfilToken = this._toInt(req.IdPerfil, null);
+      const ehAdmin = idPerfilToken === 1;
+
+      if (!ehAdmin && !idCondominioToken) {
         return res.status(403).json({
           message: 'Token sem id_condominio para listar espaços.'
         });
@@ -1552,17 +2142,23 @@ class CondominioController {
             ? ['true', '1'].includes(req.query.ativo.toLowerCase())
             : null;
 
-      const whereParts = ['id_condominio = :idCondominio'];
-      const baseReplacements = { idCondominio: idCondominioToken };
+      const whereParts = [];
+      const baseReplacements = {};
+      if (!ehAdmin) {
+        whereParts.push('e.id_condominio = :idCondominio');
+        baseReplacements.idCondominio = idCondominioToken;
+      }
       if (filtroAtivo !== null) {
-        whereParts.push('ativo = :ativo');
+        whereParts.push('e.ativo = :ativo');
         baseReplacements.ativo = filtroAtivo;
       }
-      const whereClause = whereParts.join(' AND ');
+      const whereClause = whereParts.length > 0 ? whereParts.join(' AND ') : '1 = 1';
 
       const totalRows = await postgres.query(
         `SELECT COUNT(*)::int AS total
-           FROM "condominio-bh".tb_espaco
+           FROM "condominio-bh".tb_espaco e
+           LEFT JOIN "condominio-bh"."tb-condominios" c
+             ON c.id = e.id_condominio
           WHERE ${whereClause}`,
         {
           replacements: baseReplacements,
@@ -1571,8 +2167,10 @@ class CondominioController {
       );
 
       const data = await postgres.query(
-        `SELECT *
-           FROM "condominio-bh".tb_espaco
+        `SELECT e.*, c.nome AS nome_condominio
+           FROM "condominio-bh".tb_espaco e
+           LEFT JOIN "condominio-bh"."tb-condominios" c
+             ON c.id = e.id_condominio
           WHERE ${whereClause}
           ORDER BY ${orderClause}
           LIMIT :limit OFFSET :offset`,
