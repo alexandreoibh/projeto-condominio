@@ -3151,7 +3151,9 @@ class CondominioController {
       }
 
       if (req.query.q !== undefined && String(req.query.q).trim() !== '') {
-        whereParts.push('(r.titulo ILIKE :q OR r.observacao ILIKE :q OR r.documento_salvo ILIKE :q)');
+        whereParts.push(
+          '(r.titulo ILIKE :q OR r.observacao ILIKE :q OR r.documento_salvo ILIKE :q OR r.tipo ILIKE :q OR r.descricao_regulamento ILIKE :q)'
+        );
         replacements.q = `%${String(req.query.q).trim()}%`;
       }
 
@@ -3173,6 +3175,8 @@ class CondominioController {
             r.id_condominio,
             r.titulo,
             r.documento_salvo,
+            r.tipo AS tipo_regulamento,
+            r.descricao_regulamento,
             r.publicado_em,
             r.publicado_por,
             tu.nome AS nome,
@@ -3229,6 +3233,8 @@ class CondominioController {
             r.id_condominio,
             r.titulo,
             r.documento_salvo,
+            r.tipo AS tipo_regulamento,
+            r.descricao_regulamento,
             r.publicado_em,
             r.publicado_por,
             tu.nome AS nome,
@@ -3286,6 +3292,8 @@ class CondominioController {
             r.id_condominio,
             r.titulo,
             r.documento_salvo,
+            r.tipo AS tipo_regulamento,
+            r.descricao_regulamento,
             r.publicado_em,
             r.publicado_por,
             tu.nome AS nome,
@@ -3471,6 +3479,8 @@ class CondominioController {
             r.id_condominio,
             r.titulo,
             r.documento_salvo,
+            r.tipo AS tipo_regulamento,
+            r.descricao_regulamento,
             r.publicado_em,
             r.publicado_por,
             tu.nome AS nome,
@@ -3515,10 +3525,14 @@ class CondominioController {
         }
       );
 
+      const moradorDeuAceite = Boolean(aceiteRows && aceiteRows.length > 0);
+
       return res.status(200).json({
+        morador_deu_aceite: moradorDeuAceite,
         data: {
           regulamento: regulamentoAtivo,
-          aceitou: Boolean(aceiteRows && aceiteRows.length > 0),
+          aceitou: moradorDeuAceite,
+          morador_deu_aceite: moradorDeuAceite,
           aceite: aceiteRows && aceiteRows.length > 0 ? aceiteRows[0] : null
         }
       });
@@ -3922,6 +3936,14 @@ class CondominioController {
           : null;
       const observacao =
         req.body.observacao !== undefined ? (req.body.observacao ? String(req.body.observacao).trim() : null) : null;
+      const tipoInput = req.body.tipo !== undefined ? req.body.tipo : req.body.tipo_regulamento;
+      const tipo = tipoInput !== undefined ? (tipoInput ? String(tipoInput).trim() : null) : null;
+      const descricaoRegulamento =
+        req.body.descricao_regulamento !== undefined
+          ? req.body.descricao_regulamento
+            ? String(req.body.descricao_regulamento).trim()
+            : null
+          : null;
       const ativo = req.body.ativo === undefined ? true : Boolean(req.body.ativo);
 
       let inserted;
@@ -3950,7 +3972,9 @@ class CondominioController {
               publicado_em,
               publicado_por,
               ativo,
-              observacao
+              observacao,
+              tipo,
+              descricao_regulamento
           ) VALUES (
               :id_condominio,
               :titulo,
@@ -3958,7 +3982,9 @@ class CondominioController {
               now(),
               :publicado_por,
               :ativo,
-              :observacao
+              :observacao,
+              :tipo,
+              :descricao_regulamento
           )
           RETURNING *`,
           {
@@ -3968,7 +3994,9 @@ class CondominioController {
               documento_salvo: documentoSalvo,
               publicado_por: idUsuarioToken,
               ativo,
-              observacao
+              observacao,
+              tipo,
+              descricao_regulamento: descricaoRegulamento
             },
             transaction
           }
@@ -4043,6 +4071,14 @@ class CondominioController {
               ? String(req.body.observacao).trim()
               : null
             : atual.observacao;
+        const tipoInput = req.body.tipo !== undefined ? req.body.tipo : req.body.tipo_regulamento;
+        const tipo = tipoInput !== undefined ? (tipoInput ? String(tipoInput).trim() : null) : atual.tipo;
+        const descricaoRegulamento =
+          req.body.descricao_regulamento !== undefined
+            ? req.body.descricao_regulamento
+              ? String(req.body.descricao_regulamento).trim()
+              : null
+            : atual.descricao_regulamento;
 
         if (ativo) {
           await postgres.query(
@@ -4067,7 +4103,9 @@ class CondominioController {
                 documento_salvo = :documento_salvo,
                   publicado_por = :publicado_por,
                   ativo = :ativo,
-                  observacao = :observacao
+                  observacao = :observacao,
+                  tipo = :tipo,
+                  descricao_regulamento = :descricao_regulamento
             WHERE id = :id
               AND id_condominio = :id_condominio
           RETURNING *`,
@@ -4079,7 +4117,9 @@ class CondominioController {
               documento_salvo: documentoSalvo,
               publicado_por: idUsuarioToken || atual.publicado_por,
               ativo,
-              observacao
+              observacao,
+              tipo,
+              descricao_regulamento: descricaoRegulamento
             },
             transaction
           }

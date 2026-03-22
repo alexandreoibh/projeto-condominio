@@ -591,8 +591,20 @@ router.post(
 			.optional({ nullable: true })
 			.isBoolean()
 			.withMessage('Campo ativo deve ser booleano.'),
+		body('tipo')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 150 })
+			.withMessage('Campo tipo deve ter no máximo 150 caracteres.'),
+		body('tipo_regulamento')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 150 })
+			.withMessage('Campo tipo_regulamento deve ter no máximo 150 caracteres.'),
+		body('descricao_regulamento')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 255 })
+			.withMessage('Campo descricao_regulamento deve ter no máximo 255 caracteres.'),
 		body('observacao')
-			.optional({ nullable: true })
+			.optional({ nullable: true, checkFalsy: true })
 			.isLength({ max: 4000 })
 			.withMessage('Campo observacao deve ter no máximo 4000 caracteres.')
 	],
@@ -617,8 +629,20 @@ router.put(
 			.optional({ nullable: true })
 			.isBoolean()
 			.withMessage('Campo ativo deve ser booleano.'),
+		body('tipo')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 150 })
+			.withMessage('Campo tipo deve ter no máximo 150 caracteres.'),
+		body('tipo_regulamento')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 150 })
+			.withMessage('Campo tipo_regulamento deve ter no máximo 150 caracteres.'),
+		body('descricao_regulamento')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 255 })
+			.withMessage('Campo descricao_regulamento deve ter no máximo 255 caracteres.'),
 		body('observacao')
-			.optional({ nullable: true })
+			.optional({ nullable: true, checkFalsy: true })
 			.isLength({ max: 4000 })
 			.withMessage('Campo observacao deve ter no máximo 4000 caracteres.')
 	],
