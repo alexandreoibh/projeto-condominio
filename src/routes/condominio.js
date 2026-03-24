@@ -1,4 +1,5 @@
 const express = require('express');
+const crypto = require('crypto');
 const router = express.Router();
 const { body, param, query } = require('express-validator');
 const CondominioController = require('../controllers/condominioController');
@@ -6,6 +7,27 @@ const auth = require('../helpers/auth');
 const validate = require('../helpers/validate');
 
 const controller = new CondominioController();
+
+const publicRegistrationKeyGuard = (req, res, next) => {
+	const expectedKey = process.env.PUBLIC_REGISTRATION_KEY;
+	const providedKey = req.header('X-Public-Registration-Key');
+
+	if (!expectedKey || !providedKey) {
+		return res.status(401).json({ message: 'Não autorizado.' });
+	}
+
+	const expectedBuffer = Buffer.from(String(expectedKey));
+	const providedBuffer = Buffer.from(String(providedKey));
+
+	if (
+		expectedBuffer.length !== providedBuffer.length ||
+		!crypto.timingSafeEqual(expectedBuffer, providedBuffer)
+	) {
+		return res.status(401).json({ message: 'Não autorizado.' });
+	}
+
+	return next();
+};
 
 router.get('/status', controller.status.bind(controller));
 router.get('/perfis', auth, controller.listarPerfis.bind(controller));
@@ -771,6 +793,59 @@ router.get(
 	[param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.')],
 	validate,
 	controller.buscarUsuarioPorId.bind(controller)
+);
+
+router.post(
+	'/usuarios/cadastro-por-convite',
+	publicRegistrationKeyGuard,
+	[
+		body('invite_token')
+			.notEmpty()
+			.withMessage('Campo invite_token é obrigatório.'),
+		body('nome')
+			.notEmpty()
+			.withMessage('Campo nome é obrigatório.')
+			.bail()
+			.isLength({ max: 120 })
+			.withMessage('Campo nome deve ter no máximo 120 caracteres.'),
+		body('password')
+			.notEmpty()
+			.withMessage('Campo password é obrigatório.')
+			.bail()
+			.isLength({ min: 6 })
+			.withMessage('Campo password deve ter no mínimo 6 caracteres.'),
+		body('email')
+			.optional({ nullable: true, checkFalsy: true })
+			.isEmail()
+			.withMessage('Campo email inválido.'),
+		body('cpf')
+			.optional({ nullable: true, checkFalsy: true })
+			.custom((value) => {
+				const cpf = String(value).replace(/\D/g, '');
+				if (cpf.length !== 11) {
+					throw new Error('CPF deve conter 11 dígitos.');
+				}
+				return true;
+			}),
+		body('apartamento')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 50 })
+			.withMessage('Campo apartamento deve ter no máximo 50 caracteres.'),
+		body('bloco')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 50 })
+			.withMessage('Campo bloco deve ter no máximo 50 caracteres.'),
+		body('id_condominio')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Campo id_condominio deve ser numérico e maior que zero.'),
+		body('condominio_id')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Campo condominio_id deve ser numérico e maior que zero.')
+	],
+	validate,
+	controller.cadastrarUsuarioPorConvite.bind(controller)
 );
 
 router.post(

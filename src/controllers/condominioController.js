@@ -1,6 +1,16 @@
 const postgres = require('../database/postgres');
 const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 const { QueryTypes } = require('sequelize');
+
+const INVITE_TOKEN_SECRET = process.env.INVITE_TOKEN_SECRET || process.env.JWT_SECRET || 'dev_invite_secret_change_me';
+const PUBLIC_REGISTER_RATE_WINDOW_MS = 15 * 60 * 1000;
+const PUBLIC_REGISTER_RATE_MAX_ATTEMPTS = 5;
+const INVITE_TOKEN_USAGE_TTL_MS = 24 * 60 * 60 * 1000;
+
+const publicRegistrationAttempts = new Map();
+const usedInviteTokens = new Map();
 
 class CondominioController {
   _toInt(value, fallback) {
@@ -53,6 +63,76 @@ class CondominioController {
       .replace(/[\u0300-\u036f]/g, '')
       .trim()
       .toLowerCase();
+  }
+
+  _cleanupPublicRegistrationAttempts(now = Date.now()) {
+    for (const [key, bucket] of publicRegistrationAttempts.entries()) {
+      if (!bucket || now - bucket.windowStart > PUBLIC_REGISTER_RATE_WINDOW_MS) {
+        publicRegistrationAttempts.delete(key);
+      }
+    }
+  }
+
+  _consumePublicRegistrationAttempt(ip, email) {
+    const now = Date.now();
+    this._cleanupPublicRegistrationAttempts(now);
+
+    const key = `${ip || 'ip-desconhecido'}|${email || 'sem-email'}`;
+    const existing = publicRegistrationAttempts.get(key);
+
+    if (!existing) {
+      publicRegistrationAttempts.set(key, { count: 1, windowStart: now });
+      return { allowed: true };
+    }
+
+    if (now - existing.windowStart > PUBLIC_REGISTER_RATE_WINDOW_MS) {
+      publicRegistrationAttempts.set(key, { count: 1, windowStart: now });
+      return { allowed: true };
+    }
+
+    if (existing.count >= PUBLIC_REGISTER_RATE_MAX_ATTEMPTS) {
+      const retryAfterMs = PUBLIC_REGISTER_RATE_WINDOW_MS - (now - existing.windowStart);
+      return {
+        allowed: false,
+        retryAfterSeconds: Math.max(Math.ceil(retryAfterMs / 1000), 1)
+      };
+    }
+
+    existing.count += 1;
+    publicRegistrationAttempts.set(key, existing);
+    return { allowed: true };
+  }
+
+  _cleanupUsedInviteTokens(now = Date.now()) {
+    for (const [key, expiresAt] of usedInviteTokens.entries()) {
+      if (!expiresAt || now >= expiresAt) {
+        usedInviteTokens.delete(key);
+      }
+    }
+  }
+
+  _markInviteTokenAsUsed(key, ttlMs = INVITE_TOKEN_USAGE_TTL_MS) {
+    const expiresAt = Date.now() + ttlMs;
+    usedInviteTokens.set(key, expiresAt);
+  }
+
+  _isInviteTokenAlreadyUsed(key) {
+    this._cleanupUsedInviteTokens();
+    return usedInviteTokens.has(key);
+  }
+
+  _normalizarTextoOuNull(value) {
+    if (value === undefined || value === null) {
+      return null;
+    }
+
+    const text = String(value).trim();
+    return text === '' ? null : text;
+  }
+
+  _normalizarEmailOuNull(value) {
+    const text = this._normalizarTextoOuNull(value);
+    return text ? text.toLowerCase() : null;
   }
 
   async _podeVisualizarDadosMorador(req) {
@@ -1826,6 +1906,250 @@ class CondominioController {
     } catch (error) {
       return res.status(500).json({
         message: 'Falha ao criar usuário.',
+        detail: error.message
+      });
+    }
+  }
+
+  async cadastrarUsuarioPorConvite(req, res) {
+    try {
+      const inviteToken = this._normalizarTextoOuNull(req.body.invite_token);
+      if (!inviteToken) {
+        return res.status(422).json({
+          message: 'Campo invite_token é obrigatório.'
+        });
+      }
+
+      const requestIp = this._resolveRequestIp(req) || 'ip-desconhecido';
+      const emailRate = this._normalizarEmailOuNull(req.body.email) || 'sem-email';
+      const rateLimit = this._consumePublicRegistrationAttempt(requestIp, emailRate);
+
+      if (!rateLimit.allowed) {
+        return res.status(422).json({
+          message: 'Muitas tentativas de cadastro por convite. Tente novamente em instantes.',
+          retry_after_seconds: rateLimit.retryAfterSeconds
+        });
+      }
+
+      let invitePayload;
+      try {
+        invitePayload = jwt.verify(inviteToken, INVITE_TOKEN_SECRET, { maxAge: '24h' });
+      } catch (tokenError) {
+        return res.status(422).json({
+          message: 'invite_token inválido ou expirado.'
+        });
+      }
+
+      const inviteTokenHash = crypto.createHash('sha256').update(inviteToken).digest('hex');
+      const inviteJti = this._normalizarTextoOuNull(invitePayload.jti);
+      const inviteJtiKey = inviteJti ? `jti:${inviteJti}` : null;
+
+      if (this._isInviteTokenAlreadyUsed(inviteTokenHash) || (inviteJtiKey && this._isInviteTokenAlreadyUsed(inviteJtiKey))) {
+        return res.status(422).json({
+          message: 'invite_token já utilizado.'
+        });
+      }
+
+      const idCondominioToken = this._toInt(
+        invitePayload.id_condominio ?? invitePayload.condominio_id ?? invitePayload.idCondominio,
+        null
+      );
+      const apartamentoToken = this._normalizarTextoOuNull(
+        invitePayload.apartamento ?? invitePayload.encomenda_apartamento
+      );
+      const blocoToken = this._normalizarTextoOuNull(invitePayload.bloco ?? invitePayload.encomenda_bloco);
+      const emailToken = this._normalizarEmailOuNull(invitePayload.email ?? invitePayload.email_usuario);
+
+      if (!idCondominioToken || !apartamentoToken || !blocoToken) {
+        return res.status(422).json({
+          message: 'invite_token inválido para cadastro: dados de condomínio, apartamento ou bloco ausentes.'
+        });
+      }
+
+      const idCondominioBody = this._toInt(req.body.id_condominio ?? req.body.condominio_id, null);
+      const apartamentoBody = this._normalizarTextoOuNull(req.body.apartamento);
+      const blocoBody = this._normalizarTextoOuNull(req.body.bloco);
+      const emailBody = this._normalizarEmailOuNull(req.body.email);
+
+      if (idCondominioBody && idCondominioBody !== idCondominioToken) {
+        return res.status(422).json({
+          message: 'Dados inválidos para cadastro por convite.'
+        });
+      }
+
+      if (apartamentoBody && apartamentoBody !== apartamentoToken) {
+        return res.status(422).json({
+          message: 'Dados inválidos para cadastro por convite.'
+        });
+      }
+
+      if (blocoBody && blocoBody !== blocoToken) {
+        return res.status(422).json({
+          message: 'Dados inválidos para cadastro por convite.'
+        });
+      }
+
+      if (emailToken && emailBody && emailBody !== emailToken) {
+        return res.status(422).json({
+          message: 'Dados inválidos para cadastro por convite.'
+        });
+      }
+
+      const emailCadastro = emailBody || emailToken;
+      const cpfNumerico = String(req.body.cpf || '').replace(/\D/g, '');
+      let cpfLimpo = cpfNumerico || null;
+
+      if (!cpfLimpo) {
+        for (let tentativas = 0; tentativas < 8; tentativas += 1) {
+          const base = `${Date.now()}${Math.floor(Math.random() * 1000)}`;
+          const cpfGerado = base.replace(/\D/g, '').slice(-11).padStart(11, '0');
+
+          const existenteCpf = await postgres.query(
+            `SELECT id
+               FROM "condominio-bh"."tb-usuarios"
+              WHERE cpf = :cpf
+              LIMIT 1`,
+            {
+              replacements: { cpf: cpfGerado },
+              type: QueryTypes.SELECT
+            }
+          );
+
+          if (!existenteCpf || existenteCpf.length === 0) {
+            cpfLimpo = cpfGerado;
+            break;
+          }
+        }
+      }
+
+      if (!cpfLimpo) {
+        return res.status(422).json({
+          message: 'Dados inválidos para cadastro por convite.'
+        });
+      }
+
+      let duplicado = [];
+      if (cpfLimpo || emailCadastro) {
+        duplicado = await postgres.query(
+          `SELECT id, cpf, email
+             FROM "condominio-bh"."tb-usuarios"
+            WHERE (:cpf IS NOT NULL AND cpf = :cpf)
+               OR (:email IS NOT NULL AND lower(email) = :email)
+            LIMIT 1`,
+          {
+            replacements: {
+              cpf: cpfLimpo,
+              email: emailCadastro
+            },
+            type: QueryTypes.SELECT
+          }
+        );
+      }
+
+      if (duplicado && duplicado.length > 0) {
+        return res.status(422).json({
+          message: 'Dados inválidos para cadastro por convite.'
+        });
+      }
+
+      const senha_hash = await bcrypt.hash(String(req.body.password), 10);
+
+      const insert = await postgres.query(
+        `INSERT INTO "condominio-bh"."tb-usuarios" (
+            id_condominio,
+            nome,
+            sobrenome,
+            cpf,
+            email,
+            telefone,
+            data_nascimento,
+            genero,
+            tipo_morador,
+            tipo_perfil_id,
+            tipo,
+            status,
+            senha_hash,
+            endereco_logradouro,
+            endereco_numero,
+            endereco_complemento,
+            endereco_bairro,
+            endereco_cidade,
+            endereco_uf,
+            endereco_cep,
+            apartamento,
+            bloco,
+            observacoes,
+            created_at,
+            updated_at
+        ) VALUES (
+            :id_condominio,
+            :nome,
+            :sobrenome,
+            :cpf,
+            :email,
+            :telefone,
+            :data_nascimento,
+            :genero,
+            :tipo_morador,
+            :tipo_perfil_id,
+            :tipo,
+            :status,
+            :senha_hash,
+            :endereco_logradouro,
+            :endereco_numero,
+            :endereco_complemento,
+            :endereco_bairro,
+            :endereco_cidade,
+            :endereco_uf,
+            :endereco_cep,
+            :apartamento,
+            :bloco,
+            :observacoes,
+            now(),
+            now()
+        )
+        RETURNING id, id_condominio, nome, sobrenome, cpf, email, telefone, tipo_morador, tipo_perfil_id, tipo, status, apartamento, bloco, created_at`,
+        {
+          replacements: {
+            id_condominio: idCondominioToken,
+            nome: String(req.body.nome).trim(),
+            sobrenome: this._normalizarTextoOuNull(req.body.sobrenome),
+            cpf: cpfLimpo,
+            email: emailCadastro,
+            telefone: this._normalizarTextoOuNull(req.body.telefone),
+            data_nascimento: req.body.data_nascimento || null,
+            genero: this._normalizarTextoOuNull(req.body.genero),
+            tipo_morador: this._normalizarTextoOuNull(req.body.tipo_morador),
+            tipo_perfil_id: 2,
+            tipo: 'morador',
+            status: this._normalizarTextoOuNull(req.body.status) || 'ativo',
+            senha_hash,
+            endereco_logradouro: this._normalizarTextoOuNull(req.body.endereco_logradouro),
+            endereco_numero: this._normalizarTextoOuNull(req.body.endereco_numero),
+            endereco_complemento: this._normalizarTextoOuNull(req.body.endereco_complemento),
+            endereco_bairro: this._normalizarTextoOuNull(req.body.endereco_bairro),
+            endereco_cidade: this._normalizarTextoOuNull(req.body.endereco_cidade),
+            endereco_uf: this._normalizarTextoOuNull(req.body.endereco_uf),
+            endereco_cep: this._normalizarTextoOuNull(req.body.endereco_cep),
+            apartamento: apartamentoToken,
+            bloco: blocoToken,
+            observacoes: this._normalizarTextoOuNull(req.body.observacoes)
+          }
+        }
+      );
+
+      this._markInviteTokenAsUsed(inviteTokenHash);
+      if (inviteJtiKey) {
+        this._markInviteTokenAsUsed(inviteJtiKey);
+      }
+
+      return res.status(201).json({
+        message: 'Usuário criado com sucesso por convite.',
+        data: insert[0][0]
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao criar usuário por convite.',
         detail: error.message
       });
     }
