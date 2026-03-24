@@ -135,6 +135,67 @@ class CondominioController {
     return text ? text.toLowerCase() : null;
   }
 
+  _decodeBase64UrlJson(value) {
+    const normalized = String(value || '').replace(/-/g, '+').replace(/_/g, '/');
+    const padding = normalized.length % 4;
+    const base64 = padding ? `${normalized}${'='.repeat(4 - padding)}` : normalized;
+    const json = Buffer.from(base64, 'base64').toString('utf8');
+    return JSON.parse(json);
+  }
+
+  _timingSafeHexEqual(a, b) {
+    const aBuffer = Buffer.from(String(a || ''), 'hex');
+    const bBuffer = Buffer.from(String(b || ''), 'hex');
+
+    if (aBuffer.length !== bBuffer.length) {
+      return false;
+    }
+
+    return crypto.timingSafeEqual(aBuffer, bBuffer);
+  }
+
+  _verifyInviteToken(token) {
+    try {
+      return jwt.verify(token, INVITE_TOKEN_SECRET, { maxAge: '24h' });
+    } catch (jwtError) {
+      const parts = String(token || '').split('.');
+
+      if (parts.length !== 2) {
+        throw jwtError;
+      }
+
+      const [payloadPart, signaturePart] = parts;
+      const payload = this._decodeBase64UrlJson(payloadPart);
+
+      if (!payload || typeof payload !== 'object') {
+        throw new Error('invite_token payload inválido.');
+      }
+
+      const expectedSignature = crypto
+        .createHmac('sha256', INVITE_TOKEN_SECRET)
+        .update(payloadPart)
+        .digest('base64url');
+
+      if (!this._timingSafeHexEqual(Buffer.from(signaturePart).toString('hex'), Buffer.from(expectedSignature).toString('hex'))) {
+        throw new Error('invite_token assinatura inválida.');
+      }
+
+      const nowSeconds = Math.floor(Date.now() / 1000);
+      const issuedAt = this._toInt(payload.iat, null);
+      const expiresAt = this._toInt(payload.exp, null);
+
+      if (expiresAt && nowSeconds > expiresAt) {
+        throw new Error('invite_token expirado.');
+      }
+
+      if (issuedAt && nowSeconds - issuedAt > 24 * 60 * 60) {
+        throw new Error('invite_token expirado.');
+      }
+
+      return payload;
+    }
+  }
+
   async _podeVisualizarDadosMorador(req) {
     const perfilToken = this._normalizarPerfil(req.nomePerfil);
     if (perfilToken === 'admin' || perfilToken === 'sindico') {
@@ -1933,7 +1994,7 @@ class CondominioController {
 
       let invitePayload;
       try {
-        invitePayload = jwt.verify(inviteToken, INVITE_TOKEN_SECRET, { maxAge: '24h' });
+        invitePayload = this._verifyInviteToken(inviteToken);
       } catch (tokenError) {
         return res.status(422).json({
           message: 'invite_token inválido ou expirado.'
