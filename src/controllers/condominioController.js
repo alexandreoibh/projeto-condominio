@@ -135,6 +135,22 @@ class CondominioController {
     return text ? text.toLowerCase() : null;
   }
 
+  _normalizarNomeCapitalizado(value) {
+    const text = this._normalizarTextoOuNull(value);
+    if (!text) {
+      return null;
+    }
+
+    return text
+      .split(/\s+/)
+      .filter((item) => item)
+      .map((parte) => {
+        const lower = parte.toLowerCase();
+        return lower.charAt(0).toUpperCase() + lower.slice(1);
+      })
+      .join(' ');
+  }
+
   _decodeBase64UrlJson(value) {
     const normalized = String(value || '').replace(/-/g, '+').replace(/_/g, '/');
     const padding = normalized.length % 4;
@@ -2071,6 +2087,15 @@ class CondominioController {
         });
       }
 
+      const apartamentoCadastro = apartamentoBody || apartamentoToken || null;
+      const blocoCadastro = blocoBody || blocoToken || (qtdeBlocosToken === 1 ? '1' : null);
+
+      if (!apartamentoCadastro || !blocoCadastro) {
+        return res.status(422).json({
+          message: 'Dados inválidos para cadastro por convite.'
+        });
+      }
+
       const emailCadastro = emailBody || emailToken;
       const cpfNumerico = String(req.body.cpf || '').replace(/\D/g, '');
       let cpfLimpo = cpfNumerico || null;
@@ -2188,8 +2213,8 @@ class CondominioController {
         {
           replacements: {
             id_condominio: idCondominioToken,
-            nome: String(req.body.nome).trim(),
-            sobrenome: this._normalizarTextoOuNull(req.body.sobrenome),
+            nome: this._normalizarNomeCapitalizado(req.body.nome),
+            sobrenome: this._normalizarNomeCapitalizado(req.body.sobrenome),
             cpf: cpfLimpo,
             email: emailCadastro,
             telefone: this._normalizarTextoOuNull(req.body.telefone),
@@ -2207,8 +2232,8 @@ class CondominioController {
             endereco_cidade: this._normalizarTextoOuNull(req.body.endereco_cidade),
             endereco_uf: this._normalizarTextoOuNull(req.body.endereco_uf),
             endereco_cep: this._normalizarTextoOuNull(req.body.endereco_cep),
-            apartamento: apartamentoToken,
-            bloco: blocoToken,
+            apartamento: apartamentoCadastro,
+            bloco: blocoCadastro,
             observacoes: this._normalizarTextoOuNull(req.body.observacoes)
           }
         }
