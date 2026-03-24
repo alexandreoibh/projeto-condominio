@@ -276,6 +276,15 @@ router.patch(
 );
 router.get('/menu', auth, controller.listarMenuDinamico.bind(controller));
 router.get('/dashboard/tipos', auth, controller.listarDashboardTipos.bind(controller));
+router.get('/dashboard/empresas', auth, controller.listarDashboardEmpresas.bind(controller));
+router.get('/dashboard/titulos', auth, controller.listarDashboardTitulos.bind(controller));
+router.get(
+	'/dashboard/titulos/:id_tipo(\\d+)',
+	auth,
+	[param('id_tipo').isInt({ min: 1 }).withMessage('Parâmetro id_tipo inválido.')],
+	validate,
+	controller.listarDashboardTitulosPorTipo.bind(controller)
+);
 router.get(
 	'/dashboard/tipos/:id(\\d+)',
 	auth,
@@ -396,7 +405,39 @@ router.post(
 		body('exibicao_dashboard')
 			.optional({ nullable: true, checkFalsy: true })
 			.isInt({ min: 0, max: 1 })
-			.withMessage('Campo exibicao_dashboard deve ser 0 ou 1.')
+			.withMessage('Campo exibicao_dashboard deve ser 0 ou 1.'),
+		body('apartamento')
+			.optional({ nullable: true })
+			.isLength({ max: 50 })
+			.withMessage('Campo apartamento deve ter no máximo 50 caracteres.'),
+		body('bloco')
+			.optional({ nullable: true })
+			.isLength({ max: 50 })
+			.withMessage('Campo bloco deve ter no máximo 50 caracteres.'),
+		body('empresa_entrega')
+			.optional({ nullable: true })
+			.isLength({ max: 255 })
+			.withMessage('Campo empresa_entrega deve ter no máximo 255 caracteres.'),
+		body('id_condominio')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Campo id_condominio deve ser numérico e maior que zero.'),
+		body('condominio_id')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Campo condominio_id deve ser numérico e maior que zero.'),
+		body('encomenda_condominio_id')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Campo encomenda_condominio_id deve ser numérico e maior que zero.'),
+		body('encomenda_apartamento')
+			.optional({ nullable: true })
+			.isLength({ max: 50 })
+			.withMessage('Campo encomenda_apartamento deve ter no máximo 50 caracteres.'),
+		body('encomenda_bloco')
+			.optional({ nullable: true })
+			.isLength({ max: 50 })
+			.withMessage('Campo encomenda_bloco deve ter no máximo 50 caracteres.')
 	],
 	validate,
 	controller.criarDashboardRegistro.bind(controller)
@@ -429,7 +470,39 @@ router.put(
 		body('exibicao_dashboard')
 			.optional({ nullable: true, checkFalsy: true })
 			.isInt({ min: 0, max: 1 })
-			.withMessage('Campo exibicao_dashboard deve ser 0 ou 1.')
+			.withMessage('Campo exibicao_dashboard deve ser 0 ou 1.'),
+		body('apartamento')
+			.optional({ nullable: true })
+			.isLength({ max: 50 })
+			.withMessage('Campo apartamento deve ter no máximo 50 caracteres.'),
+		body('bloco')
+			.optional({ nullable: true })
+			.isLength({ max: 50 })
+			.withMessage('Campo bloco deve ter no máximo 50 caracteres.'),
+		body('empresa_entrega')
+			.optional({ nullable: true })
+			.isLength({ max: 255 })
+			.withMessage('Campo empresa_entrega deve ter no máximo 255 caracteres.'),
+		body('id_condominio')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Campo id_condominio deve ser numérico e maior que zero.'),
+		body('condominio_id')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Campo condominio_id deve ser numérico e maior que zero.'),
+		body('encomenda_condominio_id')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Campo encomenda_condominio_id deve ser numérico e maior que zero.'),
+		body('encomenda_apartamento')
+			.optional({ nullable: true })
+			.isLength({ max: 50 })
+			.withMessage('Campo encomenda_apartamento deve ter no máximo 50 caracteres.'),
+		body('encomenda_bloco')
+			.optional({ nullable: true })
+			.isLength({ max: 50 })
+			.withMessage('Campo encomenda_bloco deve ter no máximo 50 caracteres.')
 	],
 	validate,
 	controller.editarDashboardRegistro.bind(controller)

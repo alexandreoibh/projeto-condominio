@@ -738,6 +738,97 @@ class CondominioController {
     }
   }
 
+  async listarDashboardEmpresas(req, res) {
+    try {
+      const data = await postgres.query(
+        `SELECT
+            id,
+            empresa,
+            status
+          FROM "condominio-bh".tb_dashboard_empresas
+          ORDER BY id ASC`,
+        {
+          type: QueryTypes.SELECT
+        }
+      );
+
+      return res.status(200).json({
+        total: data.length,
+        data
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao listar empresas do dashboard.',
+        detail: error.message
+      });
+    }
+  }
+
+  async listarDashboardTitulos(req, res) {
+    try {
+      const data = await postgres.query(
+        `SELECT
+            id,
+            titulo_descricao,
+            status,
+            id_tipo
+          FROM "condominio-bh".tb_dashboard_titulo
+          ORDER BY id ASC`,
+        {
+          type: QueryTypes.SELECT
+        }
+      );
+
+      return res.status(200).json({
+        total: data.length,
+        data
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao listar títulos do dashboard.',
+        detail: error.message
+      });
+    }
+  }
+
+  async listarDashboardTitulosPorTipo(req, res) {
+    try {
+      const idTipo = this._toInt(req.params.id_tipo, null);
+      if (!idTipo) {
+        return res.status(400).json({
+          message: 'Parâmetro id_tipo inválido.'
+        });
+      }
+
+      const data = await postgres.query(
+        `SELECT
+            id,
+            titulo_descricao,
+            status,
+            id_tipo
+          FROM "condominio-bh".tb_dashboard_titulo
+          WHERE id_tipo = :id_tipo
+          ORDER BY id ASC`,
+        {
+          replacements: {
+            id_tipo: idTipo
+          },
+          type: QueryTypes.SELECT
+        }
+      );
+
+      return res.status(200).json({
+        total: data.length,
+        data
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao listar títulos do dashboard por tipo.',
+        detail: error.message
+      });
+    }
+  }
+
   async buscarDashboardTipoPorId(req, res) {
     try {
       const id = this._toInt(req.params.id, null);
@@ -933,12 +1024,40 @@ class CondominioController {
 
   async listarDashboardRegistros(req, res) {
     try {
+      const idPerfilToken = this._toInt(req.IdPerfil, null);
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      const idUsuarioToken = this._toInt(req.idcliente, null);
+      const ehAdmin = idPerfilToken === 1;
+      const ehMorador = idPerfilToken === 2;
+
       const page = Math.max(this._toInt(req.query.page, 1), 1);
       const pageSize = Math.min(Math.max(this._toInt(req.query.pageSize, 25), 1), 100);
       const offset = (page - 1) * pageSize;
 
       const whereParts = ['1 = 1'];
       const replacements = {};
+
+      if (!ehAdmin) {
+        if (!idCondominioToken) {
+          return res.status(403).json({
+            message: 'Token sem id_condominio para listar registros do dashboard.'
+          });
+        }
+
+        whereParts.push('dr.id_condominio = :id_condominio_token');
+        replacements.id_condominio_token = idCondominioToken;
+
+        if (ehMorador) {
+          if (!idUsuarioToken) {
+            return res.status(403).json({
+              message: 'Token sem id de usuário para listar registros do dashboard do morador.'
+            });
+          }
+
+          whereParts.push('dr.id_usuario = :id_usuario_token');
+          replacements.id_usuario_token = idUsuarioToken;
+        }
+      }
 
       const tipo = this._toInt(req.query.tipo, null);
       if (tipo !== null) {
@@ -996,11 +1115,24 @@ class CondominioController {
             dr.prioridade,
             dr.exibicao_dashboard,
             dr.id_usuario,
+            dr.apartamento,
+            dr.bloco,
+            dr.empresa_entrega,
+            de.empresa AS empresa_entrega_nome,
+            dr.id_condominio,
+            c.nome AS nome_condominio,
             dr.created_at,
             dr.updated_at
           FROM "condominio-bh".tb_dashboard_registro dr
           LEFT JOIN "condominio-bh".tb_dashboard_tipo dt
              ON dt.id = dr.tipo
+          LEFT JOIN "condominio-bh".tb_dashboard_empresas de
+             ON de.id = CASE
+               WHEN dr.empresa_entrega::text ~ '^[0-9]+$' THEN dr.empresa_entrega::int
+               ELSE NULL
+             END
+          LEFT JOIN "condominio-bh"."tb-condominios" c
+             ON c.id = dr.id_condominio
           WHERE ${whereClause}
           ORDER BY dr.prioridade DESC, dr.data_referencia DESC, dr.id DESC
           LIMIT :limit OFFSET :offset`,
@@ -1034,9 +1166,40 @@ class CondominioController {
 
   async buscarDashboardRegistroPorId(req, res) {
     try {
+      const idPerfilToken = this._toInt(req.IdPerfil, null);
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      const idUsuarioToken = this._toInt(req.idcliente, null);
+      const ehAdmin = idPerfilToken === 1;
+      const ehMorador = idPerfilToken === 2;
+
       const id = this._toInt(req.params.id, null);
       if (!id) {
         return res.status(400).json({ message: 'Id do registro inválido.' });
+      }
+
+      const whereParts = ['dr.id = :id'];
+      const replacements = { id };
+
+      if (!ehAdmin) {
+        if (!idCondominioToken) {
+          return res.status(403).json({
+            message: 'Token sem id_condominio para buscar registro do dashboard.'
+          });
+        }
+
+        whereParts.push('dr.id_condominio = :id_condominio_token');
+        replacements.id_condominio_token = idCondominioToken;
+
+        if (ehMorador) {
+          if (!idUsuarioToken) {
+            return res.status(403).json({
+              message: 'Token sem id de usuário para buscar registro do dashboard do morador.'
+            });
+          }
+
+          whereParts.push('dr.id_usuario = :id_usuario_token');
+          replacements.id_usuario_token = idUsuarioToken;
+        }
       }
 
       const registro = await postgres.query(
@@ -1056,15 +1219,28 @@ class CondominioController {
             dr.prioridade,
             dr.exibicao_dashboard,
             dr.id_usuario,
+            dr.apartamento,
+            dr.bloco,
+            dr.empresa_entrega,
+            de.empresa AS empresa_entrega_nome,
+            dr.id_condominio,
+            c.nome AS nome_condominio,
             dr.created_at,
             dr.updated_at
           FROM "condominio-bh".tb_dashboard_registro dr
           LEFT JOIN "condominio-bh".tb_dashboard_tipo dt
              ON dt.id = dr.tipo
-          WHERE dr.id = :id
+          LEFT JOIN "condominio-bh".tb_dashboard_empresas de
+             ON de.id = CASE
+               WHEN dr.empresa_entrega::text ~ '^[0-9]+$' THEN dr.empresa_entrega::int
+               ELSE NULL
+             END
+          LEFT JOIN "condominio-bh"."tb-condominios" c
+             ON c.id = dr.id_condominio
+          WHERE ${whereParts.join(' AND ')}
           LIMIT 1`,
         {
-          replacements: { id },
+          replacements,
           type: QueryTypes.SELECT
         }
       );
@@ -1100,6 +1276,10 @@ class CondominioController {
             prioridade,
             exibicao_dashboard,
             id_usuario,
+            apartamento,
+            bloco,
+            empresa_entrega,
+            id_condominio,
             created_at,
             updated_at
         ) VALUES (
@@ -1115,6 +1295,10 @@ class CondominioController {
             :prioridade,
             :exibicao_dashboard,
             :id_usuario,
+            :apartamento,
+            :bloco,
+            :empresa_entrega,
+            :id_condominio,
             now(),
             now()
         )
@@ -1132,7 +1316,31 @@ class CondominioController {
             origem: req.body.origem ? String(req.body.origem).trim() : null,
             prioridade: this._toInt(req.body.prioridade, 0),
             exibicao_dashboard: this._toInt(req.body.exibicao_dashboard, 1),
-            id_usuario: this._toInt(req.body.id_usuario, idUsuarioToken)
+            id_usuario: this._toInt(req.body.id_usuario, idUsuarioToken),
+            apartamento:
+              req.body.apartamento !== undefined
+                ? String(req.body.apartamento || '').trim() || null
+                : req.body.encomenda_apartamento !== undefined
+                  ? String(req.body.encomenda_apartamento || '').trim() || null
+                  : null,
+            bloco:
+              req.body.bloco !== undefined
+                ? String(req.body.bloco || '').trim() || null
+                : req.body.encomenda_bloco !== undefined
+                  ? String(req.body.encomenda_bloco || '').trim() || null
+                  : null,
+            empresa_entrega:
+              req.body.empresa_entrega !== undefined
+                ? String(req.body.empresa_entrega || '').trim() || null
+                : null,
+            id_condominio: this._toInt(
+              req.body.id_condominio !== undefined
+                ? req.body.id_condominio
+                : req.body.condominio_id !== undefined
+                  ? req.body.condominio_id
+                  : req.body.encomenda_condominio_id,
+              null
+            )
           }
         }
       );
@@ -1187,6 +1395,10 @@ class CondominioController {
                 prioridade = :prioridade,
                 exibicao_dashboard = :exibicao_dashboard,
                 id_usuario = :id_usuario,
+                apartamento = :apartamento,
+                bloco = :bloco,
+                empresa_entrega = :empresa_entrega,
+                id_condominio = :id_condominio,
                 updated_at = now()
           WHERE id = :id
         RETURNING *`,
@@ -1218,7 +1430,36 @@ class CondominioController {
             id_usuario:
               req.body.id_usuario !== undefined
                 ? this._toInt(req.body.id_usuario, null)
-                : this._toInt(atual.id_usuario, null)
+                : this._toInt(atual.id_usuario, null),
+            apartamento:
+              req.body.apartamento !== undefined
+                ? String(req.body.apartamento || '').trim() || null
+                : req.body.encomenda_apartamento !== undefined
+                  ? String(req.body.encomenda_apartamento || '').trim() || null
+                  : atual.apartamento,
+            bloco:
+              req.body.bloco !== undefined
+                ? String(req.body.bloco || '').trim() || null
+                : req.body.encomenda_bloco !== undefined
+                  ? String(req.body.encomenda_bloco || '').trim() || null
+                  : atual.bloco,
+            empresa_entrega:
+              req.body.empresa_entrega !== undefined
+                ? String(req.body.empresa_entrega || '').trim() || null
+                : atual.empresa_entrega,
+            id_condominio:
+              req.body.id_condominio !== undefined ||
+              req.body.condominio_id !== undefined ||
+              req.body.encomenda_condominio_id !== undefined
+                ? this._toInt(
+                    req.body.id_condominio !== undefined
+                      ? req.body.id_condominio
+                      : req.body.condominio_id !== undefined
+                        ? req.body.condominio_id
+                        : req.body.encomenda_condominio_id,
+                    null
+                  )
+                : this._toInt(atual.id_condominio, null)
           }
         }
       );
