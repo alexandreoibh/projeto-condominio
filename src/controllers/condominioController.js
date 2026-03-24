@@ -1913,10 +1913,10 @@ class CondominioController {
 
   async cadastrarUsuarioPorConvite(req, res) {
     try {
-      const inviteToken = this._normalizarTextoOuNull(req.body.invite_token);
+      const inviteToken = this._normalizarTextoOuNull(req.body.invite_token ?? req.body.token);
       if (!inviteToken) {
         return res.status(422).json({
-          message: 'Campo invite_token é obrigatório.'
+          message: 'Campo invite_token (ou token) é obrigatório.'
         });
       }
 
@@ -1958,11 +1958,17 @@ class CondominioController {
         invitePayload.apartamento ?? invitePayload.encomenda_apartamento
       );
       const blocoToken = this._normalizarTextoOuNull(invitePayload.bloco ?? invitePayload.encomenda_bloco);
+      const unidadesBlocoToken = Array.isArray(invitePayload.unidades_bloco)
+        ? invitePayload.unidades_bloco
+            .map((item) => this._normalizarTextoOuNull(item))
+            .filter((item) => item !== null)
+        : [];
+      const qtdeBlocosToken = this._toInt(invitePayload.qtde_blocos, null);
       const emailToken = this._normalizarEmailOuNull(invitePayload.email ?? invitePayload.email_usuario);
 
-      if (!idCondominioToken || !apartamentoToken || !blocoToken) {
+      if (!idCondominioToken) {
         return res.status(422).json({
-          message: 'invite_token inválido para cadastro: dados de condomínio, apartamento ou bloco ausentes.'
+          message: 'invite_token inválido para cadastro: dados de condomínio ausentes.'
         });
       }
 
@@ -1977,16 +1983,25 @@ class CondominioController {
         });
       }
 
-      if (apartamentoBody && apartamentoBody !== apartamentoToken) {
-        return res.status(422).json({
-          message: 'Dados inválidos para cadastro por convite.'
-        });
+      if (apartamentoToken && apartamentoBody && apartamentoBody !== apartamentoToken) {
+        return res.status(422).json({ message: 'Dados inválidos para cadastro por convite.' });
       }
 
-      if (blocoBody && blocoBody !== blocoToken) {
-        return res.status(422).json({
-          message: 'Dados inválidos para cadastro por convite.'
-        });
+      if (!apartamentoToken && apartamentoBody && unidadesBlocoToken.length > 0) {
+        if (!unidadesBlocoToken.includes(apartamentoBody)) {
+          return res.status(422).json({ message: 'Dados inválidos para cadastro por convite.' });
+        }
+      }
+
+      if (blocoToken && blocoBody && blocoBody !== blocoToken) {
+        return res.status(422).json({ message: 'Dados inválidos para cadastro por convite.' });
+      }
+
+      if (!blocoToken && blocoBody && qtdeBlocosToken) {
+        const blocoBodyInt = this._toInt(blocoBody, null);
+        if (!blocoBodyInt || blocoBodyInt < 1 || blocoBodyInt > qtdeBlocosToken) {
+          return res.status(422).json({ message: 'Dados inválidos para cadastro por convite.' });
+        }
       }
 
       if (emailToken && emailBody && emailBody !== emailToken) {

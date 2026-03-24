@@ -10,7 +10,10 @@ const controller = new CondominioController();
 
 const publicRegistrationKeyGuard = (req, res, next) => {
 	const expectedKey = process.env.PUBLIC_REGISTRATION_KEY;
-	const providedKey = req.header('X-Public-Registration-Key');
+	const providedKey =
+		req.header('X-Public-Registration-Key') ||
+		req.header('x-api-key') ||
+		req.header('X-API-Key');
 
 	if (!expectedKey || !providedKey) {
 		return res.status(401).json({ message: 'Não autorizado.' });
@@ -799,9 +802,13 @@ router.post(
 	'/usuarios/cadastro-por-convite',
 	publicRegistrationKeyGuard,
 	[
-		body('invite_token')
-			.notEmpty()
-			.withMessage('Campo invite_token é obrigatório.'),
+		body().custom((value, { req }) => {
+			const token = req.body?.invite_token ?? req.body?.token;
+			if (!token || String(token).trim() === '') {
+				throw new Error('Campo invite_token (ou token) é obrigatório.');
+			}
+			return true;
+		}),
 		body('nome')
 			.notEmpty()
 			.withMessage('Campo nome é obrigatório.')
