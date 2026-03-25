@@ -35,6 +35,56 @@ const publicRegistrationKeyGuard = (req, res, next) => {
 router.get('/status', controller.status.bind(controller));
 router.get('/perfis', auth, controller.listarPerfis.bind(controller));
 router.get(
+	'/menu/perfis/configuracao',
+	auth,
+	[
+		query('id_perfil')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Parâmetro id_perfil inválido.')
+	],
+	validate,
+	controller.listarConfiguracaoPermissoesMenu.bind(controller)
+);
+router.get(
+	'/menu/perfis/:id_perfil(\\d+)/permissoes',
+	auth,
+	[param('id_perfil').isInt({ min: 1 }).withMessage('Parâmetro id_perfil inválido.')],
+	validate,
+	controller.listarPermissoesMenuPorPerfil.bind(controller)
+);
+router.put(
+	'/menu/perfis/:id_perfil(\\d+)/permissoes',
+	auth,
+	[
+		param('id_perfil').isInt({ min: 1 }).withMessage('Parâmetro id_perfil inválido.'),
+		body('permissoes')
+			.isArray()
+			.withMessage('Campo permissoes deve ser um array.'),
+		body('permissoes.*.id_menu')
+			.isInt({ min: 1 })
+			.withMessage('Campo permissoes[].id_menu deve ser numérico e maior que zero.'),
+		body('permissoes.*.pode_ver')
+			.optional({ nullable: true })
+			.isBoolean()
+			.withMessage('Campo permissoes[].pode_ver deve ser booleano.'),
+		body('permissoes.*.pode_criar')
+			.optional({ nullable: true })
+			.isBoolean()
+			.withMessage('Campo permissoes[].pode_criar deve ser booleano.'),
+		body('permissoes.*.pode_editar')
+			.optional({ nullable: true })
+			.isBoolean()
+			.withMessage('Campo permissoes[].pode_editar deve ser booleano.'),
+		body('permissoes.*.pode_excluir')
+			.optional({ nullable: true })
+			.isBoolean()
+			.withMessage('Campo permissoes[].pode_excluir deve ser booleano.')
+	],
+	validate,
+	controller.substituirPermissoesMenuPorPerfil.bind(controller)
+);
+router.get(
 	'/condominios',
 	auth,
 	[

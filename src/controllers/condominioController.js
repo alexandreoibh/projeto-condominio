@@ -257,6 +257,16 @@ class CondominioController {
     return idPerfilDb === 1 || idPerfilDb === 3;
   }
 
+  _podeGerenciarPermissoesMenu(req) {
+    const perfilToken = this._normalizarPerfil(req.nomePerfil);
+    if (perfilToken === 'admin') {
+      return true;
+    }
+
+    const idPerfilToken = this._toInt(req.IdPerfil, null);
+    return idPerfilToken === 1;
+  }
+
   async _buscarCondominioComUnidades(idCondominio, transaction = null) {
     const rows = await postgres.query(
       `SELECT
@@ -412,6 +422,364 @@ class CondominioController {
     } catch (error) {
       return res.status(500).json({
         message: 'Falha ao listar perfis.',
+        detail: error.message
+      });
+    }
+  }
+
+  async listarPermissoesMenuPorPerfil(req, res) {
+    try {
+      if (!this._podeGerenciarPermissoesMenu(req)) {
+        return res.status(403).json({
+          message: 'Usuário sem permissão para gerenciar permissões de menu.'
+        });
+      }
+
+      const idPerfil = this._toInt(req.params.id_perfil, null);
+      if (!idPerfil) {
+        return res.status(400).json({
+          message: 'Parâmetro id_perfil inválido.'
+        });
+      }
+
+      const perfil = await postgres.query(
+        `SELECT id, nome, status
+           FROM "condominio-bh".tb_sgw_perfil
+          WHERE id = :id_perfil
+          LIMIT 1`,
+        {
+          replacements: {
+            id_perfil: idPerfil
+          },
+          type: QueryTypes.SELECT
+        }
+      );
+
+      if (!perfil || perfil.length === 0) {
+        return res.status(404).json({
+          message: 'Perfil não encontrado.'
+        });
+      }
+
+      const data = await postgres.query(
+        `SELECT
+            m.id,
+            m.nome,
+            m.rota,
+            m.icone,
+            m.nivel,
+            m.id_menu_pai,
+            m.ordem,
+            m.status,
+            COALESCE(pm.pode_ver, false) AS pode_ver,
+            COALESCE(pm.pode_criar, false) AS pode_criar,
+            COALESCE(pm.pode_editar, false) AS pode_editar,
+            COALESCE(pm.pode_excluir, false) AS pode_excluir
+          FROM "condominio-bh".tb_sgw_menu m
+          LEFT JOIN (
+            SELECT
+              id_menu,
+              BOOL_OR(COALESCE(pode_ver, false)) AS pode_ver,
+              BOOL_OR(COALESCE(pode_criar, false)) AS pode_criar,
+              BOOL_OR(COALESCE(pode_editar, false)) AS pode_editar,
+              BOOL_OR(COALESCE(pode_excluir, false)) AS pode_excluir
+            FROM "condominio-bh".tb_sgw_perfil_menu
+            WHERE id_perfil = :id_perfil
+            GROUP BY id_menu
+          ) pm
+            ON pm.id_menu = m.id
+          WHERE m.status = true
+          ORDER BY m.nivel ASC, m.ordem ASC, m.id ASC`,
+        {
+          replacements: {
+            id_perfil: idPerfil
+          },
+          type: QueryTypes.SELECT
+        }
+      );
+
+      return res.status(200).json({
+        perfil: perfil[0],
+        total: data.length,
+        data: data.map((item) => ({
+          id: this._toInt(item.id, null),
+          nome: item.nome,
+          rota: item.rota || null,
+          icone: item.icone || null,
+          nivel: this._toInt(item.nivel, 0),
+          id_menu_pai: this._toInt(item.id_menu_pai, 0),
+          ordem: this._toInt(item.ordem, 0),
+          status: Boolean(item.status),
+          pode_ver: Boolean(item.pode_ver),
+          pode_criar: Boolean(item.pode_criar),
+          pode_editar: Boolean(item.pode_editar),
+          pode_excluir: Boolean(item.pode_excluir)
+        }))
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao listar permissões de menu do perfil.',
+        detail: error.message
+      });
+    }
+  }
+
+  async listarConfiguracaoPermissoesMenu(req, res) {
+    try {
+      if (!this._podeGerenciarPermissoesMenu(req)) {
+        return res.status(403).json({
+          message: 'Usuário sem permissão para gerenciar permissões de menu.'
+        });
+      }
+
+      const idPerfilQuery = this._toInt(req.query.id_perfil, null);
+
+      const perfis = await postgres.query(
+        `SELECT id, nome, status
+           FROM "condominio-bh".tb_sgw_perfil
+          ORDER BY id ASC`,
+        {
+          type: QueryTypes.SELECT
+        }
+      );
+
+      if (!perfis || perfis.length === 0) {
+        return res.status(200).json({
+          total_perfis: 0,
+          total_menus: 0,
+          perfil_selecionado: null,
+          perfis: [],
+          menus: []
+        });
+      }
+
+      const perfilSelecionado =
+        perfis.find((perfil) => this._toInt(perfil.id, null) === idPerfilQuery) || perfis[0];
+      const idPerfilSelecionado = this._toInt(perfilSelecionado.id, null);
+
+      const menus = await postgres.query(
+        `SELECT
+            m.id,
+            m.nome,
+            m.rota,
+            m.icone,
+            m.nivel,
+            m.id_menu_pai,
+            m.ordem,
+            m.status,
+            COALESCE(pm.pode_ver, false) AS pode_ver,
+            COALESCE(pm.pode_criar, false) AS pode_criar,
+            COALESCE(pm.pode_editar, false) AS pode_editar,
+            COALESCE(pm.pode_excluir, false) AS pode_excluir
+          FROM "condominio-bh".tb_sgw_menu m
+          LEFT JOIN (
+            SELECT
+              id_menu,
+              BOOL_OR(COALESCE(pode_ver, false)) AS pode_ver,
+              BOOL_OR(COALESCE(pode_criar, false)) AS pode_criar,
+              BOOL_OR(COALESCE(pode_editar, false)) AS pode_editar,
+              BOOL_OR(COALESCE(pode_excluir, false)) AS pode_excluir
+            FROM "condominio-bh".tb_sgw_perfil_menu
+            WHERE id_perfil = :id_perfil
+            GROUP BY id_menu
+          ) pm
+            ON pm.id_menu = m.id
+          ORDER BY m.nivel ASC, m.ordem ASC, m.id ASC`,
+        {
+          replacements: {
+            id_perfil: idPerfilSelecionado
+          },
+          type: QueryTypes.SELECT
+        }
+      );
+
+      const mapMenus = new Map();
+
+      for (const item of menus) {
+        const idMenu = this._toInt(item.id, null);
+        const idMenuPai = this._toInt(item.id_menu_pai, null);
+
+        if (!idMenu) {
+          continue;
+        }
+
+        mapMenus.set(idMenu, {
+          id: idMenu,
+          nome: item.nome,
+          rota: item.rota || null,
+          icone: item.icone || null,
+          nivel: this._toInt(item.nivel, 0),
+          id_menu_pai: idMenuPai,
+          ordem: this._toInt(item.ordem, 0),
+          status: Boolean(item.status),
+          pode_ver: Boolean(item.pode_ver),
+          pode_criar: Boolean(item.pode_criar),
+          pode_editar: Boolean(item.pode_editar),
+          pode_excluir: Boolean(item.pode_excluir),
+          itens: []
+        });
+      }
+
+      const raiz = [];
+
+      for (const item of mapMenus.values()) {
+        const idPai = this._toInt(item.id_menu_pai, null);
+        const ehRaiz = !idPai || !mapMenus.has(idPai);
+
+        if (ehRaiz) {
+          raiz.push(item);
+          continue;
+        }
+
+        mapMenus.get(idPai).itens.push(item);
+      }
+
+      const ordenarArvore = (lista) => {
+        lista.sort((a, b) => {
+          if (a.ordem !== b.ordem) {
+            return a.ordem - b.ordem;
+          }
+
+          return a.id - b.id;
+        });
+
+        for (const item of lista) {
+          if (item.itens.length > 0) {
+            ordenarArvore(item.itens);
+          }
+        }
+      };
+
+      ordenarArvore(raiz);
+
+      const perfisResponse = perfis.map((perfil) => ({
+        id: this._toInt(perfil.id, null),
+        nome: perfil.nome,
+        status: Boolean(perfil.status)
+      }));
+
+      return res.status(200).json({
+        total_perfis: perfisResponse.length,
+        total_menus: mapMenus.size,
+        perfil_selecionado: {
+          id: idPerfilSelecionado,
+          nome: perfilSelecionado.nome,
+          status: Boolean(perfilSelecionado.status)
+        },
+        perfis: perfisResponse,
+        menus: raiz
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao carregar configuração de permissões de menu.',
+        detail: error.message
+      });
+    }
+  }
+
+  async substituirPermissoesMenuPorPerfil(req, res) {
+    const transaction = await postgres.transaction();
+
+    try {
+      if (!this._podeGerenciarPermissoesMenu(req)) {
+        await transaction.rollback();
+        return res.status(403).json({
+          message: 'Usuário sem permissão para gerenciar permissões de menu.'
+        });
+      }
+
+      const idPerfil = this._toInt(req.params.id_perfil, null);
+      if (!idPerfil) {
+        await transaction.rollback();
+        return res.status(400).json({
+          message: 'Parâmetro id_perfil inválido.'
+        });
+      }
+
+      const permissoesInput = Array.isArray(req.body.permissoes) ? req.body.permissoes : [];
+
+      const menusAtivos = await postgres.query(
+        `SELECT id
+           FROM "condominio-bh".tb_sgw_menu
+          WHERE status = true`,
+        {
+          type: QueryTypes.SELECT,
+          transaction
+        }
+      );
+
+      const idsMenuAtivos = new Set(menusAtivos.map((item) => this._toInt(item.id, null)));
+      const upserts = [];
+
+      for (const permissao of permissoesInput) {
+        const idMenu = this._toInt(permissao?.id_menu, null);
+        if (!idMenu || !idsMenuAtivos.has(idMenu)) {
+          continue;
+        }
+
+        upserts.push({
+          id_menu: idMenu,
+          pode_ver: Boolean(permissao?.pode_ver),
+          pode_criar: Boolean(permissao?.pode_criar),
+          pode_editar: Boolean(permissao?.pode_editar),
+          pode_excluir: Boolean(permissao?.pode_excluir)
+        });
+      }
+
+      await postgres.query(
+        `DELETE FROM "condominio-bh".tb_sgw_perfil_menu
+          WHERE id_perfil = :id_perfil`,
+        {
+          replacements: {
+            id_perfil: idPerfil
+          },
+          type: QueryTypes.DELETE,
+          transaction
+        }
+      );
+
+      for (const item of upserts) {
+        await postgres.query(
+          `INSERT INTO "condominio-bh".tb_sgw_perfil_menu (
+              id_perfil,
+              id_menu,
+              pode_ver,
+              pode_criar,
+              pode_editar,
+              pode_excluir
+            ) VALUES (
+              :id_perfil,
+              :id_menu,
+              :pode_ver,
+              :pode_criar,
+              :pode_editar,
+              :pode_excluir
+            )`,
+          {
+            replacements: {
+              id_perfil: idPerfil,
+              id_menu: item.id_menu,
+              pode_ver: item.pode_ver,
+              pode_criar: item.pode_criar,
+              pode_editar: item.pode_editar,
+              pode_excluir: item.pode_excluir
+            },
+            type: QueryTypes.INSERT,
+            transaction
+          }
+        );
+      }
+
+      await transaction.commit();
+
+      return res.status(200).json({
+        message: 'Permissões de menu atualizadas com sucesso.',
+        total: upserts.length
+      });
+    } catch (error) {
+      await transaction.rollback();
+      return res.status(500).json({
+        message: 'Falha ao atualizar permissões de menu do perfil.',
         detail: error.message
       });
     }
@@ -768,20 +1136,53 @@ class CondominioController {
 
   async listarMenuDinamico(req, res) {
     try {
+      const idPerfilToken = this._toInt(req.IdPerfil, null);
+
+      if (!idPerfilToken) {
+        return res.status(403).json({
+          message: 'Token sem perfil para listar menu.'
+        });
+      }
+
       const menus = await postgres.query(
         `SELECT
-            id,
-            nome,
-            rota,
-            icone,
-            nivel,
-            id_menu_pai,
-            ordem,
-            status
-          FROM "condominio-bh".tb_sgw_menu
-          WHERE status = true
-          ORDER BY nivel ASC, ordem ASC, id ASC`,
+            m.id,
+            m.nome,
+            m.rota,
+            m.icone,
+            m.nivel,
+            m.id_menu_pai,
+            m.ordem,
+            m.status,
+            COALESCE(pm.pode_ver, false) AS pode_ver,
+            COALESCE(pm.pode_criar, false) AS pode_criar,
+            COALESCE(pm.pode_editar, false) AS pode_editar,
+            COALESCE(pm.pode_excluir, false) AS pode_excluir
+          FROM "condominio-bh".tb_sgw_menu m
+          LEFT JOIN (
+            SELECT
+              id_menu,
+              BOOL_OR(COALESCE(pode_ver, false)) AS pode_ver,
+              BOOL_OR(COALESCE(pode_criar, false)) AS pode_criar,
+              BOOL_OR(COALESCE(pode_editar, false)) AS pode_editar,
+              BOOL_OR(COALESCE(pode_excluir, false)) AS pode_excluir
+            FROM "condominio-bh".tb_sgw_perfil_menu
+            WHERE id_perfil = :id_perfil
+            GROUP BY id_menu
+          ) pm
+            ON pm.id_menu = m.id
+          WHERE m.status = true
+            AND EXISTS (
+              SELECT 1
+                FROM "condominio-bh".tb_sgw_perfil p
+               WHERE p.id = :id_perfil
+                 AND p.status = true
+            )
+          ORDER BY m.nivel ASC, m.ordem ASC, m.id ASC`,
         {
+          replacements: {
+            id_perfil: idPerfilToken
+          },
           type: QueryTypes.SELECT
         }
       );
@@ -789,35 +1190,85 @@ class CondominioController {
       const mapItens = new Map();
 
       for (const item of menus) {
-        mapItens.set(item.id, {
-          id: this._toInt(item.id, null),
+        const idMenu = this._toInt(item.id, null);
+        const idMenuPai = this._toInt(item.id_menu_pai, null);
+
+        if (!idMenu) {
+          continue;
+        }
+
+        mapItens.set(idMenu, {
+          id: idMenu,
           nome: item.nome,
           rota: item.rota || null,
           icone: item.icone || null,
           nivel: this._toInt(item.nivel, 0),
-          id_menu_pai: this._toInt(item.id_menu_pai, 0),
+          id_menu_pai: idMenuPai,
           ordem: this._toInt(item.ordem, 0),
           status: Boolean(item.status),
+          pode_ver: Boolean(item.pode_ver),
+          pode_criar: Boolean(item.pode_criar),
+          pode_editar: Boolean(item.pode_editar),
+          pode_excluir: Boolean(item.pode_excluir),
+          itens: []
+        });
+      }
+
+      const idsVisiveis = new Set();
+      const idsVisiveisExplicitos = new Set();
+
+      for (const item of mapItens.values()) {
+        if (item.pode_ver) {
+          idsVisiveis.add(item.id);
+          idsVisiveisExplicitos.add(item.id);
+
+          let idPai = this._toInt(item.id_menu_pai, null);
+          while (idPai && mapItens.has(idPai) && !idsVisiveis.has(idPai)) {
+            idsVisiveis.add(idPai);
+            idPai = this._toInt(mapItens.get(idPai).id_menu_pai, null);
+          }
+        }
+      }
+
+      if (idsVisiveis.size === 0) {
+        return res.status(200).json({
+          total: 0,
+          data: []
+        });
+      }
+
+      const mapFiltrado = new Map();
+      for (const idMenu of idsVisiveis.values()) {
+        const item = mapItens.get(idMenu);
+        if (!item) {
+          continue;
+        }
+
+        mapFiltrado.set(idMenu, {
+          ...item,
+          // Todo item presente no payload final deve ser visível para o front.
+          // Para nós herdados (pais), forçamos pode_ver=true para manter a árvore renderizável.
+          pode_ver: true,
+          pode_criar: idsVisiveisExplicitos.has(idMenu) ? item.pode_criar : false,
+          pode_editar: idsVisiveisExplicitos.has(idMenu) ? item.pode_editar : false,
+          pode_excluir: idsVisiveisExplicitos.has(idMenu) ? item.pode_excluir : false,
+          permissao_herdada: !idsVisiveisExplicitos.has(idMenu),
           itens: []
         });
       }
 
       const raiz = [];
 
-      for (const item of mapItens.values()) {
-        const idPai = this._toInt(item.id_menu_pai, 0);
-        const ehRaiz = item.nivel === 0 || !idPai;
+      for (const item of mapFiltrado.values()) {
+        const idPai = this._toInt(item.id_menu_pai, null);
+        const ehRaiz = !idPai || !mapFiltrado.has(idPai);
 
         if (ehRaiz) {
           raiz.push(item);
           continue;
         }
 
-        if (!mapItens.has(idPai)) {
-          continue;
-        }
-
-        mapItens.get(idPai).itens.push(item);
+        mapFiltrado.get(idPai).itens.push(item);
       }
 
       const ordenarArvore = (lista) => {

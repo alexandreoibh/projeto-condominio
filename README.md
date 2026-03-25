@@ -35,6 +35,9 @@ npm start
 - `GET /api/health` - healthcheck da API
 - `POST /api/login` - login principal
 - `GET /api/condominio/status` - status do módulo condomínio
+- `GET /api/condominio/menu` - retorna menu dinâmico conforme perfil do usuário logado (`Authorization: Bearer <token>`)
+- `GET /api/condominio/menu/perfis/:id_perfil/permissoes` - lista permissões de menu de um perfil (somente Admin) (`Authorization: Bearer <token>`)
+- `PUT /api/condominio/menu/perfis/:id_perfil/permissoes` - substitui permissões de menu de um perfil (somente Admin) (`Authorization: Bearer <token>`)
 - `GET /api/condominio/moradores` - lista moradores (`Authorization: Bearer <token>`)
 - `POST /api/condominio/usuarios` - cria usuário (`Authorization: Bearer <token>`)
 - `POST /api/condominio/espacos` - cadastra espaço (`Authorization: Bearer <token>`)
@@ -51,6 +54,14 @@ npm start
 - `DELETE /api/condominio/espacos/:id` - exclui espaço por id (`Authorization: Bearer <token>`)
 
 Nos endpoints protegidos, o `id_condominio` é obtido pelo token JWT (não precisa enviar no body).
+
+## Carga inicial de permissões de menu
+
+Arquivo SQL:
+
+- `src/database/sql/seed-tb-sgw-perfil-menu-inicial.sql`
+
+Esse script popula `tb_sgw_perfil_menu` para os perfis padrão (Admin, Morador, Sindico, Sub-Sindico e Portaria).
 
 ### Login (produção)
 
