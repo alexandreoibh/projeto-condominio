@@ -856,6 +856,9 @@ class CondominioController {
 
   async listarDashboardTipos(req, res) {
     try {
+      const idPerfilToken = this._toInt(req.IdPerfil, null);
+      const ehMorador = idPerfilToken === 2;
+
       const status = true;
       const somenteAtivos = ['true', '1'].includes(String(status).trim().toLowerCase());
 
@@ -865,6 +868,11 @@ class CondominioController {
       if (somenteAtivos !== null) {
         whereParts.push('status = :status');
         replacements.status = somenteAtivos;
+      }
+
+      if (ehMorador) {
+        whereParts.push('id = :id_tipo_ocorrencia');
+        replacements.id_tipo_ocorrencia = 2;
       }
 
       const data = await postgres.query(
