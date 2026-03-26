@@ -3314,6 +3314,8 @@ class CondominioController {
       const page = Math.max(this._toInt(req.query.page, 1), 1);
       const pageSize = Math.min(Math.max(this._toInt(req.query.pageSize, 10), 1), 100);
       const offset = (page - 1) * pageSize;
+      const liDados = String(req.query.liDados || '').trim().toLowerCase();
+      const listarTodosDados = liDados === 'all';
       const orderField = req.query.orderBy === 'nome' ? 'nome' : 'id';
       const orderClause = orderField === 'nome' ? 'nome ASC' : 'id DESC';
       const filtroAtivo =
@@ -3385,16 +3387,28 @@ class CondominioController {
 
   async listarSalasReservadas(req, res) {
     try {
+      const idPerfilToken = this._toInt(req.IdPerfil, null);
       const idCondominioToken = this._toInt(req.id_condominio, null);
+      const idUsuarioToken = this._toInt(req.idcliente, null);
+      const ehMorador = idPerfilToken === 2;
+
       if (!idCondominioToken) {
         return res.status(403).json({
           message: 'Token sem id_condominio para listar reservas.'
         });
       }
 
+      if (ehMorador && !idUsuarioToken) {
+        return res.status(403).json({
+          message: 'Token sem id de usuário para listar reservas do morador.'
+        });
+      }
+
       const hasPageParam = req.query.page !== undefined;
       const hasPageSizeParam = req.query.pageSize !== undefined;
       const usePagination = hasPageParam || hasPageSizeParam;
+      const liDados = String(req.query.liDados || '').trim().toLowerCase();
+      const listarTodosDados = liDados === 'all';
 
       const page = Math.max(this._toInt(req.query.page, 1), 1);
       const pageSize = Math.min(Math.max(this._toInt(req.query.pageSize, 10), 1), 100);
@@ -3402,6 +3416,12 @@ class CondominioController {
 
       const whereParts = ['ea.id_condominio = :idCondominio'];
       const baseReplacements = { idCondominio: idCondominioToken };
+
+      // Regra da rota de listagem de agenda: morador vê apenas os próprios agendamentos.
+      if (ehMorador && !listarTodosDados) {
+        whereParts.push('ea.id_usuario = :id_usuario_token');
+        baseReplacements.id_usuario_token = idUsuarioToken;
+      }
 
       const idEspacoFiltro = this._toInt(req.query.id_espaco, null);
       if (idEspacoFiltro) {
@@ -3531,12 +3551,27 @@ class CondominioController {
       const podeVisualizarDadosMorador = await this._podeVisualizarDadosMorador(req);
       const dataResposta = podeVisualizarDadosMorador
         ? data
-        : data.map((row) => ({
-            ...row,
-            nome: '****',
-            apartamento: '****',
-            bloco: '****'
-          }));
+        : ehMorador
+          ? data.map((row) => {
+              const ehDoProprioMorador = this._toInt(row.id_usuario, null) === idUsuarioToken;
+
+              if (ehDoProprioMorador) {
+                return row;
+              }
+
+              return {
+                ...row,
+                nome: '****',
+                apartamento: '****',
+                bloco: '****'
+              };
+            })
+          : data.map((row) => ({
+              ...row,
+              nome: '****',
+              apartamento: '****',
+              bloco: '****'
+            }));
 
       const total = totalRows[0]?.total || 0;
       const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize);
@@ -3565,17 +3600,64 @@ class CondominioController {
 
   async listarReservasMesCorrente(req, res) {
     try {
+      const idPerfilToken = this._toInt(req.IdPerfil, null);
       const idCondominioToken = this._toInt(req.id_condominio, null);
+      const idUsuarioToken = this._toInt(req.idcliente, null);
+      const ehMorador = idPerfilToken === 2;
+
       if (!idCondominioToken) {
         return res.status(403).json({
           message: 'Token sem id_condominio para listar reservas do mês corrente.'
         });
       }
 
+      if (ehMorador && !idUsuarioToken) {
+        return res.status(403).json({
+          message: 'Token sem id de usuário para listar reservas do mês corrente do morador.'
+        });
+      }
+
+      const whereParts = ['ea.id_condominio = :idCondominio'];
+      const replacements = { idCondominio: idCondominioToken };
+
+      const dataInicioRaw = req.query.data_inicio;
+      const dataFimRaw = req.query.data_fim;
+      const usarPeriodo = Boolean(dataInicioRaw || dataFimRaw);
+
+      if (usarPeriodo) {
+        if (!dataInicioRaw || !dataFimRaw) {
+          return res.status(400).json({
+            message: 'Informe os parâmetros data_inicio e data_fim para filtrar por período.'
+          });
+        }
+
+        const dataInicio = this._parseDataAgendamento(dataInicioRaw);
+        const dataFim = this._parseDataAgendamento(dataFimRaw);
+
+        if (!dataInicio || !dataFim) {
+          return res.status(400).json({
+            message: 'Parâmetros data_inicio/data_fim inválidos. Use ISO 8601 ou dd/mm/aaaa.'
+          });
+        }
+
+        if (dataInicio.getTime() > dataFim.getTime()) {
+          return res.status(400).json({
+            message: 'Parâmetro data_inicio não pode ser maior que data_fim.'
+          });
+        }
+
+        replacements.data_inicio = dataInicio.toISOString().slice(0, 10);
+        replacements.data_fim = dataFim.toISOString().slice(0, 10);
+        whereParts.push('ea.data_agendamento::date BETWEEN :data_inicio AND :data_fim');
+      }
+
+      const whereClause = whereParts.join(' AND ');
+
       const data = await postgres.query(
         `SELECT
+            ea.id_usuario,
             tu.nome AS nome_usuario,
-          e.nome AS sala,
+            e.nome AS sala,
             tu.apartamento,
             tu.bloco,
             tt.descricao_status AS status_reserva,
@@ -3587,23 +3669,38 @@ class CondominioController {
              ON tu.id = ea.id_usuario
            LEFT JOIN "condominio-bh".tb_status_tratamento tt
              ON tt.id = ea.status
-          WHERE ea.id_condominio = :idCondominio
+          WHERE ${whereClause}
           ORDER BY ea.data_agendamento::date ASC, ea.id ASC`,
         {
-          replacements: { idCondominio: idCondominioToken },
+          replacements,
           type: QueryTypes.SELECT
         }
       );
 
       const podeVisualizarDadosMorador = await this._podeVisualizarDadosMorador(req);
       const dataResposta = podeVisualizarDadosMorador
-        ? data
-        : data.map((row) => ({
-            ...row,
-            nome_usuario: '****',
-            apartamento: '****',
-            bloco: '****'
-          }));
+        ? data.map(({ id_usuario, ...row }) => row)
+        : ehMorador
+          ? data.map(({ id_usuario, ...row }) => {
+              const ehDoProprioMorador = this._toInt(id_usuario, null) === idUsuarioToken;
+
+              if (ehDoProprioMorador) {
+                return row;
+              }
+
+              return {
+                ...row,
+                nome_usuario: '****',
+                apartamento: '****',
+                bloco: '****'
+              };
+            })
+          : data.map(({ id_usuario, ...row }) => ({
+              ...row,
+              nome_usuario: '****',
+              apartamento: '****',
+              bloco: '****'
+            }));
           //  AND ea.data_agendamento::date >= date_trunc('month', CURRENT_DATE)::date
           //   AND ea.data_agendamento::date < (date_trunc('month', CURRENT_DATE) + interval '1 month')::date
    
