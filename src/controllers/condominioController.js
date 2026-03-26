@@ -4413,7 +4413,7 @@ class CondominioController {
       }
 
       const statusExists = await postgres.query(
-        `SELECT id
+        `SELECT id, descricao_status
            FROM "condominio-bh".tb_status_tratamento
           WHERE id = :id_status
           LIMIT 1`,
@@ -4428,6 +4428,8 @@ class CondominioController {
           message: 'status_code inválido para tb_status_tratamento.'
         });
       }
+
+      const statusDescricao = String(statusExists[0].descricao_status || '');
 
       const observacaoInput =
         req.body.observacoes !== undefined ? req.body.observacoes : req.body.tratamento_observacao;
@@ -4528,6 +4530,81 @@ class CondominioController {
             transaction
           }
         );
+
+        const statusNormalizado = this._normalizarPerfil(statusDescricao);
+        const statusEhAprovacao = statusNormalizado.includes('aprov');
+        const statusEhReprovacao =
+          statusNormalizado.includes('reprov') ||
+          statusNormalizado.includes('recus') ||
+          statusNormalizado.includes('negad');
+
+        if (statusEhAprovacao || statusEhReprovacao) {
+          const codigoPreferencial = statusEhAprovacao ? '3' : '4';
+          const termoBusca = statusEhAprovacao ? '%aprov%' : '%reprov%';
+
+          const notificacaoTipoRows = await postgres.query(
+            `SELECT id, titulo, descricao_padrao
+               FROM "condominio-bh".tb_notificacao_tipo
+              WHERE ativo = true
+                AND (
+                  codigo = :codigo_preferencial
+                  OR lower(COALESCE(titulo, '')) LIKE :termo_busca
+                  OR lower(COALESCE(descricao_padrao, '')) LIKE :termo_busca
+                )
+              ORDER BY CASE WHEN codigo = :codigo_preferencial THEN 0 ELSE 1 END, id ASC
+              LIMIT 1`,
+            {
+              replacements: {
+                codigo_preferencial: codigoPreferencial,
+                termo_busca: termoBusca
+              },
+              type: QueryTypes.SELECT,
+              transaction
+            }
+          );
+
+          const idUsuarioMorador = this._toInt(updatedRow.id_usuario, null);
+          const notificacaoTipo = notificacaoTipoRows && notificacaoTipoRows.length > 0 ? notificacaoTipoRows[0] : null;
+
+          if (idUsuarioMorador && notificacaoTipo) {
+            const mensagemNotificacao = [
+              notificacaoTipo.titulo || (statusEhAprovacao ? 'Reserva aprovada' : 'Reserva reprovada'),
+              updatedRow.tratamento_observacao ? `- ${updatedRow.tratamento_observacao}` : null
+            ]
+              .filter((parte) => parte)
+              .join(' ');
+
+            await postgres.query(
+              `INSERT INTO "condominio-bh".tb_notificacao_log (
+                  id_notificacao_tipo,
+                  id_usuario,
+                  mensagem,
+                  id_usuario_pedido,
+                  id_condominio
+                ) VALUES (
+                  :id_notificacao_tipo,
+                  :id_usuario,
+                  :mensagem,
+                  :id_usuario_pedido,
+                  :id_condominio
+                )`,
+              {
+                replacements: {
+                  id_notificacao_tipo: this._toInt(notificacaoTipo.id, null),
+                  id_usuario: idUsuarioMorador,
+                  mensagem:
+                    mensagemNotificacao ||
+                    notificacaoTipo.descricao_padrao ||
+                    (statusEhAprovacao ? 'Sua reserva foi aprovada.' : 'Sua reserva foi reprovada.'),
+                  id_usuario_pedido: idUsuarioTratamento,
+                  id_condominio: idCondominioToken
+                },
+                type: QueryTypes.INSERT,
+                transaction
+              }
+            );
+          }
+        }
 
         await transaction.commit();
       } catch (transactionError) {
