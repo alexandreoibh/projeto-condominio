@@ -3649,6 +3649,7 @@ class CondominioController {
             tu.apartamento,
             tu.bloco,
 			      ea.*,
+            c.nome AS nome_condominio,
             e.nome AS espaco_nome,
             e.localizacao AS espaco_localizacao,
             e.taxa_reserva,
@@ -3658,6 +3659,8 @@ class CondominioController {
              ON e.id = ea.id_espaco
           inner join  "condominio-bh"."tb-usuarios" tu 
             on ea.id_usuario = tu.id
+          left join "condominio-bh"."tb-condominios" c
+            on c.id = ea.id_condominio
           inner join  "condominio-bh"."tb_status_tratamento" tt
             on ea.status = tt.id    
           WHERE ${whereClause}
