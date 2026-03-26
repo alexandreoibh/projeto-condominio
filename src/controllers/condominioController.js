@@ -1715,9 +1715,16 @@ class CondominioController {
         replacements.origem = String(req.query.origem).trim();
       }
 
-      if (req.query.q !== undefined && String(req.query.q).trim() !== '') {
+      const termoBuscaDashboard =
+        req.query.q !== undefined && String(req.query.q).trim() !== ''
+          ? String(req.query.q).trim()
+          : req.query.titulo !== undefined && String(req.query.titulo).trim() !== ''
+            ? String(req.query.titulo).trim()
+            : null;
+
+      if (termoBuscaDashboard) {
         whereParts.push('(dr.titulo ILIKE :q OR dr.descricao ILIKE :q)');
-        replacements.q = `%${String(req.query.q).trim()}%`;
+        replacements.q = `%${termoBuscaDashboard}%`;
       }
 
       const whereClause = whereParts.join(' AND ');
