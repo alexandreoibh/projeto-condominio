@@ -1698,7 +1698,9 @@ class CondominioController {
         replacements.tipo = tipo;
       }
 
-      if (req.query.status !== undefined && String(req.query.status).trim() !== '') {
+      if (ehMorador) {
+        whereParts.push("lower(dr.status) IN ('ativo', 'inativo')");
+      } else if (req.query.status !== undefined && String(req.query.status).trim() !== '') {
         whereParts.push('dr.status = :status');
         replacements.status = String(req.query.status).trim();
       }
