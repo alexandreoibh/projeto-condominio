@@ -841,6 +841,34 @@ router.get(
 );
 
 router.get(
+	'/usuarios/por-perfis',
+	auth,
+	[
+		query('perfil_ids')
+			.optional({ nullable: true, checkFalsy: true })
+			.custom((value) => {
+				const valores = String(value || '')
+					.split(',')
+					.map((item) => item.trim())
+					.filter((item) => item !== '');
+
+				if (valores.length === 0) {
+					throw new Error('Parâmetro perfil_ids deve conter ao menos um id de perfil.');
+				}
+
+				const todosValidos = valores.every((item) => /^\d+$/.test(item) && Number(item) > 0);
+				if (!todosValidos) {
+					throw new Error('Parâmetro perfil_ids deve conter ids numéricos positivos separados por vírgula.');
+				}
+
+				return true;
+			})
+	],
+	validate,
+	controller.listarUsuariosPorPerfis.bind(controller)
+);
+
+router.get(
 	'/usuarios/:id(\\d+)',
 	auth,
 	[param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.')],

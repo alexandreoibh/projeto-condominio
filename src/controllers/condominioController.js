@@ -2323,6 +2323,81 @@ class CondominioController {
     }
   }
 
+  async listarUsuariosPorPerfis(req, res) {
+    try {
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      if (!idCondominioToken) {
+        return res.status(403).json({
+          message: 'Token sem id_condominio para listar usuários por perfil.'
+        });
+      }
+
+      const perfilIdsRaw =
+        req.query.perfil_ids ?? req.query.tipo_perfil_ids ?? req.query.id_perfil ?? req.query.id_perfis;
+
+      const perfilIds = String(perfilIdsRaw || '')
+        .split(',')
+        .map((item) => this._toInt(item.trim(), null))
+        .filter((item) => item !== null && item > 0);
+
+      const perfilIdsUnicos = [...new Set(perfilIds)];
+
+      if (perfilIdsUnicos.length === 0) {
+        return res.status(400).json({
+          message: 'Informe ao menos um perfil válido em perfil_ids (ex.: 1,2,3).'
+        });
+      }
+
+      const data = await postgres.query(
+        `SELECT
+            tu.id,
+            tu.id_condominio,
+            tc.nome AS nome_condominio,
+            tu.nome,
+            tu.sobrenome,
+            tu.cpf,
+            tu.email,
+            tu.telefone,
+            tu.path_avatar,
+            tu.tipo_morador,
+            tu.tipo_perfil_id,
+            tu.tipo,
+            tu.status,
+            tu.apartamento,
+            tu.bloco,
+            tu.created_at,
+            tu.updated_at
+          FROM "condominio-bh"."tb-usuarios" tu
+          LEFT JOIN "condominio-bh"."tb-condominios" tc
+            ON tc.id = tu.id_condominio
+          WHERE tu.id_condominio = :id_condominio
+            AND tu.tipo_perfil_id IN (:perfil_ids)
+          ORDER BY tu.nome ASC, tu.id ASC`,
+        {
+          replacements: {
+            id_condominio: idCondominioToken,
+            perfil_ids: perfilIdsUnicos
+          },
+          type: QueryTypes.SELECT
+        }
+      );
+
+      return res.status(200).json({
+        total: data.length,
+        filtros: {
+          id_condominio: idCondominioToken,
+          perfil_ids: perfilIdsUnicos
+        },
+        data
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao listar usuários por perfis.',
+        detail: error.message
+      });
+    }
+  }
+
   async criarUsuario(req, res) {
     try {
       const idCondominioToken = this._toInt(req.id_condominio, null);
