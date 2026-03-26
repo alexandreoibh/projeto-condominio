@@ -1356,6 +1356,21 @@ class CondominioController {
 
   async listarDashboardEmpresas(req, res) {
     try {
+      const tabelaExiste = await postgres.query(
+        `SELECT to_regclass('"condominio-bh".tb_dashboard_empresas') IS NOT NULL AS existe`,
+        {
+          type: QueryTypes.SELECT
+        }
+      );
+
+      if (!tabelaExiste[0]?.existe) {
+        return res.status(200).json({
+          total: 0,
+          data: [],
+          warning: 'Tabela tb_dashboard_empresas não encontrada no schema condominio-bh.'
+        });
+      }
+
       const data = await postgres.query(
         `SELECT
             id,
@@ -1649,6 +1664,8 @@ class CondominioController {
       const page = Math.max(this._toInt(req.query.page, 1), 1);
       const pageSize = Math.min(Math.max(this._toInt(req.query.pageSize, 25), 1), 100);
       const offset = (page - 1) * pageSize;
+      const exibicaoDashboard = this._toInt(req.query.exibicao_dashboard, null);
+      const podeVerDashboardCondominial = ehMorador && exibicaoDashboard === 1;
 
       const whereParts = ['1 = 1'];
       const replacements = {};
@@ -1663,7 +1680,7 @@ class CondominioController {
         whereParts.push('dr.id_condominio = :id_condominio_token');
         replacements.id_condominio_token = idCondominioToken;
 
-        if (ehMorador) {
+        if (ehMorador && !podeVerDashboardCondominial) {
           if (!idUsuarioToken) {
             return res.status(403).json({
               message: 'Token sem id de usuário para listar registros do dashboard do morador.'
@@ -1686,7 +1703,6 @@ class CondominioController {
         replacements.status = String(req.query.status).trim();
       }
 
-      const exibicaoDashboard = this._toInt(req.query.exibicao_dashboard, null);
       if (exibicaoDashboard !== null) {
         whereParts.push('dr.exibicao_dashboard = :exibicao_dashboard');
         replacements.exibicao_dashboard = exibicaoDashboard;
@@ -1731,8 +1747,11 @@ class CondominioController {
             dr.prioridade,
             dr.exibicao_dashboard,
             dr.id_usuario,
-            dr.apartamento,
-            dr.bloco,
+            tu.nome AS usuario_nome,
+            tu.sobrenome AS usuario_sobrenome,
+            TRIM(COALESCE(tu.nome, '') || ' ' || COALESCE(tu.sobrenome, '')) AS usuario_nome_completo,
+            COALESCE(dr.apartamento, tu.apartamento) AS apartamento,
+            COALESCE(dr.bloco, tu.bloco) AS bloco,
             dr.empresa_entrega,
             de.empresa AS empresa_entrega_nome,
             dr.id_condominio,
@@ -1747,6 +1766,8 @@ class CondominioController {
                WHEN dr.empresa_entrega::text ~ '^[0-9]+$' THEN dr.empresa_entrega::int
                ELSE NULL
              END
+           LEFT JOIN "condominio-bh"."tb-usuarios" tu
+             ON tu.id = dr.id_usuario
           LEFT JOIN "condominio-bh"."tb-condominios" c
              ON c.id = dr.id_condominio
           WHERE ${whereClause}
@@ -1835,8 +1856,11 @@ class CondominioController {
             dr.prioridade,
             dr.exibicao_dashboard,
             dr.id_usuario,
-            dr.apartamento,
-            dr.bloco,
+            tu.nome AS usuario_nome,
+            tu.sobrenome AS usuario_sobrenome,
+            TRIM(COALESCE(tu.nome, '') || ' ' || COALESCE(tu.sobrenome, '')) AS usuario_nome_completo,
+            COALESCE(dr.apartamento, tu.apartamento) AS apartamento,
+            COALESCE(dr.bloco, tu.bloco) AS bloco,
             dr.empresa_entrega,
             de.empresa AS empresa_entrega_nome,
             dr.id_condominio,
@@ -1851,6 +1875,8 @@ class CondominioController {
                WHEN dr.empresa_entrega::text ~ '^[0-9]+$' THEN dr.empresa_entrega::int
                ELSE NULL
              END
+           LEFT JOIN "condominio-bh"."tb-usuarios" tu
+             ON tu.id = dr.id_usuario
           LEFT JOIN "condominio-bh"."tb-condominios" c
              ON c.id = dr.id_condominio
           WHERE ${whereParts.join(' AND ')}
@@ -1876,7 +1902,38 @@ class CondominioController {
 
   async criarDashboardRegistro(req, res) {
     try {
+      const idPerfilToken = this._toInt(req.IdPerfil, null);
       const idUsuarioToken = this._toInt(req.idcliente, null);
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      const ehAdmin = idPerfilToken === 1;
+      const ehMorador = idPerfilToken === 2;
+
+      const idCondominioRequest = this._toInt(
+        req.body.id_condominio !== undefined
+          ? req.body.id_condominio
+          : req.body.condominio_id !== undefined
+            ? req.body.condominio_id
+            : req.body.encomenda_condominio_id,
+        null
+      );
+
+      const idCondominioFinal = ehAdmin ? idCondominioRequest : (idCondominioToken || idCondominioRequest);
+
+      if (!idCondominioFinal) {
+        return res.status(400).json({
+          message: 'id_condominio não informado no token/body para criar registro do dashboard.'
+        });
+      }
+
+      const idUsuarioFinal = ehMorador
+        ? idUsuarioToken
+        : this._toInt(req.body.id_usuario, idUsuarioToken);
+
+      if (ehMorador && !idUsuarioFinal) {
+        return res.status(403).json({
+          message: 'Token sem id de usuário para criar registro do dashboard do morador.'
+        });
+      }
 
       const insert = await postgres.query(
         `INSERT INTO "condominio-bh".tb_dashboard_registro (
@@ -1932,7 +1989,7 @@ class CondominioController {
             origem: req.body.origem ? String(req.body.origem).trim() : null,
             prioridade: this._toInt(req.body.prioridade, 0),
             exibicao_dashboard: this._toInt(req.body.exibicao_dashboard, 1),
-            id_usuario: this._toInt(req.body.id_usuario, idUsuarioToken),
+            id_usuario: idUsuarioFinal,
             apartamento:
               req.body.apartamento !== undefined
                 ? String(req.body.apartamento || '').trim() || null
@@ -1949,14 +2006,7 @@ class CondominioController {
               req.body.empresa_entrega !== undefined
                 ? String(req.body.empresa_entrega || '').trim() || null
                 : null,
-            id_condominio: this._toInt(
-              req.body.id_condominio !== undefined
-                ? req.body.id_condominio
-                : req.body.condominio_id !== undefined
-                  ? req.body.condominio_id
-                  : req.body.encomenda_condominio_id,
-              null
-            )
+            id_condominio: idCondominioFinal
           }
         }
       );
