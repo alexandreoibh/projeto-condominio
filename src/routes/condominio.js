@@ -892,6 +892,10 @@ router.post(
 			.optional({ nullable: true, checkFalsy: true })
 			.isLength({ max: 50 })
 			.withMessage('Campo bloco deve ter no máximo 50 caracteres.'),
+		body('path_avatar')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 255 })
+			.withMessage('Campo path_avatar deve ter no máximo 255 caracteres.'),
 		body('id_condominio')
 			.optional({ nullable: true, checkFalsy: true })
 			.isInt({ min: 1 })
@@ -977,7 +981,11 @@ router.post(
 		body('bloco')
 			.optional({ nullable: true, checkFalsy: true })
 			.isLength({ max: 50 })
-			.withMessage('Campo bloco deve ter no máximo 50 caracteres.')
+			.withMessage('Campo bloco deve ter no máximo 50 caracteres.'),
+		body('path_avatar')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 255 })
+			.withMessage('Campo path_avatar deve ter no máximo 255 caracteres.')
 	],
 	validate,
 	controller.criarUsuario.bind(controller)
@@ -1052,7 +1060,11 @@ router.put(
 		body('bloco')
 			.optional({ nullable: true, checkFalsy: true })
 			.isLength({ max: 50 })
-			.withMessage('Campo bloco deve ter no máximo 50 caracteres.')
+			.withMessage('Campo bloco deve ter no máximo 50 caracteres.'),
+		body('path_avatar')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 255 })
+			.withMessage('Campo path_avatar deve ter no máximo 255 caracteres.')
 	],
 	validate,
 	controller.editarUsuario.bind(controller)
@@ -1127,7 +1139,11 @@ router.patch(
 		body('bloco')
 			.optional({ nullable: true, checkFalsy: true })
 			.isLength({ max: 50 })
-			.withMessage('Campo bloco deve ter no máximo 50 caracteres.')
+			.withMessage('Campo bloco deve ter no máximo 50 caracteres.'),
+		body('path_avatar')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 255 })
+			.withMessage('Campo path_avatar deve ter no máximo 255 caracteres.')
 	],
 	validate,
 	controller.editarUsuario.bind(controller)

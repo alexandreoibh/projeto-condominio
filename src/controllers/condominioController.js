@@ -2239,6 +2239,7 @@ class CondominioController {
             tu.cpf,
             tu.email,
             tu.telefone,
+          tu.path_avatar,
             tu.tipo_morador,
             tu.tipo_perfil_id,
             tu.tipo,
@@ -2353,6 +2354,7 @@ class CondominioController {
         apartamento,
         bloco,
         observacoes,
+        path_avatar,
         password
       } = req.body;
 
@@ -2441,6 +2443,7 @@ class CondominioController {
             apartamento,
             bloco,
             observacoes,
+            path_avatar,
             created_at,
             updated_at
         ) VALUES (
@@ -2467,10 +2470,11 @@ class CondominioController {
             :apartamento,
             :bloco,
             :observacoes,
+            :path_avatar,
             now(),
             now()
         )
-        RETURNING id, id_condominio, nome, sobrenome, cpf, email, telefone, tipo_morador, tipo_perfil_id, tipo, status, apartamento, bloco, created_at`,
+        RETURNING id, id_condominio, nome, sobrenome, cpf, email, telefone, path_avatar, tipo_morador, tipo_perfil_id, tipo, status, apartamento, bloco, created_at`,
         {
           replacements: {
             id_condominio: idCondominioToken,
@@ -2495,7 +2499,8 @@ class CondominioController {
             endereco_cep: endereco_cep || null,
             apartamento: apartamento || null,
             bloco: bloco || null,
-            observacoes: observacoes || null
+            observacoes: observacoes || null,
+            path_avatar: path_avatar || null
           }
         }
       );
@@ -2704,6 +2709,7 @@ class CondominioController {
             apartamento,
             bloco,
             observacoes,
+            path_avatar,
             created_at,
             updated_at
         ) VALUES (
@@ -2730,10 +2736,11 @@ class CondominioController {
             :apartamento,
             :bloco,
             :observacoes,
+            :path_avatar,
             now(),
             now()
         )
-        RETURNING id, id_condominio, nome, sobrenome, cpf, email, telefone, tipo_morador, tipo_perfil_id, tipo, status, apartamento, bloco, created_at`,
+        RETURNING id, id_condominio, nome, sobrenome, cpf, email, telefone, path_avatar, tipo_morador, tipo_perfil_id, tipo, status, apartamento, bloco, created_at`,
         {
           replacements: {
             id_condominio: idCondominioToken,
@@ -2758,7 +2765,8 @@ class CondominioController {
             endereco_cep: this._normalizarTextoOuNull(req.body.endereco_cep),
             apartamento: apartamentoCadastro,
             bloco: blocoCadastro,
-            observacoes: this._normalizarTextoOuNull(req.body.observacoes)
+            observacoes: this._normalizarTextoOuNull(req.body.observacoes),
+            path_avatar: this._normalizarTextoOuNull(req.body.path_avatar)
           }
         }
       );
@@ -2895,10 +2903,11 @@ class CondominioController {
                 apartamento = :apartamento,
                 bloco = :bloco,
                 observacoes = :observacoes,
+                path_avatar = :path_avatar,
                 updated_at = now()
           WHERE id = :id
             AND id_condominio = :id_condominio
-        RETURNING id, id_condominio, nome, sobrenome, cpf, email, telefone, tipo_morador, tipo_perfil_id, tipo, status, apartamento, bloco, created_at, updated_at`,
+        RETURNING id, id_condominio, nome, sobrenome, cpf, email, telefone, path_avatar, tipo_morador, tipo_perfil_id, tipo, status, apartamento, bloco, created_at, updated_at`,
         {
           replacements: {
             id: idUsuario,
@@ -2952,7 +2961,9 @@ class CondominioController {
               req.body.apartamento !== undefined ? req.body.apartamento || null : atual.apartamento,
             bloco: req.body.bloco !== undefined ? req.body.bloco || null : atual.bloco,
             observacoes:
-              req.body.observacoes !== undefined ? req.body.observacoes || null : atual.observacoes
+              req.body.observacoes !== undefined ? req.body.observacoes || null : atual.observacoes,
+            path_avatar:
+              req.body.path_avatar !== undefined ? req.body.path_avatar || null : atual.path_avatar
           }
         }
       );
@@ -2992,6 +3003,7 @@ class CondominioController {
             tu.sobrenome,
             tu.cpf,
             tu.email,
+            tu.path_avatar,
             tu.telefone,
             tu.tipo_morador,
             tu.data_nascimento,
