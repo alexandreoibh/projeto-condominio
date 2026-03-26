@@ -2326,6 +2326,7 @@ class CondominioController {
   async listarUsuariosPorPerfis(req, res) {
     try {
       const idCondominioToken = this._toInt(req.id_condominio, null);
+      const idUsuarioToken = this._toInt(req.idcliente, null);
       if (!idCondominioToken) {
         return res.status(403).json({
           message: 'Token sem id_condominio para listar usuários por perfil.'
@@ -2383,12 +2384,44 @@ class CondominioController {
         }
       );
 
+      const usuarioLogadoRows = idUsuarioToken
+        ? await postgres.query(
+            `SELECT
+                tu.id,
+                tu.id_condominio,
+                tc.nome AS nome_condominio,
+                tu.nome,
+                tu.sobrenome,
+                tu.apartamento,
+                tu.bloco,
+                tu.email,
+                tu.tipo_perfil_id,
+                tu.tipo
+              FROM "condominio-bh"."tb-usuarios" tu
+              LEFT JOIN "condominio-bh"."tb-condominios" tc
+                ON tc.id = tu.id_condominio
+              WHERE tu.id = :id_usuario
+                AND tu.id_condominio = :id_condominio
+              LIMIT 1`,
+            {
+              replacements: {
+                id_usuario: idUsuarioToken,
+                id_condominio: idCondominioToken
+              },
+              type: QueryTypes.SELECT
+            }
+          )
+        : [];
+
+      const usuarioLogado = usuarioLogadoRows && usuarioLogadoRows.length > 0 ? usuarioLogadoRows[0] : null;
+
       return res.status(200).json({
         total: data.length,
         filtros: {
           id_condominio: idCondominioToken,
           perfil_ids: perfilIdsUnicos
         },
+        usuario_logado: usuarioLogado,
         data
       });
     } catch (error) {
