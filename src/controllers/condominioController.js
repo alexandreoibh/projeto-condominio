@@ -2341,6 +2341,7 @@ class CondominioController {
         .filter((item) => item !== null && item > 0);
 
       const perfilIdsUnicos = [...new Set(perfilIds)];
+      const perfilIdsTexto = perfilIdsUnicos.map((item) => String(item));
 
       if (perfilIdsUnicos.length === 0) {
         return res.status(400).json({
@@ -2371,12 +2372,12 @@ class CondominioController {
           LEFT JOIN "condominio-bh"."tb-condominios" tc
             ON tc.id = tu.id_condominio
           WHERE tu.id_condominio = :id_condominio
-            AND tu.tipo_perfil_id IN (:perfil_ids)
+            AND tu.tipo_perfil_id::text IN (:perfil_ids)
           ORDER BY tu.nome ASC, tu.id ASC`,
         {
           replacements: {
             id_condominio: idCondominioToken,
-            perfil_ids: perfilIdsUnicos
+            perfil_ids: perfilIdsTexto
           },
           type: QueryTypes.SELECT
         }
