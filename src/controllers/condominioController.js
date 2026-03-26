@@ -3995,7 +3995,7 @@ class CondominioController {
       }
 
       const espaco = await postgres.query(
-        `SELECT id, periodo_modo
+        `SELECT id, nome, periodo_modo
            FROM "condominio-bh".tb_espaco
           WHERE id = :idEspaco
             AND id_condominio = :idCondominio
@@ -4263,6 +4263,86 @@ class CondominioController {
             transaction
           }
         );
+
+        const notificacaoTipoRows = await postgres.query(
+          `SELECT id, titulo, descricao_padrao
+             FROM "condominio-bh".tb_notificacao_tipo
+            WHERE codigo = :codigo
+              AND ativo = true
+            LIMIT 1`,
+          {
+            replacements: {
+              codigo: '2'
+            },
+            type: QueryTypes.SELECT,
+            transaction
+          }
+        );
+
+        if (notificacaoTipoRows && notificacaoTipoRows.length > 0) {
+          const notificacaoTipo = notificacaoTipoRows[0];
+
+          const usuariosDestino = await postgres.query(
+            `SELECT tu.id
+               FROM "condominio-bh"."tb-usuarios" tu
+              WHERE tu.id_condominio = :id_condominio
+                AND COALESCE(tu.tipo_perfil_id::text, '0') IN ('3', '4')
+                AND COALESCE(tu.status, '') IN ('ativo', 'Ativo')`,
+            {
+              replacements: {
+                id_condominio: idCondominioToken
+              },
+              type: QueryTypes.SELECT,
+              transaction
+            }
+          );
+
+          const mensagemNotificacao = [
+            notificacaoTipo.titulo || 'Pedido Reserva',
+            espaco[0]?.nome ? `- ${espaco[0].nome}` : null,
+            dataAgendamentoIso ? `(${dataAgendamentoIso})` : null
+          ]
+            .filter((parte) => parte)
+            .join(' ');
+
+          for (const usuarioDestino of usuariosDestino) {
+            const idUsuarioDestino = this._toInt(usuarioDestino.id, null);
+            if (!idUsuarioDestino) {
+              continue;
+            }
+
+            if (idUsuarioDestino === idUsuarioToken) {
+              continue;
+            }
+
+            await postgres.query(
+              `INSERT INTO "condominio-bh".tb_notificacao_log (
+                  id_notificacao_tipo,
+                  id_usuario,
+                  mensagem,
+                  id_usuario_pedido,
+                  id_condominio
+                ) VALUES (
+                  :id_notificacao_tipo,
+                  :id_usuario,
+                  :mensagem,
+                  :id_usuario_pedido,
+                  :id_condominio
+                )`,
+              {
+                replacements: {
+                  id_notificacao_tipo: this._toInt(notificacaoTipo.id, null),
+                  id_usuario: idUsuarioDestino,
+                  mensagem: mensagemNotificacao || notificacaoTipo.descricao_padrao || 'Pedido de reserva de espaço',
+                  id_usuario_pedido: idUsuarioToken,
+                  id_condominio: idCondominioToken
+                },
+                type: QueryTypes.INSERT,
+                transaction
+              }
+            );
+          }
+        }
 
         await transaction.commit();
       } catch (transactionError) {
