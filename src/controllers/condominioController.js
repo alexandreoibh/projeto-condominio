@@ -2985,34 +2985,37 @@ class CondominioController {
 
       const usuario = await postgres.query(
         `SELECT
-            id,
-            id_condominio,
-            nome,
-            sobrenome,
-            cpf,
-            email,
-            telefone,
-            tipo_morador,
-            data_nascimento,
-            genero,
-            tipo_perfil_id,
-            tipo,
-            status,
-            endereco_logradouro,
-            endereco_numero,
-            endereco_complemento,
-            endereco_bairro,
-            endereco_cidade,
-            endereco_uf,
-            endereco_cep,
-            apartamento,
-            bloco,
-            observacoes,
-            created_at,
-            updated_at
-          FROM "condominio-bh"."tb-usuarios"
-          WHERE id = :id
-            AND id_condominio = :id_condominio
+            tu.id,
+            tu.id_condominio,
+            tc.nome AS nome_condominio,
+            tu.nome,
+            tu.sobrenome,
+            tu.cpf,
+            tu.email,
+            tu.telefone,
+            tu.tipo_morador,
+            tu.data_nascimento,
+            tu.genero,
+            tu.tipo_perfil_id,
+            tu.tipo,
+            tu.status,
+            tu.endereco_logradouro,
+            tu.endereco_numero,
+            tu.endereco_complemento,
+            tu.endereco_bairro,
+            tu.endereco_cidade,
+            tu.endereco_uf,
+            tu.endereco_cep,
+            tu.apartamento,
+            tu.bloco,
+            tu.observacoes,
+            tu.created_at,
+            tu.updated_at
+          FROM "condominio-bh"."tb-usuarios" tu
+          LEFT JOIN "condominio-bh"."tb-condominios" tc
+            ON tc.id = tu.id_condominio
+          WHERE tu.id = :id
+            AND tu.id_condominio = :id_condominio
           LIMIT 1`,
         {
           replacements: {
