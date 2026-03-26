@@ -2095,10 +2095,14 @@ class CondominioController {
               req.body.exibicao_dashboard !== undefined
                 ? this._toInt(req.body.exibicao_dashboard, 1)
                 : this._toInt(atual.exibicao_dashboard, 1),
-            id_usuario:
-              req.body.id_usuario !== undefined
-                ? this._toInt(req.body.id_usuario, null)
-                : this._toInt(atual.id_usuario, null),
+            id_usuario: (() => {
+              if (req.body.id_usuario === undefined || req.body.id_usuario === null || String(req.body.id_usuario).trim() === '') {
+                return this._toInt(atual.id_usuario, null);
+              }
+
+              const idUsuarioBody = this._toInt(req.body.id_usuario, null);
+              return idUsuarioBody || this._toInt(atual.id_usuario, null);
+            })(),
             apartamento:
               req.body.apartamento !== undefined
                 ? String(req.body.apartamento || '').trim() || null
