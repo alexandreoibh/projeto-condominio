@@ -1698,11 +1698,13 @@ class CondominioController {
         replacements.tipo = tipo;
       }
 
-      if (ehMorador) {
+      const statusFiltro = req.query.status !== undefined ? String(req.query.status).trim() : '';
+
+      if (statusFiltro !== '') {
+        whereParts.push('lower(dr.status) = :status');
+        replacements.status = statusFiltro.toLowerCase();
+      } else if (ehMorador) {
         whereParts.push("lower(dr.status) IN ('ativo', 'inativo')");
-      } else if (req.query.status !== undefined && String(req.query.status).trim() !== '') {
-        whereParts.push('dr.status = :status');
-        replacements.status = String(req.query.status).trim();
       }
 
       if (exibicaoDashboard !== null) {
