@@ -415,9 +415,31 @@ class CondominioController {
         }
       );
 
+      const dataFormatada = data.map((item) => {
+        const codigoNotificacao = String(item.notificacao_codigo || '').trim();
+        const mensagemNormalizada = this._normalizarPerfil(item.mensagem || '');
+        const ehNotificacaoTratamento =
+          codigoNotificacao === '1' ||
+          codigoNotificacao === '3' ||
+          mensagemNormalizada.includes('aprovad') ||
+          mensagemNormalizada.includes('reprov');
+
+        if (!ehNotificacaoTratamento) {
+          return item;
+        }
+
+        return {
+          ...item,
+          tratamento_nome: item.solicitante_nome || null,
+          tratamento_sobrenome: item.solicitante_sobrenome || null,
+          solicitante_nome: null,
+          solicitante_sobrenome: null
+        };
+      });
+
       return res.status(200).json({
-        total: data.length,
-        data
+        total: dataFormatada.length,
+        data: dataFormatada
       });
     } catch (error) {
       return res.status(500).json({
