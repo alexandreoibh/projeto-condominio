@@ -4539,7 +4539,7 @@ class CondominioController {
           statusNormalizado.includes('negad');
 
         if (statusEhAprovacao || statusEhReprovacao) {
-          const codigoPreferencial = statusEhAprovacao ? '3' : '4';
+          const codigoPreferencial = statusEhAprovacao ? '1' : '3';
           const termoBusca = statusEhAprovacao ? '%aprov%' : '%reprov%';
 
           const notificacaoTipoRows = await postgres.query(
