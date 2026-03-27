@@ -1379,7 +1379,12 @@ class CondominioController {
   async listarDashboardEmpresas(req, res) {
     try {
       const tabelaExiste = await postgres.query(
-        `SELECT to_regclass('"condominio-bh".tb_dashboard_empresas') IS NOT NULL AS existe`,
+        `SELECT EXISTS (
+            SELECT 1
+              FROM information_schema.tables
+             WHERE table_schema = 'condominio-bh'
+               AND table_name = 'tb_dashboard_empresas'
+          ) AS existe`,
         {
           type: QueryTypes.SELECT
         }
