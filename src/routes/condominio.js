@@ -1575,6 +1575,22 @@ router.get(
 	controller.listarLogsTratamentoAgenda.bind(controller)
 );
 
+router.get(
+	'/notificacoes/usuario/:id_usuario(\\d+)',
+	auth,
+	[param('id_usuario').isInt({ min: 1 }).withMessage('Parâmetro id_usuario inválido.')],
+	validate,
+	controller.listarNotificacoesUsuario.bind(controller)
+);
+
+router.patch(
+	'/notificacoes/:id(\\d+)/lida',
+	auth,
+	[param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.')],
+	validate,
+	controller.marcarNotificacaoComoLida.bind(controller)
+);
+
 router.patch(
 	'/espacos/agenda/:id(\\d+)/tratamento',
 	auth,

@@ -4321,13 +4321,15 @@ class CondominioController {
                   id_usuario,
                   mensagem,
                   id_usuario_pedido,
-                  id_condominio
+                  id_condominio,
+                  id_codigo
                 ) VALUES (
                   :id_notificacao_tipo,
                   :id_usuario,
                   :mensagem,
                   :id_usuario_pedido,
-                  :id_condominio
+                  :id_condominio,
+                  :id_codigo
                 )`,
               {
                 replacements: {
@@ -4335,7 +4337,8 @@ class CondominioController {
                   id_usuario: idUsuarioDestino,
                   mensagem: mensagemNotificacao || notificacaoTipo.descricao_padrao || 'Pedido de reserva de espaço',
                   id_usuario_pedido: idUsuarioToken,
-                  id_condominio: idCondominioToken
+                  id_condominio: idCondominioToken,
+                  id_codigo: this._toInt(agendaCriada.id, null)
                 },
                 type: QueryTypes.INSERT,
                 transaction
@@ -4567,8 +4570,13 @@ class CondominioController {
           const notificacaoTipo = notificacaoTipoRows && notificacaoTipoRows.length > 0 ? notificacaoTipoRows[0] : null;
 
           if (idUsuarioMorador && notificacaoTipo) {
+            const idReservaMensagem = this._toInt(updatedRow.id, null) || idAgenda;
+            const mensagemBase = statusEhAprovacao
+              ? `Reserva número ${idReservaMensagem} aprovada`
+              : `Reserva número ${idReservaMensagem} reprovada`;
+
             const mensagemNotificacao = [
-              notificacaoTipo.titulo || (statusEhAprovacao ? 'Reserva aprovada' : 'Reserva reprovada'),
+              mensagemBase,
               updatedRow.tratamento_observacao ? `- ${updatedRow.tratamento_observacao}` : null
             ]
               .filter((parte) => parte)
@@ -4580,24 +4588,24 @@ class CondominioController {
                   id_usuario,
                   mensagem,
                   id_usuario_pedido,
-                  id_condominio
+                  id_condominio,
+                  id_codigo
                 ) VALUES (
                   :id_notificacao_tipo,
                   :id_usuario,
                   :mensagem,
                   :id_usuario_pedido,
-                  :id_condominio
+                  :id_condominio,
+                  :id_codigo
                 )`,
               {
                 replacements: {
                   id_notificacao_tipo: this._toInt(notificacaoTipo.id, null),
                   id_usuario: idUsuarioMorador,
-                  mensagem:
-                    mensagemNotificacao ||
-                    notificacaoTipo.descricao_padrao ||
-                    (statusEhAprovacao ? 'Sua reserva foi aprovada.' : 'Sua reserva foi reprovada.'),
+                  mensagem: mensagemNotificacao || notificacaoTipo.descricao_padrao,
                   id_usuario_pedido: idUsuarioTratamento,
-                  id_condominio: idCondominioToken
+                  id_condominio: idCondominioToken,
+                  id_codigo: idAgenda
                 },
                 type: QueryTypes.INSERT,
                 transaction
@@ -4693,6 +4701,175 @@ class CondominioController {
     } catch (error) {
       return res.status(500).json({
         message: 'Falha ao listar logs de tratamento da reserva.',
+        detail: error.message
+      });
+    }
+  }
+
+  async listarNotificacoesUsuario(req, res) {
+    try {
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      if (!idCondominioToken) {
+        return res.status(403).json({
+          message: 'Token sem id_condominio para listar notificações.'
+        });
+      }
+
+      const idUsuarioToken = this._toInt(req.idcliente, null);
+      if (!idUsuarioToken) {
+        return res.status(403).json({
+          message: 'Token sem id de usuário para listar notificações.'
+        });
+      }
+
+      const idPerfilToken = this._toInt(req.IdPerfil, null);
+      const ehAdmin = idPerfilToken === 1;
+
+      const idUsuario = this._toInt(req.params.id_usuario, null);
+      if (!idUsuario) {
+        return res.status(400).json({
+          message: 'Parâmetro id_usuario inválido.'
+        });
+      }
+
+      if (!ehAdmin && idUsuario !== idUsuarioToken) {
+        return res.status(403).json({
+          message: 'Não autorizado a listar notificações de outro usuário.'
+        });
+      }
+
+      const data = await postgres.query(
+        `SELECT
+            nl.id,
+            nl.id_notificacao_tipo,
+            nt.codigo AS notificacao_codigo,
+            nt.titulo AS notificacao_titulo,
+            nl.id_usuario,
+            nl.id_usuario_pedido,
+            solicitante.nome AS solicitante_nome,
+            solicitante.sobrenome AS solicitante_sobrenome,
+            nl.id_codigo,
+            nl.mensagem,
+            nl.lida_em,
+            nl.created_at
+          FROM "condominio-bh".tb_notificacao_log nl
+          LEFT JOIN "condominio-bh".tb_notificacao_tipo nt
+            ON nt.id = nl.id_notificacao_tipo
+          LEFT JOIN "condominio-bh"."tb-usuarios" solicitante
+            ON solicitante.id = nl.id_usuario_pedido
+          WHERE nl.id_condominio = :id_condominio
+            AND nl.id_usuario = :id_usuario
+          ORDER BY
+            CASE WHEN nl.lida_em IS NULL THEN 0 ELSE 1 END,
+            nl.created_at DESC,
+            nl.id DESC`,
+        {
+          replacements: {
+            id_condominio: idCondominioToken,
+            id_usuario: idUsuario
+          },
+          type: QueryTypes.SELECT
+        }
+      );
+
+      return res.status(200).json({
+        total: data.length,
+        data
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao listar notificações.',
+        detail: error.message
+      });
+    }
+  }
+
+  async marcarNotificacaoComoLida(req, res) {
+    try {
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      if (!idCondominioToken) {
+        return res.status(403).json({
+          message: 'Token sem id_condominio para atualizar notificação.'
+        });
+      }
+
+      const idUsuarioToken = this._toInt(req.idcliente, null);
+      if (!idUsuarioToken) {
+        return res.status(403).json({
+          message: 'Token sem id de usuário para atualizar notificação.'
+        });
+      }
+
+      const idPerfilToken = this._toInt(req.IdPerfil, null);
+      const ehAdmin = idPerfilToken === 1;
+
+      const idNotificacao = this._toInt(req.params.id, null);
+      if (!idNotificacao) {
+        return res.status(400).json({
+          message: 'Parâmetro id inválido.'
+        });
+      }
+
+      const notificacao = await postgres.query(
+        `SELECT
+            id,
+            id_usuario,
+            lida_em
+          FROM "condominio-bh".tb_notificacao_log
+          WHERE id = :id
+            AND id_condominio = :id_condominio
+          LIMIT 1`,
+        {
+          replacements: {
+            id: idNotificacao,
+            id_condominio: idCondominioToken
+          },
+          type: QueryTypes.SELECT
+        }
+      );
+
+      if (!notificacao || notificacao.length === 0) {
+        return res.status(404).json({
+          message: 'Notificação não encontrada para este condomínio.'
+        });
+      }
+
+      const idUsuarioNotificacao = this._toInt(notificacao[0].id_usuario, null);
+      if (!ehAdmin && idUsuarioNotificacao !== idUsuarioToken) {
+        return res.status(403).json({
+          message: 'Não autorizado a atualizar esta notificação.'
+        });
+      }
+
+      const update = await postgres.query(
+        `UPDATE "condominio-bh".tb_notificacao_log
+            SET lida_em = COALESCE(lida_em, now())
+          WHERE id = :id
+            AND id_condominio = :id_condominio
+          RETURNING
+            id,
+            id_notificacao_tipo,
+            id_usuario,
+            id_usuario_pedido,
+            id_codigo,
+            mensagem,
+            lida_em,
+            created_at`,
+        {
+          replacements: {
+            id: idNotificacao,
+            id_condominio: idCondominioToken
+          }
+        }
+      );
+
+      return res.status(200).json({
+        message: 'Notificação atualizada com sucesso.',
+        data: update[0][0]
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao atualizar notificação.',
         detail: error.message
       });
     }
