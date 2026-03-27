@@ -1772,6 +1772,10 @@ class CondominioController {
             de.empresa AS empresa_entrega_nome,
             dr.id_condominio,
             c.nome AS nome_condominio,
+            c.escrita_bloco,
+            c.qtde_ap_bloco,
+            c.modelo_fatura,
+            c.qtde_blocos,
             dr.created_at,
             dr.updated_at
           FROM "condominio-bh".tb_dashboard_registro dr
@@ -1881,6 +1885,10 @@ class CondominioController {
             de.empresa AS empresa_entrega_nome,
             dr.id_condominio,
             c.nome AS nome_condominio,
+            c.escrita_bloco,
+            c.qtde_ap_bloco,
+            c.modelo_fatura,
+            c.qtde_blocos,
             dr.created_at,
             dr.updated_at
           FROM "condominio-bh".tb_dashboard_registro dr
@@ -2239,6 +2247,10 @@ class CondominioController {
             tu.id,
             tu.id_condominio,
             tc.nome AS nome_condominio,
+            tc.escrita_bloco,
+            tc.qtde_ap_bloco,
+            tc.modelo_fatura,
+            tc.qtde_blocos,
             tu.nome,
             tu.sobrenome,
             tu.cpf,
@@ -2360,6 +2372,10 @@ class CondominioController {
             tu.id,
             tu.id_condominio,
             tc.nome AS nome_condominio,
+            tc.escrita_bloco,
+            tc.qtde_ap_bloco,
+            tc.modelo_fatura,
+            tc.qtde_blocos,
             tu.nome,
             tu.sobrenome,
             tu.cpf,
@@ -2395,6 +2411,10 @@ class CondominioController {
                 tu.id,
                 tu.id_condominio,
                 tc.nome AS nome_condominio,
+                tc.escrita_bloco,
+                tc.qtde_ap_bloco,
+                tc.modelo_fatura,
+                tc.qtde_blocos,
                 tu.nome,
                 tu.sobrenome,
                 tu.apartamento,
@@ -3113,6 +3133,10 @@ class CondominioController {
             tu.id,
             tu.id_condominio,
             tc.nome AS nome_condominio,
+            tc.escrita_bloco,
+            tc.qtde_ap_bloco,
+            tc.modelo_fatura,
+            tc.qtde_blocos,
             tu.nome,
             tu.sobrenome,
             tu.cpf,
@@ -3488,7 +3512,11 @@ class CondominioController {
       );
 
       const data = await postgres.query(
-        `SELECT e.*, c.nome AS nome_condominio
+        `SELECT e.*, c.nome AS nome_condominio,
+            c.escrita_bloco,
+            c.qtde_ap_bloco,
+            c.modelo_fatura,
+            c.qtde_blocos
            FROM "condominio-bh".tb_espaco e
            LEFT JOIN "condominio-bh"."tb-condominios" c
              ON c.id = e.id_condominio
@@ -3655,6 +3683,10 @@ class CondominioController {
             tu.bloco,
 			      ea.*,
             c.nome AS nome_condominio,
+              c.escrita_bloco,
+              c.qtde_ap_bloco,
+              c.modelo_fatura,
+              c.qtde_blocos,
             e.nome AS espaco_nome,
             e.localizacao AS espaco_localizacao,
             e.taxa_reserva,
