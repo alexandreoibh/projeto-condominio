@@ -869,6 +869,24 @@ router.get(
 );
 
 router.get(
+	'/usuarios/condominio/:id_condominio(\\d+)',
+	auth,
+	[
+		param('id_condominio').isInt({ min: 1 }).withMessage('Parâmetro id_condominio inválido.'),
+		query('page')
+			.optional()
+			.isInt({ min: 1 })
+			.withMessage('Parâmetro page deve ser numérico e maior que zero.'),
+		query('pageSize')
+			.optional()
+			.isInt({ min: 1, max: 100 })
+			.withMessage('Parâmetro pageSize deve estar entre 1 e 100.')
+	],
+	validate,
+	controller.listarUsuariosPorCondominio.bind(controller)
+);
+
+router.get(
 	'/usuarios/:id(\\d+)',
 	auth,
 	[param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.')],
@@ -1523,6 +1541,10 @@ router.post(
 			.optional({ nullable: true })
 			.isLength({ max: 2000 })
 			.withMessage('Campo observacoes deve ter no máximo 2000 caracteres.'),
+		body('usuario_id')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Campo usuario_id deve ser numérico e maior que zero.'),
 		body('periodo_manha')
 			.optional({ nullable: true })
 			.isInt({ min: 0, max: 1 })

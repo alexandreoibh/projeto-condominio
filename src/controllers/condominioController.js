@@ -2457,6 +2457,99 @@ class CondominioController {
     }
   }
 
+  async listarUsuariosPorCondominio(req, res) {
+    try {
+      const idPerfilToken = this._toInt(req.IdPerfil, null);
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      const ehAdmin = idPerfilToken === 1;
+
+      const idCondominioParam = this._toInt(req.params.id_condominio, null);
+      if (!idCondominioParam) {
+        return res.status(400).json({
+          message: 'Parâmetro id_condominio inválido.'
+        });
+      }
+
+      if (!ehAdmin && (!idCondominioToken || idCondominioToken !== idCondominioParam)) {
+        return res.status(403).json({
+          message: 'Usuário sem permissão para listar usuários deste condomínio.'
+        });
+      }
+
+      const page = Math.max(this._toInt(req.query.page, 1), 1);
+      const pageSize = Math.min(Math.max(this._toInt(req.query.pageSize, 25), 1), 100);
+      const offset = (page - 1) * pageSize;
+
+      const replacements = {
+        id_condominio: idCondominioParam,
+        limit: pageSize,
+        offset
+      };
+
+      const totalRows = await postgres.query(
+        `SELECT COUNT(*)::int AS total
+           FROM "condominio-bh"."tb-usuarios" tu
+          WHERE tu.id_condominio = :id_condominio`,
+        {
+          replacements,
+          type: QueryTypes.SELECT
+        }
+      );
+
+      const rows = await postgres.query(
+        `SELECT
+            tu.id,
+            tu.id_condominio,
+            tc.nome AS nome_condominio,
+            tc.escrita_bloco,
+            tc.qtde_ap_bloco,
+            tc.modelo_fatura,
+            tc.qtde_blocos,
+            tu.nome,
+            tu.sobrenome,
+            tu.cpf,
+            tu.email,
+            tu.telefone,
+            tu.path_avatar,
+            tu.tipo_morador,
+            tu.tipo_perfil_id,
+            tu.tipo,
+            tu.status,
+            tu.apartamento,
+            tu.bloco,
+            tu.created_at,
+            tu.updated_at
+          FROM "condominio-bh"."tb-usuarios" tu
+          LEFT JOIN "condominio-bh"."tb-condominios" tc
+            ON tc.id::text = tu.id_condominio::text
+          WHERE tu.id_condominio = :id_condominio
+          ORDER BY tu.nome ASC, tu.id ASC
+          LIMIT :limit OFFSET :offset`,
+        {
+          replacements,
+          type: QueryTypes.SELECT
+        }
+      );
+
+      const total = totalRows[0]?.total || 0;
+      const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize);
+
+      return res.status(200).json({
+        page,
+        pageSize,
+        total,
+        totalPages,
+        id_condominio: idCondominioParam,
+        data: rows
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao listar usuários por condomínio.',
+        detail: error.message
+      });
+    }
+  }
+
   async criarUsuario(req, res) {
     try {
       const idCondominioToken = this._toInt(req.id_condominio, null);
@@ -3682,6 +3775,23 @@ class CondominioController {
             tu.apartamento,
             tu.bloco,
 			      ea.*,
+            ea.id_usuario_cadastro,
+            tuc.nome AS usuario_cadastro_nome,
+            tuc.sobrenome AS usuario_cadastro_sobrenome,
+            TRIM(COALESCE(tuc.nome, '') || ' ' || COALESCE(tuc.sobrenome, '')) AS usuario_cadastro_nome_completo,
+            tuc.tipo_perfil_id AS usuario_cadastro_tipo_perfil_id,
+            CASE
+              WHEN ea.id_usuario_cadastro IS NOT NULL
+                AND COALESCE(tuc.tipo_perfil_id::text, '0') = '3'
+              THEN true
+              ELSE false
+            END AS reserva_feita_por_sindico,
+            CASE
+              WHEN ea.id_usuario_cadastro IS NOT NULL
+                AND COALESCE(tuc.tipo_perfil_id::text, '0') = '3'
+              THEN 'sindico'
+              ELSE 'morador'
+            END AS origem_reserva,
             c.nome AS nome_condominio,
               c.escrita_bloco,
               c.qtde_ap_bloco,
@@ -3696,6 +3806,8 @@ class CondominioController {
              ON e.id = ea.id_espaco
           inner join  "condominio-bh"."tb-usuarios" tu 
             on ea.id_usuario = tu.id
+          left join "condominio-bh"."tb-usuarios" tuc
+            on tuc.id::text = ea.id_usuario_cadastro::text
           left join "condominio-bh"."tb-condominios" c
             on c.id = ea.id_condominio
           inner join  "condominio-bh"."tb_status_tratamento" tt
@@ -3829,10 +3941,24 @@ class CondominioController {
       const data = await postgres.query(
         `SELECT
             ea.id_usuario,
+            ea.id_usuario_cadastro,
             tu.nome AS nome_usuario,
             e.nome AS sala,
             tu.apartamento,
             tu.bloco,
+            TRIM(COALESCE(tuc.nome, '') || ' ' || COALESCE(tuc.sobrenome, '')) AS usuario_cadastro_nome_completo,
+            CASE
+              WHEN ea.id_usuario_cadastro IS NOT NULL
+                AND COALESCE(tuc.tipo_perfil_id::text, '0') = '3'
+              THEN true
+              ELSE false
+            END AS reserva_feita_por_sindico,
+            CASE
+              WHEN ea.id_usuario_cadastro IS NOT NULL
+                AND COALESCE(tuc.tipo_perfil_id::text, '0') = '3'
+              THEN 'sindico'
+              ELSE 'morador'
+            END AS origem_reserva,
             tt.descricao_status AS status_reserva,
             ea.data_agendamento::date AS data_reserva
           FROM "condominio-bh".tb_espaco_agenda ea
@@ -3840,6 +3966,8 @@ class CondominioController {
              ON e.id = ea.id_espaco
           INNER JOIN "condominio-bh"."tb-usuarios" tu
              ON tu.id = ea.id_usuario
+          LEFT JOIN "condominio-bh"."tb-usuarios" tuc
+             ON tuc.id::text = ea.id_usuario_cadastro::text
            LEFT JOIN "condominio-bh".tb_status_tratamento tt
              ON tt.id = ea.status
           WHERE ${whereClause}
@@ -3971,12 +4099,31 @@ class CondominioController {
       const data = await postgres.query(
         `SELECT
             ea.*,
+            ea.id_usuario_cadastro,
+            tuc.nome AS usuario_cadastro_nome,
+            tuc.sobrenome AS usuario_cadastro_sobrenome,
+            TRIM(COALESCE(tuc.nome, '') || ' ' || COALESCE(tuc.sobrenome, '')) AS usuario_cadastro_nome_completo,
+            tuc.tipo_perfil_id AS usuario_cadastro_tipo_perfil_id,
+            CASE
+              WHEN ea.id_usuario_cadastro IS NOT NULL
+                AND COALESCE(tuc.tipo_perfil_id::text, '0') = '3'
+              THEN true
+              ELSE false
+            END AS reserva_feita_por_sindico,
+            CASE
+              WHEN ea.id_usuario_cadastro IS NOT NULL
+                AND COALESCE(tuc.tipo_perfil_id::text, '0') = '3'
+              THEN 'sindico'
+              ELSE 'morador'
+            END AS origem_reserva,
             e.nome AS espaco_nome,
             e.localizacao AS espaco_localizacao,
             tt.descricao_status 
           FROM "condominio-bh".tb_espaco_agenda ea
           INNER JOIN "condominio-bh".tb_espaco e
              ON e.id = ea.id_espaco
+          LEFT JOIN "condominio-bh"."tb-usuarios" tuc
+             ON tuc.id::text = ea.id_usuario_cadastro::text
           inner join  "condominio-bh"."tb_status_tratamento" tt
             on ea.status = tt.id     
           WHERE ${whereClause}
@@ -4023,6 +4170,52 @@ class CondominioController {
       if (!idUsuarioToken) {
         return res.status(403).json({
           message: 'Token sem id de usuário para agendar sala.'
+        });
+      }
+
+      const idPerfilToken = this._toInt(req.IdPerfil, null);
+      const ehMorador = idPerfilToken === 2;
+
+      const idUsuarioBody = this._toInt(
+        req.body.usuario_id ?? req.body.id_usuario ?? req.body.solicitante_id,
+        null
+      );
+
+      let idUsuarioReserva = idUsuarioToken;
+      let idUsuarioCadastro = null;
+
+      if (ehMorador) {
+        idUsuarioReserva = idUsuarioToken;
+        idUsuarioCadastro = null;
+      } else {
+        if (!idUsuarioBody) {
+          return res.status(400).json({
+            message: 'Campo usuario_id é obrigatório para agendamento feito por síndico/administrador.'
+          });
+        }
+
+        idUsuarioReserva = idUsuarioBody;
+        idUsuarioCadastro = idUsuarioToken;
+      }
+
+      const usuarioReservaRows = await postgres.query(
+        `SELECT id
+           FROM "condominio-bh"."tb-usuarios"
+          WHERE id = :id_usuario
+            AND id_condominio = :id_condominio
+          LIMIT 1`,
+        {
+          replacements: {
+            id_usuario: idUsuarioReserva,
+            id_condominio: idCondominioToken
+          },
+          type: QueryTypes.SELECT
+        }
+      );
+
+      if (!usuarioReservaRows || usuarioReservaRows.length === 0) {
+        return res.status(400).json({
+          message: 'usuario_id inválido para este condomínio.'
         });
       }
 
@@ -4204,6 +4397,7 @@ class CondominioController {
              id_condominio,
              id_espaco,
              id_usuario,
+             id_usuario_cadastro,
              status,
              observacoes,
              periodo_manha,
@@ -4217,6 +4411,7 @@ class CondominioController {
              :id_condominio,
              :id_espaco,
              :id_usuario,
+             :id_usuario_cadastro,
              :status,
              :observacoes,
              :periodo_manha,
@@ -4232,7 +4427,8 @@ class CondominioController {
             replacements: {
               id_condominio: idCondominioToken,
               id_espaco: idEspaco,
-              id_usuario: idUsuarioToken,
+              id_usuario: idUsuarioReserva,
+              id_usuario_cadastro: idUsuarioCadastro,
               status,
               observacoes,
               periodo_manha,

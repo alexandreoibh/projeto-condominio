@@ -60,7 +60,7 @@ module.exports = async (req, res, next) => {
     req.IdPerfil = verify.IdPerfil || null;
     req.id_condominio = verify.id_condominio || null;
     req.empresa = verify.empresa || "condominio";
-    req.nomePerfil = verify.role || "";
+    req.nomePerfil = verify.nome_perfil || verify.role || "";
 
     return next();
   } catch (err) {
