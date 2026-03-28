@@ -3668,6 +3668,9 @@ class CondominioController {
       const usePagination = hasPageParam || hasPageSizeParam;
       const liDados = String(req.query.liDados || '').trim().toLowerCase();
       const listarTodosDados = liDados === 'all';
+      const dataInicioRaw = req.query.data_inicio;
+      const dataFimRaw = req.query.data_fim;
+      const usarPeriodo = Boolean(dataInicioRaw || dataFimRaw);
 
       const page = Math.max(this._toInt(req.query.page, 1), 1);
       const pageSize = Math.min(Math.max(this._toInt(req.query.pageSize, 10), 1), 100);
@@ -3676,8 +3679,8 @@ class CondominioController {
       const whereParts = ['ea.id_condominio = :idCondominio'];
       const baseReplacements = { idCondominio: idCondominioToken };
 
-      // Regra da rota de listagem de agenda: morador vê apenas os próprios agendamentos.
-      if (ehMorador && !listarTodosDados) {
+      // Para calendário por período, morador precisa enxergar a ocupação do espaço.
+      if (ehMorador && !listarTodosDados && !usarPeriodo) {
         whereParts.push('ea.id_usuario = :id_usuario_token');
         baseReplacements.id_usuario_token = idUsuarioToken;
       }
@@ -3709,10 +3712,6 @@ class CondominioController {
         whereParts.push('(ea.status) IN (:status_list)');
         baseReplacements.status_list = statusList.map((item) => Number(item));
       }
-
-      const dataInicioRaw = req.query.data_inicio;
-      const dataFimRaw = req.query.data_fim;
-      const usarPeriodo = Boolean(dataInicioRaw || dataFimRaw);
 
       if (usarPeriodo) {
         if (!dataInicioRaw || !dataFimRaw) {
