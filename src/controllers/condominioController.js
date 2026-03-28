@@ -4780,10 +4780,11 @@ class CondominioController {
           statusNormalizado.includes('reprov') ||
           statusNormalizado.includes('recus') ||
           statusNormalizado.includes('negad');
+        const statusEhCancelamento = idStatus === 5 || statusNormalizado.includes('cancel');
 
-        if (statusEhAprovacao || statusEhReprovacao) {
-          const codigoPreferencial = statusEhAprovacao ? '1' : '3';
-          const termoBusca = statusEhAprovacao ? '%aprov%' : '%reprov%';
+        if (statusEhAprovacao || statusEhReprovacao || statusEhCancelamento) {
+          const codigoPreferencial = statusEhAprovacao ? '1' : statusEhReprovacao ? '3' : '5';
+          const termoBusca = statusEhAprovacao ? '%aprov%' : statusEhReprovacao ? '%reprov%' : '%cancel%';
 
           const notificacaoTipoRows = await postgres.query(
             `SELECT id, titulo, descricao_padrao
@@ -4810,10 +4811,30 @@ class CondominioController {
           const notificacaoTipo = notificacaoTipoRows && notificacaoTipoRows.length > 0 ? notificacaoTipoRows[0] : null;
 
           if (idUsuarioMorador && notificacaoTipo) {
+            const espacoReservaRows = await postgres.query(
+              `SELECT nome
+                 FROM "condominio-bh".tb_espaco
+                WHERE id = :id_espaco
+                LIMIT 1`,
+              {
+                replacements: {
+                  id_espaco: this._toInt(updatedRow.id_espaco, null)
+                },
+                type: QueryTypes.SELECT,
+                transaction
+              }
+            );
+
+            const nomeEspacoReserva =
+              espacoReservaRows && espacoReservaRows.length > 0
+                ? String(espacoReservaRows[0].nome || '').trim() || null
+                : null;
             const idReservaMensagem = this._toInt(updatedRow.id, null) || idAgenda;
             const mensagemBase = statusEhAprovacao
-              ? `Reserva número ${idReservaMensagem} aprovada`
-              : `Reserva número ${idReservaMensagem} reprovada`;
+              ? `Reserva número ${idReservaMensagem} aprovada${nomeEspacoReserva ? ` para o espaço ${nomeEspacoReserva}` : ''}`
+              : statusEhReprovacao
+                ? `Reserva número ${idReservaMensagem} reprovada${nomeEspacoReserva ? ` para o espaço ${nomeEspacoReserva}` : ''}`
+                : `Ocorreu cancelamento da reserva do espaço${nomeEspacoReserva ? ` ${nomeEspacoReserva}` : ''} (reserva número ${idReservaMensagem})`;
 
             const mensagemNotificacao = [
               mensagemBase,
@@ -4994,7 +5015,7 @@ class CondominioController {
             nl.created_at
           FROM "condominio-bh".tb_notificacao_log nl
           LEFT JOIN "condominio-bh".tb_notificacao_tipo nt
-            ON nt.id = nl.id_notificacao_tipo
+            ON nt.codigo = nl.id_notificacao_tipo
           LEFT JOIN "condominio-bh"."tb-usuarios" solicitante
             ON solicitante.id = nl.id_usuario_pedido
           WHERE nl.id_condominio = :id_condominio
