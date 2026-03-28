@@ -3702,7 +3702,7 @@ class CondominioController {
       } else if (aba === 'em_andamento') {
         statusList = [1, 2];
       } else if (aba === 'concluidos') {
-        statusList = [3, 4];
+        statusList = [3, 4, 5];
       }
 
       if (statusList.length === 1) {
@@ -3740,7 +3740,7 @@ class CondominioController {
         whereParts.push('ea.data_agendamento::date BETWEEN :data_inicio AND :data_fim');
 
         if (!req.query.status && !aba) {
-          whereParts.push('(ea.status) IN (1, 2, 3, 4)');
+          whereParts.push('(ea.status) IN (1, 2, 3, 4, 5)');
         }
       }
 
@@ -4059,7 +4059,7 @@ class CondominioController {
       } else if (aba === 'em_andamento') {
         statusList = [1, 2];
       } else if (aba === 'concluidos') {
-        statusList = [3, 4];
+        statusList = [3, 4, 5];
       }
 
       if (statusList.length === 1) {
@@ -4323,7 +4323,7 @@ class CondominioController {
             AND id_espaco = :id_espaco
             AND data_agendamento >= :data_agendamento_inicio
             AND data_agendamento < :data_agendamento_fim
-            AND status IN (1, 2, 3, 4)`,
+            AND status IN (1, 2, 3)`,
         {
           replacements: {
             id_condominio: idCondominioToken,
@@ -4647,6 +4647,13 @@ class CondominioController {
         });
       }
 
+      if (![1, 2, 3, 4, 5].includes(idStatus)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Status inválido. Use 1 (em andamento), 2 (pendente), 3 (aprovado), 4 (recusado) ou 5 (cancelado).'
+        });
+      }
+
       const statusExists = await postgres.query(
         `SELECT id, descricao_status
            FROM "condominio-bh".tb_status_tratamento
@@ -4660,7 +4667,8 @@ class CondominioController {
 
       if (!statusExists || statusExists.length === 0) {
         return res.status(400).json({
-          message: 'status_code inválido para tb_status_tratamento.'
+          success: false,
+          message: 'Status inválido. Use 1 (em andamento), 2 (pendente), 3 (aprovado), 4 (recusado) ou 5 (cancelado).'
         });
       }
 
