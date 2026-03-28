@@ -8,6 +8,7 @@ const INVITE_TOKEN_SECRET = process.env.INVITE_TOKEN_SECRET || process.env.JWT_S
 const PUBLIC_REGISTER_RATE_WINDOW_MS = 15 * 60 * 1000;
 const PUBLIC_REGISTER_RATE_MAX_ATTEMPTS = 5;
 const INVITE_TOKEN_USAGE_TTL_MS = 24 * 60 * 60 * 1000;
+const INVITE_TOKEN_MAX_USES = 100;
 
 const publicRegistrationAttempts = new Map();
 const usedInviteTokens = new Map();
@@ -104,7 +105,12 @@ class CondominioController {
   }
 
   _cleanupUsedInviteTokens(now = Date.now()) {
-    for (const [key, expiresAt] of usedInviteTokens.entries()) {
+    for (const [key, usageInfo] of usedInviteTokens.entries()) {
+      const expiresAt =
+        usageInfo && typeof usageInfo === 'object'
+          ? usageInfo.expiresAt
+          : usageInfo;
+
       if (!expiresAt || now >= expiresAt) {
         usedInviteTokens.delete(key);
       }
@@ -113,12 +119,47 @@ class CondominioController {
 
   _markInviteTokenAsUsed(key, ttlMs = INVITE_TOKEN_USAGE_TTL_MS) {
     const expiresAt = Date.now() + ttlMs;
-    usedInviteTokens.set(key, expiresAt);
+    const usageInfo = usedInviteTokens.get(key);
+    const countAtual =
+      usageInfo && typeof usageInfo === 'object'
+        ? this._toInt(usageInfo.count, 0)
+        : usageInfo
+          ? 1
+          : 0;
+
+    usedInviteTokens.set(key, {
+      count: Math.max(countAtual, 0) + 1,
+      expiresAt
+    });
   }
 
   _isInviteTokenAlreadyUsed(key) {
     this._cleanupUsedInviteTokens();
-    return usedInviteTokens.has(key);
+    const usageInfo = usedInviteTokens.get(key);
+    if (!usageInfo) {
+      return false;
+    }
+
+    const count =
+      usageInfo && typeof usageInfo === 'object'
+        ? this._toInt(usageInfo.count, 0)
+        : 1;
+
+    return count >= INVITE_TOKEN_MAX_USES;
+  }
+
+  _getInviteTokenUsageCount(key) {
+    this._cleanupUsedInviteTokens();
+    const usageInfo = usedInviteTokens.get(key);
+    if (!usageInfo) {
+      return 0;
+    }
+
+    if (usageInfo && typeof usageInfo === 'object') {
+      return this._toInt(usageInfo.count, 0);
+    }
+
+    return 1;
   }
 
   _normalizarTextoOuNull(value) {
@@ -2777,9 +2818,18 @@ class CondominioController {
       const inviteJti = this._normalizarTextoOuNull(invitePayload.jti);
       const inviteJtiKey = inviteJti ? `jti:${inviteJti}` : null;
 
-      if (this._isInviteTokenAlreadyUsed(inviteTokenHash) || (inviteJtiKey && this._isInviteTokenAlreadyUsed(inviteJtiKey))) {
+      const inviteTokenNoLimite = this._isInviteTokenAlreadyUsed(inviteTokenHash);
+      const inviteJtiNoLimite = inviteJtiKey ? this._isInviteTokenAlreadyUsed(inviteJtiKey) : false;
+      if (inviteTokenNoLimite || inviteJtiNoLimite) {
+        const usosAtuais = Math.max(
+          this._getInviteTokenUsageCount(inviteTokenHash),
+          inviteJtiKey ? this._getInviteTokenUsageCount(inviteJtiKey) : 0
+        );
+
         return res.status(422).json({
-          message: 'invite_token já utilizado.'
+          message: `invite_token atingiu o limite de ${INVITE_TOKEN_MAX_USES} usos.`,
+          invite_token_max_uses: INVITE_TOKEN_MAX_USES,
+          invite_token_used_count: usosAtuais
         });
       }
 
