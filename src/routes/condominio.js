@@ -817,7 +817,19 @@ router.get(
 		query('pageSize')
 			.optional()
 			.isInt({ min: 1, max: 100 })
-			.withMessage('Parâmetro pageSize deve estar entre 1 e 100.')
+			.withMessage('Parâmetro pageSize deve estar entre 1 e 100.'),
+		query('nome')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 255 })
+			.withMessage('Parâmetro nome deve ter no máximo 255 caracteres.'),
+		query('status')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 30 })
+			.withMessage('Parâmetro status deve ter no máximo 30 caracteres.'),
+		query('ativo')
+			.optional({ nullable: true, checkFalsy: true })
+			.isBoolean()
+			.withMessage('Parâmetro ativo deve ser booleano.')
 	],
 	validate,
 	controller.listarMoradores.bind(controller)
@@ -834,7 +846,19 @@ router.get(
 		query('pageSize')
 			.optional()
 			.isInt({ min: 1, max: 100 })
-			.withMessage('Parâmetro pageSize deve estar entre 1 e 100.')
+			.withMessage('Parâmetro pageSize deve estar entre 1 e 100.'),
+		query('nome')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 255 })
+			.withMessage('Parâmetro nome deve ter no máximo 255 caracteres.'),
+		query('status')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 30 })
+			.withMessage('Parâmetro status deve ter no máximo 30 caracteres.'),
+		query('ativo')
+			.optional({ nullable: true, checkFalsy: true })
+			.isBoolean()
+			.withMessage('Parâmetro ativo deve ser booleano.')
 	],
 	validate,
 	controller.listarMoradores.bind(controller)

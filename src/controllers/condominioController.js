@@ -2263,20 +2263,61 @@ class CondominioController {
         id_condominio: idCondominioToken
       };
 
+      const nomeFiltro = this._normalizarTextoOuNull(req.query.nome);
+      const statusFiltro = this._normalizarTextoOuNull(req.query.status);
+      const ativoQuery = req.query.ativo;
+      let ativoFiltro = null;
+      if (ativoQuery !== undefined && ativoQuery !== null && String(ativoQuery).trim() !== '') {
+        const ativoNormalizado = String(ativoQuery).trim().toLowerCase();
+        if (['true', '1'].includes(ativoNormalizado)) {
+          ativoFiltro = true;
+        } else if (['false', '0'].includes(ativoNormalizado)) {
+          ativoFiltro = false;
+        }
+      }
+
       const page = Math.max(this._toInt(req.query.page, 1), 1);
       const pageSize = Math.min(Math.max(this._toInt(req.query.pageSize, 25), 1), 100);
       const offset = (page - 1) * pageSize;
 
+      const whereParts = [
+        `(
+          :eh_admin = true
+          OR (
+            tu.id_condominio = :id_condominio
+            AND COALESCE(tu.tipo_perfil_id::text, '0') <> '1'
+          )
+        )`
+      ];
+
+      if (nomeFiltro) {
+        whereParts.push(`(
+          tu.nome ILIKE :nome
+          OR tu.sobrenome ILIKE :nome
+          OR TRIM(COALESCE(tu.nome, '') || ' ' || COALESCE(tu.sobrenome, '')) ILIKE :nome
+        )`);
+        replacementsBase.nome = `%${nomeFiltro}%`;
+      }
+
+      if (statusFiltro) {
+        whereParts.push("lower(COALESCE(tu.status, '')) = :status");
+        replacementsBase.status = String(statusFiltro).toLowerCase();
+      }
+
+      if (ativoFiltro === true) {
+        whereParts.push("lower(COALESCE(tu.status, '')) = :status_ativo");
+        replacementsBase.status_ativo = 'ativo';
+      } else if (ativoFiltro === false) {
+        whereParts.push("lower(COALESCE(tu.status, '')) <> :status_ativo");
+        replacementsBase.status_ativo = 'ativo';
+      }
+
+      const whereClause = whereParts.join(' AND ');
+
       const totalRows = await postgres.query(
         `SELECT COUNT(*)::int AS total
            FROM "condominio-bh"."tb-usuarios" tu
-          WHERE (
-            :eh_admin = true
-            OR (
-              tu.id_condominio = :id_condominio
-              AND COALESCE(tu.tipo_perfil_id::text, '0') <> '1'
-            )
-          )`,
+          WHERE ${whereClause}`,
         {
           replacements: replacementsBase,
           type: QueryTypes.SELECT
@@ -2344,13 +2385,7 @@ class CondominioController {
           FROM "condominio-bh"."tb-usuarios" tu
           LEFT JOIN "condominio-bh"."tb-condominios" tc
             ON tc.id = tu.id_condominio
-          WHERE (
-            :eh_admin = true
-            OR (
-              tu.id_condominio = :id_condominio
-              AND COALESCE(tu.tipo_perfil_id::text, '0') <> '1'
-            )
-          )
+          WHERE ${whereClause}
           ORDER BY tu.id DESC
           LIMIT :limit OFFSET :offset`,
         {
