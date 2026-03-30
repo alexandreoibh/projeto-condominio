@@ -2567,7 +2567,7 @@ class CondominioController {
         `SELECT COUNT(*)::int AS total
            FROM "condominio-bh"."tb-usuarios" tu
           WHERE tu.id_condominio = :id_condominio
-          ORDER BY tu.nome ASC, tu.id ASC`,
+          `,
         {
           replacements,
           type: QueryTypes.SELECT
