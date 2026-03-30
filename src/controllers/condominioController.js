@@ -2601,7 +2601,7 @@ class CondominioController {
           LEFT JOIN "condominio-bh"."tb-condominios" tc
             ON tc.id::text = tu.id_condominio::text
           WHERE tu.id_condominio = :id_condominio
-          ORDER BY tu.nome ASC, tu.id ASC
+          ORDER BY tu.apartamento asc ,tu.nome ASC, tu.id ASC
           LIMIT :limit OFFSET :offset`,
         {
           replacements,
