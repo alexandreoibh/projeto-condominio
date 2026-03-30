@@ -2503,6 +2503,7 @@ class CondominioController {
                 ON tc.id = tu.id_condominio
               WHERE tu.id = :id_usuario
                 AND tu.id_condominio = :id_condominio
+              ORDER BY tu.nome ASC, tu.id ASC  
               LIMIT 1`,
             {
               replacements: {
@@ -2565,7 +2566,8 @@ class CondominioController {
       const totalRows = await postgres.query(
         `SELECT COUNT(*)::int AS total
            FROM "condominio-bh"."tb-usuarios" tu
-          WHERE tu.id_condominio = :id_condominio`,
+          WHERE tu.id_condominio = :id_condominio
+          ORDER BY tu.nome ASC, tu.id ASC`,
         {
           replacements,
           type: QueryTypes.SELECT
