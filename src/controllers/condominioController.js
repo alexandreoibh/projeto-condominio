@@ -3898,7 +3898,7 @@ class CondominioController {
       }
 
       const page = Math.max(this._toInt(req.query.page, 1), 1);
-      const pageSize = Math.min(Math.max(this._toInt(req.query.pageSize, 25), 1), 100);
+      const pageSize = Math.min(Math.max(this._toInt(req.query.pageSize, 500), 1), 500);
       const offset = (page - 1) * pageSize;
 
       const replacements = {
