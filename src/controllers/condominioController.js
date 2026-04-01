@@ -673,6 +673,8 @@ class CondominioController {
               c.ativo AS ativo_condominio,
               c.qtde_blocos,
               c.qtde_ap_bloco,
+              c.escrita_bloco,
+              tu.bloco,
               max(cr.created_at) as dtUltimoCriado,
               ARRAY_AGG(DISTINCT tu.id) AS moradores_ids,
               ARRAY_AGG(DISTINCT tu.nome) AS moradores_nomes
@@ -705,7 +707,10 @@ class CondominioController {
               c.telefone,
               c.ativo,
               c.qtde_blocos,
-              c.qtde_ap_bloco
+              tu.bloco,
+              c.qtde_ap_bloco,
+              c.escrita_bloco
+
           ),
           lancamentos_unidade_tipo AS (
             SELECT
@@ -742,6 +747,8 @@ class CondominioController {
             ub.ativo_condominio,
             ub.qtde_blocos,
             ub.qtde_ap_bloco,
+            ub.bloco,  
+            ub.escrita_bloco,
             ub.moradores_ids,
             ub.moradores_nomes,
             ub.dtUltimoCriado,
@@ -766,6 +773,8 @@ class CondominioController {
             ub.ativo_condominio,
             ub.qtde_blocos,
             ub.qtde_ap_bloco,
+            ub.escrita_bloco,
+            ub.bloco,
             ub.moradores_ids,
             ub.moradores_nomes
           ORDER BY ub.unidades_bloco ASC, ub.id_unidade ASC
@@ -808,6 +817,8 @@ class CondominioController {
           ativo_condominio: item.ativo_condominio,
           qtde_blocos: item.qtde_blocos,
           qtde_ap_bloco: item.qtde_ap_bloco,
+          escrita_bloco: item.escrita_bloco,
+          bloco: item.bloco,
           dtUltimoCriado: item.dtultimocriado,
           moradores_ids: Array.isArray(item.moradores_ids) ? item.moradores_ids : [],
           moradores_nomes: Array.isArray(item.moradores_nomes) ? item.moradores_nomes : [],
@@ -3908,34 +3919,44 @@ class CondominioController {
       );
 
       const rows = await postgres.query(
-        `SELECT
-            tu.id,
-            tu.id_condominio,
-            tc.nome AS nome_condominio,
-            tc.escrita_bloco,
-            tc.qtde_ap_bloco,
-            tc.modelo_fatura,
-            tc.qtde_blocos,
-            tu.nome,
-            tu.sobrenome,
-            tu.cpf,
-            tu.email,
-            tu.telefone,
-            tu.path_avatar,
-            tu.tipo_morador,
-            tu.tipo_perfil_id,
-            tu.tipo,
-            tu.status,
-            tu.apartamento,
-            tu.bloco,
-            tu.created_at,
-            tu.updated_at
-          FROM "condominio-bh"."tb-usuarios" tu
-          LEFT JOIN "condominio-bh"."tb-condominios" tc
-            ON tc.id::text = tu.id_condominio::text
-          WHERE tu.id_condominio = :id_condominio
-          ORDER BY tu.apartamento::int ASC, tu.nome ASC, tu.id ASC
-          LIMIT :limit OFFSET :offset`,
+        `SELECT DISTINCT 
+    tcu.id AS id_unidade,
+    tcu.unidades_bloco ,
+    tu.id,
+    tu.id_condominio,
+    tc.nome AS nome_condominio,
+    tc.escrita_bloco,
+    tc.qtde_ap_bloco,
+    tc.modelo_fatura,
+    tc.qtde_blocos,
+    tu.nome,
+    tu.sobrenome,
+    tu.cpf,
+    tu.email,
+    tu.telefone,
+    tu.path_avatar,
+    tu.tipo_morador,
+    tu.tipo_perfil_id,
+    tu.tipo,
+    tu.status,
+    tu.apartamento,
+    tu.bloco,
+    tu.created_at,
+    tu.updated_at,
+    tu.apartamento::int AS apartamento_ordem
+    FROM "condominio-bh"."tb-condominios" tc
+    INNER JOIN "condominio-bh".tb_condominios_unidades tcu 
+        ON tc.id = tcu.id_condominio           
+    LEFT JOIN "condominio-bh"."tb-usuarios" tu
+        ON tc.id::text = tu.id_condominio::text
+        AND tu.apartamento = tcu.unidades_bloco 
+        AND tu.id_condominio = :id_condominio  
+    WHERE tc.id = :id_condominio
+    ORDER BY 
+    apartamento_ordem ASC,
+    tu.nome ASC,
+    tu.id ASC
+    LIMIT :limit OFFSET :offset  `,
         {
           replacements,
           type: QueryTypes.SELECT
