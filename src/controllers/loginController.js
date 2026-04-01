@@ -105,6 +105,7 @@ class Login {
 
   async _registrarLogAcesso(req, {
     idUsuario = null,
+    idCondominio = null,
     emailInformado = null,
     acao = "LOGIN",
     sucesso = false,
@@ -118,6 +119,7 @@ class Login {
       await postgres.query(
         `INSERT INTO "condominio-bh".tb_sgw_log_acesso (
             id_usuario,
+          id_condominio,
             email_informado,
             acao,
             sucesso,
@@ -131,6 +133,7 @@ class Login {
             data_evento
           ) VALUES (
             :id_usuario,
+            :id_condominio,
             :email_informado,
             :acao,
             :sucesso,
@@ -146,6 +149,7 @@ class Login {
         {
           replacements: {
             id_usuario: idUsuario,
+            id_condominio: idCondominio,
             email_informado: emailInformado,
             acao,
             sucesso: Boolean(sucesso),
@@ -172,10 +176,12 @@ class Login {
   async logout(req, res) {
     try {
       const idUsuario = Number.parseInt(req.idcliente, 10) || null;
+      const idCondominio = Number.parseInt(req.id_condominio, 10) || null;
       const emailInformado = req.emailUsuario ? String(req.emailUsuario).toLowerCase() : null;
 
       await this._registrarLogAcesso(req, {
         idUsuario,
+        idCondominio,
         emailInformado,
         acao: "LOGOUT",
         sucesso: true,
@@ -189,6 +195,7 @@ class Login {
     } catch (error) {
       await this._registrarLogAcesso(req, {
         idUsuario: Number.parseInt(req.idcliente, 10) || null,
+        idCondominio: Number.parseInt(req.id_condominio, 10) || null,
         emailInformado: req.emailUsuario ? String(req.emailUsuario).toLowerCase() : null,
         acao: "LOGOUT",
         sucesso: false,
@@ -212,6 +219,7 @@ class Login {
       if (!login || !password) {
         await this._registrarLogAcesso(req, {
           idUsuario: null,
+          idCondominio: null,
           emailInformado,
           sucesso: false,
           mensagem: "Login e/ou senha não informados."
@@ -266,6 +274,7 @@ class Login {
       if (!result) {
         await this._registrarLogAcesso(req, {
           idUsuario: null,
+          idCondominio: null,
           emailInformado,
           sucesso: false,
           mensagem: "Usuário não encontrado ou inativo."
@@ -282,6 +291,7 @@ class Login {
       if (!passwordOk) {
         await this._registrarLogAcesso(req, {
           idUsuario: result.id,
+          idCondominio: Number.parseInt(result.id_condominio, 10) || null,
           emailInformado: result.email || emailInformado,
           sucesso: false,
           mensagem: "Senha inválida."
@@ -305,6 +315,7 @@ class Login {
 
       await this._registrarLogAcesso(req, {
         idUsuario: result.id,
+        idCondominio: Number.parseInt(result.id_condominio, 10) || null,
         emailInformado: result.email || emailInformado,
         sucesso: true,
         mensagem: "Login realizado com sucesso."
@@ -387,6 +398,7 @@ class Login {
     } catch (error) {
       await this._registrarLogAcesso(req, {
         idUsuario: null,
+        idCondominio: Number.parseInt(req.id_condominio, 10) || null,
         emailInformado: this._extractCredentials(req).login || null,
         sucesso: false,
         mensagem: `Erro interno no login: ${error.message}`
