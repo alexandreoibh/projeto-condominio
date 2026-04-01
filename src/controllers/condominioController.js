@@ -171,6 +171,13 @@ class CondominioController {
     return text === '' ? null : text;
   }
 
+  _getIdTipoConsumoQuery(query = {}) {
+    return this._toInt(
+      query.id_tipo_consumo ?? query.id_tipo ?? query.idTipoConsumo ?? query.idTipo,
+      null
+    );
+  }
+
   _normalizarEmailOuNull(value) {
     const text = this._normalizarTextoOuNull(value);
     return text ? text.toLowerCase() : null;
@@ -467,7 +474,7 @@ class CondominioController {
         offset
       };
 
-      const idTipoConsumo = this._toInt(req.query.id_tipo_consumo, null);
+      const idTipoConsumo = this._getIdTipoConsumoQuery(req.query);
       if (idTipoConsumo) {
         whereParts.push('cr.id_tipo_consumo = :id_tipo_consumo');
         replacements.id_tipo_consumo = idTipoConsumo;
@@ -485,10 +492,38 @@ class CondominioController {
         replacements.status = status;
       }
 
+      const morador =
+        this._normalizarTextoOuNull(req.query.morador) ||
+        this._normalizarTextoOuNull(req.query.unidade);
+      if (morador) {
+        whereParts.push(`(
+          tu.nome ILIKE :morador
+          OR tu.sobrenome ILIKE :morador
+          OR TRIM(COALESCE(tu.nome, '') || ' ' || COALESCE(tu.sobrenome, '')) ILIKE :morador
+        )`);
+        replacements.morador = `%${morador}%`;
+      }
+
       const competencia = this._normalizarTextoOuNull(req.query.competencia);
       if (competencia) {
         whereParts.push('cr.competencia = :competencia::date');
         replacements.competencia = competencia;
+      }
+
+      const periodoInicio =
+        this._normalizarTextoOuNull(req.query.periodo_inicio) ||
+        this._normalizarTextoOuNull(req.query.periodoInicio);
+      if (periodoInicio) {
+        whereParts.push('cr.created_at >= :periodo_inicio::date');
+        replacements.periodo_inicio = periodoInicio;
+      }
+
+      const periodoFim =
+        this._normalizarTextoOuNull(req.query.periodo_fim) ||
+        this._normalizarTextoOuNull(req.query.periodoFim);
+      if (periodoFim) {
+        whereParts.push("cr.created_at < (:periodo_fim::date + INTERVAL '1 day')");
+        replacements.periodo_fim = periodoFim;
       }
 
       const whereClause = whereParts.join(' AND ');
@@ -496,6 +531,8 @@ class CondominioController {
       const totalResult = await postgres.query(
         `SELECT COUNT(1)::int AS total
            FROM "condominio-bh".tb_consumo_registros cr
+           LEFT JOIN "condominio-bh"."tb-usuarios" tu
+             ON tu.id = cr.id_usuario
           WHERE ${whereClause}`,
         {
           replacements,
@@ -566,12 +603,22 @@ class CondominioController {
       const offset = (page - 1) * pageSize;
 
       const moradorFiltro = this._normalizarTextoOuNull(req.query.morador);
-      const statusFiltro = this._normalizarTextoOuNull(req.query.status);
+      const statusFiltro = req.query.status;
+      const idTipoConsumoFiltro = this._getIdTipoConsumoQuery(req.query);
+      const periodoInicio =
+        this._normalizarTextoOuNull(req.query.periodo_inicio) ||
+        this._normalizarTextoOuNull(req.query.periodoInicio);
+      const periodoFim =
+        this._normalizarTextoOuNull(req.query.periodo_fim) ||
+        this._normalizarTextoOuNull(req.query.periodoFim);
 
       const replacements = {
         id_condominio: idCondominioToken,
         morador: moradorFiltro ? `%${moradorFiltro}%` : null,
         status: statusFiltro || null,
+        id_tipo_consumo: idTipoConsumoFiltro,
+        periodo_inicio: periodoInicio,
+        periodo_fim: periodoFim,
         limit: pageSize,
         offset
       };
@@ -588,6 +635,9 @@ class CondominioController {
              AND TRIM(LOWER(cu.unidades_bloco)) = TRIM(LOWER(COALESCE(tu.apartamento, '')))
             WHERE cr.id_condominio = :id_condominio
               AND (:status IS NULL OR UPPER(cr.status) = UPPER(:status))
+              AND (:id_tipo_consumo IS NULL OR cr.id_tipo_consumo = :id_tipo_consumo)
+              AND (:periodo_inicio IS NULL OR cr.created_at >= :periodo_inicio::date)
+              AND (:periodo_fim IS NULL OR cr.created_at < (:periodo_fim::date + INTERVAL '1 day'))
               AND (
                 :morador IS NULL
                 OR tu.nome ILIKE :morador
@@ -623,6 +673,7 @@ class CondominioController {
               c.ativo AS ativo_condominio,
               c.qtde_blocos,
               c.qtde_ap_bloco,
+              max(cr.created_at) as dtUltimoCriado,
               ARRAY_AGG(DISTINCT tu.id) AS moradores_ids,
               ARRAY_AGG(DISTINCT tu.nome) AS moradores_nomes
             FROM "condominio-bh".tb_consumo_registros cr
@@ -634,7 +685,10 @@ class CondominioController {
             INNER JOIN "condominio-bh"."tb-condominios" c
               ON c.id = cr.id_condominio
             WHERE cr.id_condominio = :id_condominio
-              AND (:status IS NULL OR UPPER(cr.status) = UPPER(:status))
+              AND (:status IS NULL OR (cr.id_tipo_consumo) = (:status))
+              AND (:id_tipo_consumo IS NULL OR cr.id_tipo_consumo = :id_tipo_consumo)
+              AND (:periodo_inicio IS NULL OR cr.created_at >= :periodo_inicio::date)
+              AND (:periodo_fim IS NULL OR cr.created_at < (:periodo_fim::date + INTERVAL '1 day'))
               AND (
                 :morador IS NULL
                 OR tu.nome ILIKE :morador
@@ -665,7 +719,10 @@ class CondominioController {
               ON cu.id_condominio = cr.id_condominio
              AND TRIM(LOWER(cu.unidades_bloco)) = TRIM(LOWER(COALESCE(tu.apartamento, '')))
             WHERE cr.id_condominio = :id_condominio
-              AND (:status IS NULL OR UPPER(cr.status) = UPPER(:status))
+              AND (:status IS NULL OR (cr.id_tipo_consumo) = (:status))
+              AND (:id_tipo_consumo IS NULL OR cr.id_tipo_consumo = :id_tipo_consumo)
+              AND (:periodo_inicio IS NULL OR cr.created_at >= :periodo_inicio::date)
+              AND (:periodo_fim IS NULL OR cr.created_at < (:periodo_fim::date + INTERVAL '1 day'))
               AND (
                 :morador IS NULL
                 OR tu.nome ILIKE :morador
@@ -687,6 +744,7 @@ class CondominioController {
             ub.qtde_ap_bloco,
             ub.moradores_ids,
             ub.moradores_nomes,
+            ub.dtUltimoCriado,
             COALESCE(SUM(lut.qtd_lancamentos), 0)::int AS total_lancamentos,
             ARRAY_AGG(tipos.id ORDER BY tipos.id) AS tipos_ids,
             ARRAY_AGG(tipos.nome ORDER BY tipos.id) AS tipos_nomes,
@@ -703,6 +761,7 @@ class CondominioController {
             ub.nome_condominio,
             ub.cnpj_condominio,
             ub.email_condominio,
+            ub.dtUltimoCriado,
             ub.telefone_condominio,
             ub.ativo_condominio,
             ub.qtde_blocos,
@@ -749,6 +808,7 @@ class CondominioController {
           ativo_condominio: item.ativo_condominio,
           qtde_blocos: item.qtde_blocos,
           qtde_ap_bloco: item.qtde_ap_bloco,
+          dtUltimoCriado: item.dtultimocriado,
           moradores_ids: Array.isArray(item.moradores_ids) ? item.moradores_ids : [],
           moradores_nomes: Array.isArray(item.moradores_nomes) ? item.moradores_nomes : [],
           total_lancamentos: item.total_lancamentos,
@@ -767,7 +827,10 @@ class CondominioController {
         totalPages,
         filtros: {
           morador: moradorFiltro,
-          status: statusFiltro
+          status: statusFiltro,
+          id_tipo_consumo: idTipoConsumoFiltro,
+          periodo_inicio: periodoInicio,
+          periodo_fim: periodoFim
         },
         data: dataNormalizada
       });
@@ -797,12 +860,14 @@ class CondominioController {
 
       const moradorFiltro = this._normalizarTextoOuNull(req.query.morador);
       const statusFiltro = this._normalizarTextoOuNull(req.query.status);
+      const idTipoConsumoFiltro = this._getIdTipoConsumoQuery(req.query);
 
       const replacements = {
         id_condominio: idCondominioToken,
         id_unidade: idUnidade,
         morador: moradorFiltro ? `%${moradorFiltro}%` : null,
-        status: statusFiltro || null
+        status: statusFiltro || null,
+        id_tipo_consumo: idTipoConsumoFiltro
       };
 
       const data = await postgres.query(
@@ -825,6 +890,7 @@ class CondominioController {
               c.ativo AS ativo_condominio,
               c.qtde_blocos,
               c.qtde_ap_bloco,
+              max(cr.created_at) as dtUltimoCriado,
               ARRAY_AGG(DISTINCT tu.id) AS moradores_ids,
               ARRAY_AGG(DISTINCT tu.nome) AS moradores_nomes
             FROM "condominio-bh".tb_consumo_registros cr
@@ -838,6 +904,7 @@ class CondominioController {
             WHERE cr.id_condominio = :id_condominio
               AND cu.id = :id_unidade
               AND (:status IS NULL OR UPPER(cr.status) = UPPER(:status))
+              AND (:id_tipo_consumo IS NULL OR cr.id_tipo_consumo = :id_tipo_consumo)
               AND (
                 :morador IS NULL
                 OR tu.nome ILIKE :morador
@@ -870,6 +937,7 @@ class CondominioController {
             WHERE cr.id_condominio = :id_condominio
               AND cu.id = :id_unidade
               AND (:status IS NULL OR UPPER(cr.status) = UPPER(:status))
+              AND (:id_tipo_consumo IS NULL OR cr.id_tipo_consumo = :id_tipo_consumo)
               AND (
                 :morador IS NULL
                 OR tu.nome ILIKE :morador
@@ -889,6 +957,7 @@ class CondominioController {
             ub.ativo_condominio,
             ub.qtde_blocos,
             ub.qtde_ap_bloco,
+            ub.dtUltimoCriado,
             ub.moradores_ids,
             ub.moradores_nomes,
             COALESCE(SUM(lut.qtd_lancamentos), 0)::int AS total_lancamentos,
@@ -911,6 +980,7 @@ class CondominioController {
             ub.ativo_condominio,
             ub.qtde_blocos,
             ub.qtde_ap_bloco,
+            ub.dtUltimoCriado,
             ub.moradores_ids,
             ub.moradores_nomes
           LIMIT 1`,
@@ -951,7 +1021,8 @@ class CondominioController {
         filtros: {
           id_unidade: idUnidade,
           morador: moradorFiltro,
-          status: statusFiltro
+          status: statusFiltro,
+          id_tipo_consumo: idTipoConsumoFiltro
         },
         data: {
           id_unidade: item.id_unidade,
@@ -964,6 +1035,7 @@ class CondominioController {
           ativo_condominio: item.ativo_condominio,
           qtde_blocos: item.qtde_blocos,
           qtde_ap_bloco: item.qtde_ap_bloco,
+          dtUltimoCriado: item.dtultimocriado,
           moradores_ids: Array.isArray(item.moradores_ids) ? item.moradores_ids : [],
           moradores_nomes: Array.isArray(item.moradores_nomes) ? item.moradores_nomes : [],
           total_lancamentos: item.total_lancamentos,
@@ -1001,7 +1073,7 @@ class CondominioController {
 
       const statusFiltro = this._normalizarTextoOuNull(req.query.status);
       const competenciaFiltro = this._normalizarTextoOuNull(req.query.competencia);
-      const idTipoConsumoFiltro = this._toInt(req.query.id_tipo_consumo, null);
+      const idTipoConsumoFiltro = this._getIdTipoConsumoQuery(req.query);
 
       const whereParts = [
         'cr.id_condominio = :id_condominio',

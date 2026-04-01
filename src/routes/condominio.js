@@ -61,7 +61,31 @@ router.get(
 		query('status')
 			.optional({ nullable: true, checkFalsy: true })
 			.isLength({ max: 20 })
-			.withMessage('Parâmetro status deve ter no máximo 20 caracteres.')
+			.withMessage('Parâmetro status deve ter no máximo 20 caracteres.'),
+		query('unidade')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 120 })
+			.withMessage('Parâmetro unidade deve ter no máximo 120 caracteres.'),
+		query('morador')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 120 })
+			.withMessage('Parâmetro morador deve ter no máximo 120 caracteres.'),
+		query('periodo_inicio')
+			.optional({ nullable: true, checkFalsy: true })
+			.isISO8601()
+			.withMessage('Parâmetro periodo_inicio deve estar em formato de data válido.'),
+		query('periodoInicio')
+			.optional({ nullable: true, checkFalsy: true })
+			.isISO8601()
+			.withMessage('Parâmetro periodoInicio deve estar em formato de data válido.'),
+		query('periodo_fim')
+			.optional({ nullable: true, checkFalsy: true })
+			.isISO8601()
+			.withMessage('Parâmetro periodo_fim deve estar em formato de data válido.'),
+		query('periodoFim')
+			.optional({ nullable: true, checkFalsy: true })
+			.isISO8601()
+			.withMessage('Parâmetro periodoFim deve estar em formato de data válido.')
 	],
 	validate,
 	controller.listarConsumoRegistros.bind(controller)
@@ -85,7 +109,27 @@ router.get(
 		query('status')
 			.optional({ nullable: true, checkFalsy: true })
 			.isLength({ max: 20 })
-			.withMessage('Parâmetro status deve ter no máximo 20 caracteres.')
+			.withMessage('Parâmetro status deve ter no máximo 20 caracteres.'),
+		query('id_tipo_consumo')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Parâmetro id_tipo_consumo deve ser numérico e maior que zero.'),
+		query('periodo_inicio')
+			.optional({ nullable: true, checkFalsy: true })
+			.isISO8601()
+			.withMessage('Parâmetro periodo_inicio deve estar em formato de data válido.'),
+		query('periodoInicio')
+			.optional({ nullable: true, checkFalsy: true })
+			.isISO8601()
+			.withMessage('Parâmetro periodoInicio deve estar em formato de data válido.'),
+		query('periodo_fim')
+			.optional({ nullable: true, checkFalsy: true })
+			.isISO8601()
+			.withMessage('Parâmetro periodo_fim deve estar em formato de data válido.'),
+		query('periodoFim')
+			.optional({ nullable: true, checkFalsy: true })
+			.isISO8601()
+			.withMessage('Parâmetro periodoFim deve estar em formato de data válido.')
 	],
 	validate,
 	controller.listarConsumoResumoPorMorador.bind(controller)
@@ -102,7 +146,11 @@ router.get(
 		query('status')
 			.optional({ nullable: true, checkFalsy: true })
 			.isLength({ max: 20 })
-			.withMessage('Parâmetro status deve ter no máximo 20 caracteres.')
+			.withMessage('Parâmetro status deve ter no máximo 20 caracteres.'),
+		query('id_tipo_consumo')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Parâmetro id_tipo_consumo deve ser numérico e maior que zero.')
 	],
 	validate,
 	controller.buscarConsumoResumoPorIdUnidade.bind(controller)
