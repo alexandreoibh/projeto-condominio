@@ -46,16 +46,177 @@ class Login {
     return password === passwordHash;
   }
 
+  _resolveRequestIp(req) {
+    const forwarded = req.headers?.["x-forwarded-for"];
+    const forwardedValue = Array.isArray(forwarded) ? forwarded[0] : forwarded;
+    const forwardedIp = forwardedValue ? String(forwardedValue).split(",")[0].trim() : null;
+    const rawIp = forwardedIp || req.ip || req.socket?.remoteAddress || null;
+
+    if (!rawIp) {
+      return null;
+    }
+
+    return String(rawIp).replace(/^::ffff:/, "");
+  }
+
+  _extractClientInfo(userAgentRaw) {
+    const userAgent = String(userAgentRaw || "");
+    const userAgentLower = userAgent.toLowerCase();
+
+    let dispositivo = "desktop";
+    if (/mobile|iphone|ipod|android/.test(userAgentLower)) {
+      dispositivo = "mobile";
+    } else if (/ipad|tablet/.test(userAgentLower)) {
+      dispositivo = "tablet";
+    }
+
+    let sistemaOperacional = "desconhecido";
+    if (/windows nt/i.test(userAgent)) {
+      sistemaOperacional = "Windows";
+    } else if (/android/i.test(userAgent)) {
+      sistemaOperacional = "Android";
+    } else if (/iphone|ipad|ipod|ios/i.test(userAgent)) {
+      sistemaOperacional = "iOS";
+    } else if (/mac os x|macintosh/i.test(userAgent)) {
+      sistemaOperacional = "macOS";
+    } else if (/linux/i.test(userAgent)) {
+      sistemaOperacional = "Linux";
+    }
+
+    let navegador = "desconhecido";
+    if (/edg\//i.test(userAgent)) {
+      navegador = "Edge";
+    } else if (/opr\//i.test(userAgent) || /opera/i.test(userAgent)) {
+      navegador = "Opera";
+    } else if (/chrome\//i.test(userAgent) && !/edg\//i.test(userAgent)) {
+      navegador = "Chrome";
+    } else if (/firefox\//i.test(userAgent)) {
+      navegador = "Firefox";
+    } else if (/safari\//i.test(userAgent) && !/chrome\//i.test(userAgent)) {
+      navegador = "Safari";
+    }
+
+    return {
+      dispositivo,
+      sistemaOperacional,
+      navegador
+    };
+  }
+
+  async _registrarLogAcesso(req, {
+    idUsuario = null,
+    emailInformado = null,
+    acao = "LOGIN",
+    sucesso = false,
+    mensagem = null
+  } = {}) {
+    try {
+      const userAgent = req.headers?.["user-agent"] ? String(req.headers["user-agent"]) : null;
+      const ip = this._resolveRequestIp(req);
+      const { dispositivo, sistemaOperacional, navegador } = this._extractClientInfo(userAgent);
+
+      await postgres.query(
+        `INSERT INTO "condominio-bh".tb_sgw_log_acesso (
+            id_usuario,
+            email_informado,
+            acao,
+            sucesso,
+            ip,
+            user_agent,
+            dispositivo,
+            sistema_operacional,
+            navegador,
+            localizacao_aproximada,
+            mensagem,
+            data_evento
+          ) VALUES (
+            :id_usuario,
+            :email_informado,
+            :acao,
+            :sucesso,
+            :ip,
+            :user_agent,
+            :dispositivo,
+            :sistema_operacional,
+            :navegador,
+            :localizacao_aproximada,
+            :mensagem,
+            now()
+          )`,
+        {
+          replacements: {
+            id_usuario: idUsuario,
+            email_informado: emailInformado,
+            acao,
+            sucesso: Boolean(sucesso),
+            ip,
+            user_agent: userAgent,
+            dispositivo,
+            sistema_operacional: sistemaOperacional,
+            navegador,
+            localizacao_aproximada: null,
+            mensagem
+          },
+          type: QueryTypes.INSERT
+        }
+      );
+    } catch (logError) {
+      // O log de acesso não deve impedir o fluxo de autenticação.
+    }
+  }
+
   async login(req, res) {
     return this.index(req, res);
+  }
+
+  async logout(req, res) {
+    try {
+      const idUsuario = Number.parseInt(req.idcliente, 10) || null;
+      const emailInformado = req.emailUsuario ? String(req.emailUsuario).toLowerCase() : null;
+
+      await this._registrarLogAcesso(req, {
+        idUsuario,
+        emailInformado,
+        acao: "LOGOUT",
+        sucesso: true,
+        mensagem: "Logout realizado com sucesso."
+      });
+
+      return res.status(200).send({
+        check: true,
+        message: "Logout registrado com sucesso."
+      });
+    } catch (error) {
+      await this._registrarLogAcesso(req, {
+        idUsuario: Number.parseInt(req.idcliente, 10) || null,
+        emailInformado: req.emailUsuario ? String(req.emailUsuario).toLowerCase() : null,
+        acao: "LOGOUT",
+        sucesso: false,
+        mensagem: `Erro interno no logout: ${error.message}`
+      });
+
+      return res.status(500).send({
+        check: false,
+        message: "Erro no logout.",
+        detail: error.message
+      });
+    }
   }
 
   async index(req, res) {
     try {
       const { login, password } = this._extractCredentials(req);
       const cpf = this._normalizeCpf(login);
+      const emailInformado = login && login.includes("@") ? login : null;
 
       if (!login || !password) {
+        await this._registrarLogAcesso(req, {
+          idUsuario: null,
+          emailInformado,
+          sucesso: false,
+          mensagem: "Login e/ou senha não informados."
+        });
+
         return res.status(400).send({
           check: false,
           message: "Informe login e senha no body (POST)."
@@ -103,6 +264,13 @@ class Login {
 
       const result = user && user.length > 0 ? user[0] : null;
       if (!result) {
+        await this._registrarLogAcesso(req, {
+          idUsuario: null,
+          emailInformado,
+          sucesso: false,
+          mensagem: "Usuário não encontrado ou inativo."
+        });
+
         return res.send({
           check: false,
           message: "Usuário ou senha inválidos."
@@ -112,6 +280,13 @@ class Login {
       const passwordOk = await this._isPasswordValid(password, result.senha_hash);
 
       if (!passwordOk) {
+        await this._registrarLogAcesso(req, {
+          idUsuario: result.id,
+          emailInformado: result.email || emailInformado,
+          sucesso: false,
+          mensagem: "Senha inválida."
+        });
+
         return res.send({
           check: false,
           message: "Usuário ou senha inválidos."
@@ -127,6 +302,13 @@ class Login {
           type: QueryTypes.UPDATE
         }
       );
+
+      await this._registrarLogAcesso(req, {
+        idUsuario: result.id,
+        emailInformado: result.email || emailInformado,
+        sucesso: true,
+        mensagem: "Login realizado com sucesso."
+      });
 
       const token = jwt.sign(
         {
@@ -203,6 +385,13 @@ class Login {
         }
       });
     } catch (error) {
+      await this._registrarLogAcesso(req, {
+        idUsuario: null,
+        emailInformado: this._extractCredentials(req).login || null,
+        sucesso: false,
+        mensagem: `Erro interno no login: ${error.message}`
+      });
+
       return res.status(500).send({
         check: false,
         message: "Erro no login.",
