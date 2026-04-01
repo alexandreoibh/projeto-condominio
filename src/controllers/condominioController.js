@@ -414,6 +414,1267 @@ class CondominioController {
     });
   }
 
+  async listarConsumoTiposAtivos(req, res) {
+    try {
+      const data = await postgres.query(
+        `SELECT
+            id,
+            nome,
+            descricao,
+            tipo_cobranca,
+            unidade_medida,
+            valor_minimo,
+            ativo,
+            created_at,
+            updated_at
+          FROM "condominio-bh".tb_consumo_tipo
+          WHERE ativo = true
+          ORDER BY nome ASC`,
+        {
+          type: QueryTypes.SELECT
+        }
+      );
+
+      return res.status(200).json({
+        total: data.length,
+        data
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao listar tipos de consumo ativos.',
+        detail: error.message
+      });
+    }
+  }
+
+  async listarConsumoRegistros(req, res) {
+    try {
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      if (!idCondominioToken) {
+        return res.status(403).json({
+          message: 'Token sem id_condominio para listar registros de consumo.'
+        });
+      }
+
+      const page = Math.max(this._toInt(req.query.page, 1), 1);
+      const pageSize = Math.max(this._toInt(req.query.pageSize, 25), 1);
+      const offset = (page - 1) * pageSize;
+
+      const whereParts = ['cr.id_condominio = :id_condominio'];
+      const replacements = {
+        id_condominio: idCondominioToken,
+        limit: pageSize,
+        offset
+      };
+
+      const idTipoConsumo = this._toInt(req.query.id_tipo_consumo, null);
+      if (idTipoConsumo) {
+        whereParts.push('cr.id_tipo_consumo = :id_tipo_consumo');
+        replacements.id_tipo_consumo = idTipoConsumo;
+      }
+
+      const idUsuario = this._toInt(req.query.id_usuario, null);
+      if (idUsuario) {
+        whereParts.push('cr.id_usuario = :id_usuario');
+        replacements.id_usuario = idUsuario;
+      }
+
+      const status = this._normalizarTextoOuNull(req.query.status);
+      if (status) {
+        whereParts.push('UPPER(cr.status) = UPPER(:status)');
+        replacements.status = status;
+      }
+
+      const competencia = this._normalizarTextoOuNull(req.query.competencia);
+      if (competencia) {
+        whereParts.push('cr.competencia = :competencia::date');
+        replacements.competencia = competencia;
+      }
+
+      const whereClause = whereParts.join(' AND ');
+
+      const totalResult = await postgres.query(
+        `SELECT COUNT(1)::int AS total
+           FROM "condominio-bh".tb_consumo_registros cr
+          WHERE ${whereClause}`,
+        {
+          replacements,
+          type: QueryTypes.SELECT
+        }
+      );
+
+      const data = await postgres.query(
+        `SELECT
+            cr.id,
+            cr.id_tipo_consumo,
+            ct.nome AS nome_tipo_consumo,
+            cr.id_usuario,
+            tu.nome AS nome_usuario,
+            cr.competencia,
+            cr.leitura_anterior,
+            cr.leitura_atual,
+            cr.consumo,
+            cr.valor_unitario,
+            cr.valor_total,
+            cr.cobr_valor_minimo,
+            cr.observacao,
+            cr.status,
+            cr.id_condominio,
+            cr.id_usuario_cadastro,
+            cr.origem_imagem,
+            cr.created_at,
+            cr.updated_at
+          FROM "condominio-bh".tb_consumo_registros cr
+          LEFT JOIN "condominio-bh".tb_consumo_tipo ct
+            ON ct.id = cr.id_tipo_consumo
+          LEFT JOIN "condominio-bh"."tb-usuarios" tu
+            ON tu.id = cr.id_usuario
+          WHERE ${whereClause}
+          ORDER BY cr.competencia DESC, cr.id DESC
+          LIMIT :limit OFFSET :offset`,
+        {
+          replacements,
+          type: QueryTypes.SELECT
+        }
+      );
+
+      return res.status(200).json({
+        page,
+        pageSize,
+        total: totalResult[0]?.total || 0,
+        data
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao listar registros de consumo.',
+        detail: error.message
+      });
+    }
+  }
+
+  async listarConsumoResumoPorMorador(req, res) {
+    try {
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      if (!idCondominioToken) {
+        return res.status(403).json({
+          message: 'Token sem id_condominio para listar resumo de consumo por morador.'
+        });
+      }
+
+      const page = Math.max(this._toInt(req.query.page, 1), 1);
+      const pageSize = Math.max(this._toInt(req.query.pageSize, 25), 1);
+      const offset = (page - 1) * pageSize;
+
+      const moradorFiltro = this._normalizarTextoOuNull(req.query.morador);
+      const statusFiltro = this._normalizarTextoOuNull(req.query.status);
+
+      const replacements = {
+        id_condominio: idCondominioToken,
+        morador: moradorFiltro ? `%${moradorFiltro}%` : null,
+        status: statusFiltro || null,
+        limit: pageSize,
+        offset
+      };
+
+      const totalRows = await postgres.query(
+        `WITH unidades_com_registro AS (
+            SELECT DISTINCT
+              cu.id AS id_unidade
+            FROM "condominio-bh".tb_consumo_registros cr
+            INNER JOIN "condominio-bh"."tb-usuarios" tu
+              ON tu.id = cr.id_usuario
+            INNER JOIN "condominio-bh".tb_condominios_unidades cu
+              ON cu.id_condominio = cr.id_condominio
+             AND TRIM(LOWER(cu.unidades_bloco)) = TRIM(LOWER(COALESCE(tu.apartamento, '')))
+            WHERE cr.id_condominio = :id_condominio
+              AND (:status IS NULL OR UPPER(cr.status) = UPPER(:status))
+              AND (
+                :morador IS NULL
+                OR tu.nome ILIKE :morador
+                OR tu.email ILIKE :morador
+                OR tu.cpf ILIKE :morador
+              )
+          )
+          SELECT COUNT(1)::int AS total
+            FROM unidades_com_registro`,
+        {
+          replacements,
+          type: QueryTypes.SELECT
+        }
+      );
+
+      const data = await postgres.query(
+        `WITH tipos AS (
+            SELECT
+              ct.id,
+              ct.nome
+            FROM "condominio-bh".tb_consumo_tipo ct
+            WHERE ct.ativo = true
+          ),
+          unidades_base AS (
+            SELECT DISTINCT
+              cu.id AS id_unidade,
+              cu.unidades_bloco,
+              c.id AS id_condominio,
+              c.nome AS nome_condominio,
+              c.cnpj AS cnpj_condominio,
+              c.email AS email_condominio,
+              c.telefone AS telefone_condominio,
+              c.ativo AS ativo_condominio,
+              c.qtde_blocos,
+              c.qtde_ap_bloco,
+              ARRAY_AGG(DISTINCT tu.id) AS moradores_ids,
+              ARRAY_AGG(DISTINCT tu.nome) AS moradores_nomes
+            FROM "condominio-bh".tb_consumo_registros cr
+            INNER JOIN "condominio-bh"."tb-usuarios" tu
+              ON tu.id = cr.id_usuario
+            INNER JOIN "condominio-bh".tb_condominios_unidades cu
+              ON cu.id_condominio = cr.id_condominio
+             AND TRIM(LOWER(cu.unidades_bloco)) = TRIM(LOWER(COALESCE(tu.apartamento, '')))
+            INNER JOIN "condominio-bh"."tb-condominios" c
+              ON c.id = cr.id_condominio
+            WHERE cr.id_condominio = :id_condominio
+              AND (:status IS NULL OR UPPER(cr.status) = UPPER(:status))
+              AND (
+                :morador IS NULL
+                OR tu.nome ILIKE :morador
+                OR tu.email ILIKE :morador
+                OR tu.cpf ILIKE :morador
+              )
+            GROUP BY
+              cu.id,
+              cu.unidades_bloco,
+              c.id,
+              c.nome,
+              c.cnpj,
+              c.email,
+              c.telefone,
+              c.ativo,
+              c.qtde_blocos,
+              c.qtde_ap_bloco
+          ),
+          lancamentos_unidade_tipo AS (
+            SELECT
+              cu.id AS id_unidade,
+              cr.id_tipo_consumo,
+              COUNT(1)::int AS qtd_lancamentos
+            FROM "condominio-bh".tb_consumo_registros cr
+            INNER JOIN "condominio-bh"."tb-usuarios" tu
+              ON tu.id = cr.id_usuario
+            INNER JOIN "condominio-bh".tb_condominios_unidades cu
+              ON cu.id_condominio = cr.id_condominio
+             AND TRIM(LOWER(cu.unidades_bloco)) = TRIM(LOWER(COALESCE(tu.apartamento, '')))
+            WHERE cr.id_condominio = :id_condominio
+              AND (:status IS NULL OR UPPER(cr.status) = UPPER(:status))
+              AND (
+                :morador IS NULL
+                OR tu.nome ILIKE :morador
+                OR tu.email ILIKE :morador
+                OR tu.cpf ILIKE :morador
+              )
+            GROUP BY cu.id, cr.id_tipo_consumo
+          )
+          SELECT
+            ub.id_unidade,
+            ub.unidades_bloco,
+            ub.id_condominio,
+            ub.nome_condominio,
+            ub.cnpj_condominio,
+            ub.email_condominio,
+            ub.telefone_condominio,
+            ub.ativo_condominio,
+            ub.qtde_blocos,
+            ub.qtde_ap_bloco,
+            ub.moradores_ids,
+            ub.moradores_nomes,
+            COALESCE(SUM(lut.qtd_lancamentos), 0)::int AS total_lancamentos,
+            ARRAY_AGG(tipos.id ORDER BY tipos.id) AS tipos_ids,
+            ARRAY_AGG(tipos.nome ORDER BY tipos.id) AS tipos_nomes,
+            ARRAY_AGG((COALESCE(lut.qtd_lancamentos, 0) > 0)::int ORDER BY tipos.id) AS tipos_flags
+          FROM unidades_base ub
+          CROSS JOIN tipos
+          LEFT JOIN lancamentos_unidade_tipo lut
+            ON lut.id_unidade = ub.id_unidade
+           AND lut.id_tipo_consumo = tipos.id
+          GROUP BY
+            ub.id_unidade,
+            ub.unidades_bloco,
+            ub.id_condominio,
+            ub.nome_condominio,
+            ub.cnpj_condominio,
+            ub.email_condominio,
+            ub.telefone_condominio,
+            ub.ativo_condominio,
+            ub.qtde_blocos,
+            ub.qtde_ap_bloco,
+            ub.moradores_ids,
+            ub.moradores_nomes
+          ORDER BY ub.unidades_bloco ASC, ub.id_unidade ASC
+          LIMIT :limit OFFSET :offset`,
+        {
+          replacements,
+          type: QueryTypes.SELECT
+        }
+      );
+
+      const dataNormalizada = data.map((item) => {
+        const tiposIds = Array.isArray(item.tipos_ids) ? item.tipos_ids : [];
+        const tiposNomes = Array.isArray(item.tipos_nomes) ? item.tipos_nomes : [];
+        const tiposFlags = Array.isArray(item.tipos_flags) ? item.tipos_flags : [];
+
+        const tiposLancamento = {};
+        const tiposLancamentoLista = [];
+
+        for (let index = 0; index < tiposIds.length; index += 1) {
+          const idTipo = tiposIds[index];
+          const nomeTipo = tiposNomes[index] || null;
+          const temLancamento = Number(tiposFlags[index]) === 1;
+
+          tiposLancamento[String(idTipo)] = temLancamento;
+          tiposLancamentoLista.push({
+            id_tipo_consumo: idTipo,
+            nome_tipo_consumo: nomeTipo,
+            tem_lancamento: temLancamento
+          });
+        }
+
+        return {
+          id_unidade: item.id_unidade,
+          unidade_bloco: item.unidades_bloco,
+          id_condominio: item.id_condominio,
+          nome_condominio: item.nome_condominio,
+          cnpj_condominio: item.cnpj_condominio,
+          email_condominio: item.email_condominio,
+          telefone_condominio: item.telefone_condominio,
+          ativo_condominio: item.ativo_condominio,
+          qtde_blocos: item.qtde_blocos,
+          qtde_ap_bloco: item.qtde_ap_bloco,
+          moradores_ids: Array.isArray(item.moradores_ids) ? item.moradores_ids : [],
+          moradores_nomes: Array.isArray(item.moradores_nomes) ? item.moradores_nomes : [],
+          total_lancamentos: item.total_lancamentos,
+          tipos_lancamento: tiposLancamento,
+          tipos_lancamento_lista: tiposLancamentoLista
+        };
+      });
+
+      const total = totalRows[0]?.total || 0;
+      const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize);
+
+      return res.status(200).json({
+        page,
+        pageSize,
+        total,
+        totalPages,
+        filtros: {
+          morador: moradorFiltro,
+          status: statusFiltro
+        },
+        data: dataNormalizada
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao listar resumo de consumo por morador.',
+        detail: error.message
+      });
+    }
+  }
+
+  async buscarConsumoResumoPorIdUnidade(req, res) {
+    try {
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      if (!idCondominioToken) {
+        return res.status(403).json({
+          message: 'Token sem id_condominio para listar resumo de consumo por unidade.'
+        });
+      }
+
+      const idUnidade = this._toInt(req.params.id_unidade, null);
+      if (!idUnidade) {
+        return res.status(400).json({
+          message: 'Parâmetro id_unidade inválido.'
+        });
+      }
+
+      const moradorFiltro = this._normalizarTextoOuNull(req.query.morador);
+      const statusFiltro = this._normalizarTextoOuNull(req.query.status);
+
+      const replacements = {
+        id_condominio: idCondominioToken,
+        id_unidade: idUnidade,
+        morador: moradorFiltro ? `%${moradorFiltro}%` : null,
+        status: statusFiltro || null
+      };
+
+      const data = await postgres.query(
+        `WITH tipos AS (
+            SELECT
+              ct.id,
+              ct.nome
+            FROM "condominio-bh".tb_consumo_tipo ct
+            WHERE ct.ativo = true
+          ),
+          unidades_base AS (
+            SELECT
+              cu.id AS id_unidade,
+              cu.unidades_bloco,
+              c.id AS id_condominio,
+              c.nome AS nome_condominio,
+              c.cnpj AS cnpj_condominio,
+              c.email AS email_condominio,
+              c.telefone AS telefone_condominio,
+              c.ativo AS ativo_condominio,
+              c.qtde_blocos,
+              c.qtde_ap_bloco,
+              ARRAY_AGG(DISTINCT tu.id) AS moradores_ids,
+              ARRAY_AGG(DISTINCT tu.nome) AS moradores_nomes
+            FROM "condominio-bh".tb_consumo_registros cr
+            INNER JOIN "condominio-bh"."tb-usuarios" tu
+              ON tu.id = cr.id_usuario
+            INNER JOIN "condominio-bh".tb_condominios_unidades cu
+              ON cu.id_condominio = cr.id_condominio
+             AND TRIM(LOWER(cu.unidades_bloco)) = TRIM(LOWER(COALESCE(tu.apartamento, '')))
+            INNER JOIN "condominio-bh"."tb-condominios" c
+              ON c.id = cr.id_condominio
+            WHERE cr.id_condominio = :id_condominio
+              AND cu.id = :id_unidade
+              AND (:status IS NULL OR UPPER(cr.status) = UPPER(:status))
+              AND (
+                :morador IS NULL
+                OR tu.nome ILIKE :morador
+                OR tu.email ILIKE :morador
+                OR tu.cpf ILIKE :morador
+              )
+            GROUP BY
+              cu.id,
+              cu.unidades_bloco,
+              c.id,
+              c.nome,
+              c.cnpj,
+              c.email,
+              c.telefone,
+              c.ativo,
+              c.qtde_blocos,
+              c.qtde_ap_bloco
+          ),
+          lancamentos_unidade_tipo AS (
+            SELECT
+              cu.id AS id_unidade,
+              cr.id_tipo_consumo,
+              COUNT(1)::int AS qtd_lancamentos
+            FROM "condominio-bh".tb_consumo_registros cr
+            INNER JOIN "condominio-bh"."tb-usuarios" tu
+              ON tu.id = cr.id_usuario
+            INNER JOIN "condominio-bh".tb_condominios_unidades cu
+              ON cu.id_condominio = cr.id_condominio
+             AND TRIM(LOWER(cu.unidades_bloco)) = TRIM(LOWER(COALESCE(tu.apartamento, '')))
+            WHERE cr.id_condominio = :id_condominio
+              AND cu.id = :id_unidade
+              AND (:status IS NULL OR UPPER(cr.status) = UPPER(:status))
+              AND (
+                :morador IS NULL
+                OR tu.nome ILIKE :morador
+                OR tu.email ILIKE :morador
+                OR tu.cpf ILIKE :morador
+              )
+            GROUP BY cu.id, cr.id_tipo_consumo
+          )
+          SELECT
+            ub.id_unidade,
+            ub.unidades_bloco,
+            ub.id_condominio,
+            ub.nome_condominio,
+            ub.cnpj_condominio,
+            ub.email_condominio,
+            ub.telefone_condominio,
+            ub.ativo_condominio,
+            ub.qtde_blocos,
+            ub.qtde_ap_bloco,
+            ub.moradores_ids,
+            ub.moradores_nomes,
+            COALESCE(SUM(lut.qtd_lancamentos), 0)::int AS total_lancamentos,
+            ARRAY_AGG(tipos.id ORDER BY tipos.id) AS tipos_ids,
+            ARRAY_AGG(tipos.nome ORDER BY tipos.id) AS tipos_nomes,
+            ARRAY_AGG((COALESCE(lut.qtd_lancamentos, 0) > 0)::int ORDER BY tipos.id) AS tipos_flags
+          FROM unidades_base ub
+          CROSS JOIN tipos
+          LEFT JOIN lancamentos_unidade_tipo lut
+            ON lut.id_unidade = ub.id_unidade
+           AND lut.id_tipo_consumo = tipos.id
+          GROUP BY
+            ub.id_unidade,
+            ub.unidades_bloco,
+            ub.id_condominio,
+            ub.nome_condominio,
+            ub.cnpj_condominio,
+            ub.email_condominio,
+            ub.telefone_condominio,
+            ub.ativo_condominio,
+            ub.qtde_blocos,
+            ub.qtde_ap_bloco,
+            ub.moradores_ids,
+            ub.moradores_nomes
+          LIMIT 1`,
+        {
+          replacements,
+          type: QueryTypes.SELECT
+        }
+      );
+
+      if (!data || data.length === 0) {
+        return res.status(404).json({
+          message: 'Resumo de consumo da unidade não encontrado.'
+        });
+      }
+
+      const item = data[0];
+      const tiposIds = Array.isArray(item.tipos_ids) ? item.tipos_ids : [];
+      const tiposNomes = Array.isArray(item.tipos_nomes) ? item.tipos_nomes : [];
+      const tiposFlags = Array.isArray(item.tipos_flags) ? item.tipos_flags : [];
+
+      const tiposLancamento = {};
+      const tiposLancamentoLista = [];
+
+      for (let index = 0; index < tiposIds.length; index += 1) {
+        const idTipo = tiposIds[index];
+        const nomeTipo = tiposNomes[index] || null;
+        const temLancamento = Number(tiposFlags[index]) === 1;
+
+        tiposLancamento[String(idTipo)] = temLancamento;
+        tiposLancamentoLista.push({
+          id_tipo_consumo: idTipo,
+          nome_tipo_consumo: nomeTipo,
+          tem_lancamento: temLancamento
+        });
+      }
+
+      return res.status(200).json({
+        filtros: {
+          id_unidade: idUnidade,
+          morador: moradorFiltro,
+          status: statusFiltro
+        },
+        data: {
+          id_unidade: item.id_unidade,
+          unidade_bloco: item.unidades_bloco,
+          id_condominio: item.id_condominio,
+          nome_condominio: item.nome_condominio,
+          cnpj_condominio: item.cnpj_condominio,
+          email_condominio: item.email_condominio,
+          telefone_condominio: item.telefone_condominio,
+          ativo_condominio: item.ativo_condominio,
+          qtde_blocos: item.qtde_blocos,
+          qtde_ap_bloco: item.qtde_ap_bloco,
+          moradores_ids: Array.isArray(item.moradores_ids) ? item.moradores_ids : [],
+          moradores_nomes: Array.isArray(item.moradores_nomes) ? item.moradores_nomes : [],
+          total_lancamentos: item.total_lancamentos,
+          tipos_lancamento: tiposLancamento,
+          tipos_lancamento_lista: tiposLancamentoLista
+        }
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao buscar resumo de consumo por unidade.',
+        detail: error.message
+      });
+    }
+  }
+
+  async listarLancamentosConsumoPorUnidade(req, res) {
+    try {
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      if (!idCondominioToken) {
+        return res.status(403).json({
+          message: 'Token sem id_condominio para listar lançamentos de consumo por unidade.'
+        });
+      }
+
+      const idUnidade = this._toInt(req.params.id_unidade, null);
+      if (!idUnidade) {
+        return res.status(400).json({
+          message: 'Parâmetro id_unidade inválido.'
+        });
+      }
+
+      const page = Math.max(this._toInt(req.query.page, 1), 1);
+      const pageSize = Math.max(this._toInt(req.query.pageSize, 25), 1);
+      const offset = (page - 1) * pageSize;
+
+      const statusFiltro = this._normalizarTextoOuNull(req.query.status);
+      const competenciaFiltro = this._normalizarTextoOuNull(req.query.competencia);
+      const idTipoConsumoFiltro = this._toInt(req.query.id_tipo_consumo, null);
+
+      const whereParts = [
+        'cr.id_condominio = :id_condominio',
+        'cu.id = :id_unidade'
+      ];
+
+      const replacements = {
+        id_condominio: idCondominioToken,
+        id_unidade: idUnidade,
+        limit: pageSize,
+        offset
+      };
+
+      if (statusFiltro) {
+        whereParts.push('UPPER(cr.status) = UPPER(:status)');
+        replacements.status = statusFiltro;
+      }
+
+      if (competenciaFiltro) {
+        whereParts.push('cr.competencia = :competencia::date');
+        replacements.competencia = competenciaFiltro;
+      }
+
+      if (idTipoConsumoFiltro) {
+        whereParts.push('cr.id_tipo_consumo = :id_tipo_consumo');
+        replacements.id_tipo_consumo = idTipoConsumoFiltro;
+      }
+
+      const whereClause = whereParts.join(' AND ');
+
+      const unidadeInfo = await postgres.query(
+        `SELECT
+            cu.id,
+            cu.unidades_bloco,
+            cu.id_condominio
+          FROM "condominio-bh".tb_condominios_unidades cu
+          WHERE cu.id = :id_unidade
+            AND cu.id_condominio = :id_condominio
+          LIMIT 1`,
+        {
+          replacements: {
+            id_unidade: idUnidade,
+            id_condominio: idCondominioToken
+          },
+          type: QueryTypes.SELECT
+        }
+      );
+
+      if (!unidadeInfo || unidadeInfo.length === 0) {
+        return res.status(404).json({
+          message: 'Unidade não encontrada para este condomínio.'
+        });
+      }
+
+      const totalRows = await postgres.query(
+        `SELECT COUNT(1)::int AS total
+           FROM "condominio-bh".tb_consumo_registros cr
+           INNER JOIN "condominio-bh"."tb-usuarios" tu
+             ON tu.id = cr.id_usuario
+           INNER JOIN "condominio-bh".tb_condominios_unidades cu
+             ON cu.id_condominio = cr.id_condominio
+            AND TRIM(LOWER(cu.unidades_bloco)) = TRIM(LOWER(COALESCE(tu.apartamento, '')))
+          WHERE ${whereClause}`,
+        {
+          replacements,
+          type: QueryTypes.SELECT
+        }
+      );
+
+      const data = await postgres.query(
+        `SELECT
+            cr.id,
+            cr.id_tipo_consumo,
+            ct.nome AS nome_tipo_consumo,
+            cr.id_usuario,
+            tu.nome AS nome_usuario,
+            tu.sobrenome AS sobrenome_usuario,
+            tu.apartamento,
+            cr.competencia,
+            cr.leitura_anterior,
+            cr.leitura_atual,
+            cr.consumo,
+            cr.valor_unitario,
+            cr.valor_total,
+            cr.cobr_valor_minimo,
+            cr.observacao,
+            cr.status,
+            cr.id_condominio,
+            cr.id_usuario_cadastro,
+            tu_cadastro.nome AS nome_usuario_cadastro,
+            tu_cadastro.sobrenome AS sobrenome_usuario_cadastro,
+            perfil_cadastro.nome AS descricao_perfil_usuario_cadastro,
+            cr.origem_imagem,
+            cr.created_at,
+            cr.updated_at,
+            cu.id AS id_unidade,
+            cu.unidades_bloco AS unidade_bloco
+          FROM "condominio-bh".tb_consumo_registros cr
+          INNER JOIN "condominio-bh"."tb-usuarios" tu
+            ON tu.id = cr.id_usuario
+          INNER JOIN "condominio-bh".tb_condominios_unidades cu
+            ON cu.id_condominio = cr.id_condominio
+           AND TRIM(LOWER(cu.unidades_bloco)) = TRIM(LOWER(COALESCE(tu.apartamento, '')))
+          LEFT JOIN "condominio-bh".tb_consumo_tipo ct
+            ON ct.id = cr.id_tipo_consumo
+          LEFT JOIN "condominio-bh"."tb-usuarios" tu_cadastro
+            ON tu_cadastro.id::text = cr.id_usuario_cadastro::text
+          LEFT JOIN "condominio-bh".tb_sgw_perfil perfil_cadastro
+            ON perfil_cadastro.id::text = tu_cadastro.tipo_perfil_id::text
+          WHERE ${whereClause}
+          ORDER BY cr.competencia DESC, cr.id DESC
+          LIMIT :limit OFFSET :offset`,
+        {
+          replacements,
+          type: QueryTypes.SELECT
+        }
+      );
+
+      const total = totalRows[0]?.total || 0;
+      const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize);
+
+      return res.status(200).json({
+        page,
+        pageSize,
+        total,
+        totalPages,
+        filtros: {
+          id_unidade: idUnidade,
+          status: statusFiltro,
+          competencia: competenciaFiltro,
+          id_tipo_consumo: idTipoConsumoFiltro
+        },
+        unidade: unidadeInfo[0],
+        data
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao listar lançamentos de consumo por unidade.',
+        detail: error.message
+      });
+    }
+  }
+
+  async buscarConsumoRegistroPorId(req, res) {
+    try {
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      if (!idCondominioToken) {
+        return res.status(403).json({
+          message: 'Token sem id_condominio para consultar registro de consumo.'
+        });
+      }
+
+      const id = this._toInt(req.params.id, null);
+      if (!id) {
+        return res.status(400).json({
+          message: 'Id do registro inválido.'
+        });
+      }
+
+      const data = await postgres.query(
+        `SELECT
+            cr.id,
+            cr.id_tipo_consumo,
+            ct.nome AS nome_tipo_consumo,
+            cr.id_usuario,
+            tu.nome AS nome_usuario,
+            cr.competencia,
+            cr.leitura_anterior,
+            cr.leitura_atual,
+            cr.consumo,
+            cr.valor_unitario,
+            cr.valor_total,
+            cr.cobr_valor_minimo,
+            cr.observacao,
+            cr.status,
+            cr.id_condominio,
+            cr.id_usuario_cadastro,
+            cr.origem_imagem,
+            cr.created_at,
+            cr.updated_at
+          FROM "condominio-bh".tb_consumo_registros cr
+          LEFT JOIN "condominio-bh".tb_consumo_tipo ct
+            ON ct.id = cr.id_tipo_consumo
+          LEFT JOIN "condominio-bh"."tb-usuarios" tu
+            ON tu.id = cr.id_usuario
+          WHERE cr.id = :id
+            AND cr.id_condominio = :id_condominio
+          LIMIT 1`,
+        {
+          replacements: {
+            id,
+            id_condominio: idCondominioToken
+          },
+          type: QueryTypes.SELECT
+        }
+      );
+
+      if (!data || data.length === 0) {
+        return res.status(404).json({
+          message: 'Registro de consumo não encontrado.'
+        });
+      }
+
+      return res.status(200).json({
+        data: data[0]
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao buscar registro de consumo.',
+        detail: error.message
+      });
+    }
+  }
+
+  async criarConsumoRegistro(req, res) {
+    try {
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      if (!idCondominioToken) {
+        return res.status(403).json({
+          message: 'Token sem id_condominio para criar registro de consumo.'
+        });
+      }
+
+      const idUsuarioCadastro = this._toInt(req.idcliente, null);
+      if (!idUsuarioCadastro) {
+        return res.status(403).json({
+          message: 'Token sem id de usuário para registrar consumo.'
+        });
+      }
+
+      const parseNumero = (value) => {
+        if (value === undefined || value === null || String(value).trim() === '') {
+          return null;
+        }
+        const parsed = Number(String(value).replace(',', '.'));
+        return Number.isNaN(parsed) ? null : parsed;
+      };
+
+      const parseBoolean = (value, defaultValue = false) => {
+        if (value === undefined || value === null || value === '') {
+          return defaultValue;
+        }
+
+        if (typeof value === 'boolean') {
+          return value;
+        }
+
+        const normalized = String(value).trim().toLowerCase();
+        if (['true', '1', 'sim', 'yes'].includes(normalized)) {
+          return true;
+        }
+        if (['false', '0', 'nao', 'não', 'no'].includes(normalized)) {
+          return false;
+        }
+        return defaultValue;
+      };
+
+      const idTipoConsumo = this._toInt(req.body.id_tipo_consumo, null);
+      const idUsuario = this._toInt(req.body.id_usuario, null);
+      const idCondominioBody = this._toInt(req.body.id_condominio, null);
+      const leituraAtual = parseNumero(req.body.leitura_atual);
+
+      if (!idTipoConsumo || !idUsuario || !idCondominioBody || leituraAtual === null) {
+        return res.status(400).json({
+          message: 'Campos obrigatórios: id_tipo_consumo, id_condominio, id_usuario e leitura_atual.'
+        });
+      }
+
+      if (idCondominioBody !== idCondominioToken) {
+        return res.status(403).json({
+          message: 'id_condominio do payload diferente do condomínio do token.'
+        });
+      }
+
+      const competencia = this._normalizarTextoOuNull(req.body.competencia) || new Date().toISOString().slice(0, 10);
+      const leituraAnterior = parseNumero(req.body.leitura_anterior);
+      let consumo = parseNumero(req.body.consumo);
+      const valorUnitario = parseNumero(req.body.valor_unitario);
+      let valorTotal = parseNumero(req.body.valor_total);
+
+      if (consumo === null && leituraAnterior !== null) {
+        consumo = leituraAtual - leituraAnterior;
+      }
+
+      if (valorTotal === null && consumo !== null && valorUnitario !== null) {
+        valorTotal = consumo * valorUnitario;
+      }
+
+      const created = await postgres.query(
+        `INSERT INTO "condominio-bh".tb_consumo_registros (
+            id_tipo_consumo,
+            id_usuario,
+            competencia,
+            leitura_anterior,
+            leitura_atual,
+            consumo,
+            valor_unitario,
+            valor_total,
+            cobr_valor_minimo,
+            observacao,
+            status,
+            id_condominio,
+            id_usuario_cadastro,
+            origem_imagem,
+            created_at,
+            updated_at
+          ) VALUES (
+            :id_tipo_consumo,
+            :id_usuario,
+            :competencia::date,
+            :leitura_anterior,
+            :leitura_atual,
+            :consumo,
+            :valor_unitario,
+            :valor_total,
+            :cobr_valor_minimo,
+            :observacao,
+            :status,
+            :id_condominio,
+            :id_usuario_cadastro,
+            :origem_imagem,
+            now(),
+            now()
+          )
+        RETURNING *`,
+        {
+          replacements: {
+            id_tipo_consumo: idTipoConsumo,
+            id_usuario: idUsuario,
+            competencia,
+            leitura_anterior: leituraAnterior,
+            leitura_atual: leituraAtual,
+            consumo,
+            valor_unitario: valorUnitario,
+            valor_total: valorTotal,
+            cobr_valor_minimo: parseBoolean(req.body.cobr_valor_minimo, false),
+            observacao: this._normalizarTextoOuNull(req.body.observacao),
+            status: this._normalizarTextoOuNull(req.body.status) || 'PENDENTE',
+            id_condominio: idCondominioToken,
+            id_usuario_cadastro: String(idUsuarioCadastro),
+            origem_imagem: this._normalizarTextoOuNull(req.body.origem_imagem)
+          }
+        }
+      );
+
+      return res.status(201).json({
+        message: 'Registro de consumo criado com sucesso.',
+        data: created[0][0]
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao criar registro de consumo.',
+        detail: error.message
+      });
+    }
+  }
+
+  async editarConsumoRegistro(req, res) {
+    try {
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      if (!idCondominioToken) {
+        return res.status(403).json({
+          message: 'Token sem id_condominio para editar registro de consumo.'
+        });
+      }
+
+      const idUsuarioCadastro = this._toInt(req.idcliente, null);
+      if (!idUsuarioCadastro) {
+        return res.status(403).json({
+          message: 'Token sem id de usuário para registrar edição de consumo.'
+        });
+      }
+
+      const id = this._toInt(req.params.id, null);
+      if (!id) {
+        return res.status(400).json({
+          message: 'Id do registro inválido.'
+        });
+      }
+
+      const parseNumero = (value) => {
+        if (value === undefined || value === null || String(value).trim() === '') {
+          return null;
+        }
+        const parsed = Number(String(value).replace(',', '.'));
+        return Number.isNaN(parsed) ? null : parsed;
+      };
+
+      const parseBoolean = (value, defaultValue = false) => {
+        if (value === undefined || value === null || value === '') {
+          return defaultValue;
+        }
+
+        if (typeof value === 'boolean') {
+          return value;
+        }
+
+        const normalized = String(value).trim().toLowerCase();
+        if (['true', '1', 'sim', 'yes'].includes(normalized)) {
+          return true;
+        }
+        if (['false', '0', 'nao', 'não', 'no'].includes(normalized)) {
+          return false;
+        }
+        return defaultValue;
+      };
+
+      const idTipoConsumo = this._toInt(req.body.id_tipo_consumo, null);
+      const idUsuario = this._toInt(req.body.id_usuario, null);
+      const idCondominioBody = this._toInt(req.body.id_condominio, null);
+      const leituraAtual = parseNumero(req.body.leitura_atual);
+
+      if (!idTipoConsumo || !idUsuario || !idCondominioBody || leituraAtual === null) {
+        return res.status(400).json({
+          message: 'Campos obrigatórios: id_tipo_consumo, id_condominio, id_usuario e leitura_atual.'
+        });
+      }
+
+      if (idCondominioBody !== idCondominioToken) {
+        return res.status(403).json({
+          message: 'id_condominio do payload diferente do condomínio do token.'
+        });
+      }
+
+      const competencia = this._normalizarTextoOuNull(req.body.competencia) || new Date().toISOString().slice(0, 10);
+      const leituraAnterior = parseNumero(req.body.leitura_anterior);
+      let consumo = parseNumero(req.body.consumo);
+      const valorUnitario = parseNumero(req.body.valor_unitario);
+      let valorTotal = parseNumero(req.body.valor_total);
+
+      if (consumo === null && leituraAnterior !== null) {
+        consumo = leituraAtual - leituraAnterior;
+      }
+
+      if (valorTotal === null && consumo !== null && valorUnitario !== null) {
+        valorTotal = consumo * valorUnitario;
+      }
+
+      const updated = await postgres.query(
+        `UPDATE "condominio-bh".tb_consumo_registros
+            SET id_tipo_consumo = :id_tipo_consumo,
+                id_usuario = :id_usuario,
+                competencia = :competencia::date,
+                leitura_anterior = :leitura_anterior,
+                leitura_atual = :leitura_atual,
+                consumo = :consumo,
+                valor_unitario = :valor_unitario,
+                valor_total = :valor_total,
+                cobr_valor_minimo = :cobr_valor_minimo,
+                observacao = :observacao,
+                status = :status,
+                id_usuario_cadastro = :id_usuario_cadastro,
+                origem_imagem = :origem_imagem,
+                updated_at = now()
+          WHERE id = :id
+            AND id_condominio = :id_condominio
+        RETURNING *`,
+        {
+          replacements: {
+            id,
+            id_tipo_consumo: idTipoConsumo,
+            id_usuario: idUsuario,
+            competencia,
+            leitura_anterior: leituraAnterior,
+            leitura_atual: leituraAtual,
+            consumo,
+            valor_unitario: valorUnitario,
+            valor_total: valorTotal,
+            cobr_valor_minimo: parseBoolean(req.body.cobr_valor_minimo, false),
+            observacao: this._normalizarTextoOuNull(req.body.observacao),
+            status: this._normalizarTextoOuNull(req.body.status) || 'PENDENTE',
+            id_usuario_cadastro: String(idUsuarioCadastro),
+            origem_imagem: this._normalizarTextoOuNull(req.body.origem_imagem),
+            id_condominio: idCondominioToken
+          }
+        }
+      );
+
+      if (!updated[0] || updated[0].length === 0) {
+        return res.status(404).json({
+          message: 'Registro de consumo não encontrado.'
+        });
+      }
+
+      return res.status(200).json({
+        message: 'Registro de consumo atualizado com sucesso.',
+        data: updated[0][0]
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao atualizar registro de consumo.',
+        detail: error.message
+      });
+    }
+  }
+
+  async atualizarParcialConsumoRegistro(req, res) {
+    try {
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      if (!idCondominioToken) {
+        return res.status(403).json({
+          message: 'Token sem id_condominio para editar registro de consumo.'
+        });
+      }
+
+      const idUsuarioCadastro = this._toInt(req.idcliente, null);
+      if (!idUsuarioCadastro) {
+        return res.status(403).json({
+          message: 'Token sem id de usuário para registrar edição de consumo.'
+        });
+      }
+
+      const id = this._toInt(req.params.id, null);
+      if (!id) {
+        return res.status(400).json({
+          message: 'Id do registro inválido.'
+        });
+      }
+
+      const atual = await postgres.query(
+        `SELECT *
+           FROM "condominio-bh".tb_consumo_registros
+          WHERE id = :id
+            AND id_condominio = :id_condominio
+          LIMIT 1`,
+        {
+          replacements: {
+            id,
+            id_condominio: idCondominioToken
+          },
+          type: QueryTypes.SELECT
+        }
+      );
+
+      if (!atual || atual.length === 0) {
+        return res.status(404).json({
+          message: 'Registro de consumo não encontrado.'
+        });
+      }
+
+      const parseNumero = (value) => {
+        if (value === undefined || value === null || String(value).trim() === '') {
+          return null;
+        }
+        const parsed = Number(String(value).replace(',', '.'));
+        return Number.isNaN(parsed) ? null : parsed;
+      };
+
+      const parseBoolean = (value, defaultValue = null) => {
+        if (value === undefined || value === null || value === '') {
+          return defaultValue;
+        }
+
+        if (typeof value === 'boolean') {
+          return value;
+        }
+
+        const normalized = String(value).trim().toLowerCase();
+        if (['true', '1', 'sim', 'yes'].includes(normalized)) {
+          return true;
+        }
+        if (['false', '0', 'nao', 'não', 'no'].includes(normalized)) {
+          return false;
+        }
+        return defaultValue;
+      };
+
+      const registroAtual = atual[0];
+      const idCondominioBody = this._toInt(req.body.id_condominio, null);
+      if (idCondominioBody && idCondominioBody !== idCondominioToken) {
+        return res.status(403).json({
+          message: 'id_condominio do payload diferente do condomínio do token.'
+        });
+      }
+
+      const idTipoConsumo = req.body.id_tipo_consumo !== undefined
+        ? this._toInt(req.body.id_tipo_consumo, null)
+        : this._toInt(registroAtual.id_tipo_consumo, null);
+      const idUsuario = req.body.id_usuario !== undefined
+        ? this._toInt(req.body.id_usuario, null)
+        : this._toInt(registroAtual.id_usuario, null);
+
+      let leituraAnterior = req.body.leitura_anterior !== undefined
+        ? parseNumero(req.body.leitura_anterior)
+        : parseNumero(registroAtual.leitura_anterior);
+      let leituraAtual = req.body.leitura_atual !== undefined
+        ? parseNumero(req.body.leitura_atual)
+        : parseNumero(registroAtual.leitura_atual);
+      let consumo = req.body.consumo !== undefined
+        ? parseNumero(req.body.consumo)
+        : parseNumero(registroAtual.consumo);
+      let valorUnitario = req.body.valor_unitario !== undefined
+        ? parseNumero(req.body.valor_unitario)
+        : parseNumero(registroAtual.valor_unitario);
+      let valorTotal = req.body.valor_total !== undefined
+        ? parseNumero(req.body.valor_total)
+        : parseNumero(registroAtual.valor_total);
+
+      if (req.body.consumo === undefined && leituraAnterior !== null && leituraAtual !== null) {
+        consumo = leituraAtual - leituraAnterior;
+      }
+
+      if (req.body.valor_total === undefined && consumo !== null && valorUnitario !== null) {
+        valorTotal = consumo * valorUnitario;
+      }
+
+      const competencia = req.body.competencia !== undefined
+        ? this._normalizarTextoOuNull(req.body.competencia)
+        : registroAtual.competencia;
+
+      const cobrValorMinimo = parseBoolean(req.body.cobr_valor_minimo, registroAtual.cobr_valor_minimo);
+      const observacao = req.body.observacao !== undefined
+        ? this._normalizarTextoOuNull(req.body.observacao)
+        : registroAtual.observacao;
+      const status = req.body.status !== undefined
+        ? this._normalizarTextoOuNull(req.body.status)
+        : registroAtual.status;
+      const origemImagem = req.body.origem_imagem !== undefined
+        ? this._normalizarTextoOuNull(req.body.origem_imagem)
+        : registroAtual.origem_imagem;
+
+      const updated = await postgres.query(
+        `UPDATE "condominio-bh".tb_consumo_registros
+            SET id_tipo_consumo = :id_tipo_consumo,
+                id_usuario = :id_usuario,
+                competencia = :competencia::date,
+                leitura_anterior = :leitura_anterior,
+                leitura_atual = :leitura_atual,
+                consumo = :consumo,
+                valor_unitario = :valor_unitario,
+                valor_total = :valor_total,
+                cobr_valor_minimo = :cobr_valor_minimo,
+                observacao = :observacao,
+                status = :status,
+                id_usuario_cadastro = :id_usuario_cadastro,
+                origem_imagem = :origem_imagem,
+                updated_at = now()
+          WHERE id = :id
+            AND id_condominio = :id_condominio
+        RETURNING *`,
+        {
+          replacements: {
+            id,
+            id_tipo_consumo: idTipoConsumo,
+            id_usuario: idUsuario,
+            competencia,
+            leitura_anterior: leituraAnterior,
+            leitura_atual: leituraAtual,
+            consumo,
+            valor_unitario: valorUnitario,
+            valor_total: valorTotal,
+            cobr_valor_minimo: cobrValorMinimo,
+            observacao,
+            status,
+            id_usuario_cadastro: String(idUsuarioCadastro),
+            origem_imagem: origemImagem,
+            id_condominio: idCondominioToken
+          }
+        }
+      );
+
+      return res.status(200).json({
+        message: 'Registro de consumo atualizado com sucesso.',
+        data: updated[0][0]
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao atualizar parcialmente registro de consumo.',
+        detail: error.message
+      });
+    }
+  }
+
   async listarPerfis(req, res) {
     try {
       const idPerfilToken = this._toInt(req.IdPerfil, null);

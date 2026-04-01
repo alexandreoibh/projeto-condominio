@@ -33,6 +33,314 @@ const publicRegistrationKeyGuard = (req, res, next) => {
 };
 
 router.get('/status', controller.status.bind(controller));
+router.get('/consumo/tipos/ativos', auth, controller.listarConsumoTiposAtivos.bind(controller));
+router.get(
+	'/consumo/registros',
+	auth,
+	[
+		query('page')
+			.optional()
+			.isInt({ min: 1 })
+			.withMessage('Parâmetro page deve ser numérico e maior que zero.'),
+		query('pageSize')
+			.optional()
+			.isInt({ min: 1 })
+			.withMessage('Parâmetro pageSize deve ser numérico e maior que zero.'),
+		query('id_tipo_consumo')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Parâmetro id_tipo_consumo deve ser numérico e maior que zero.'),
+		query('id_usuario')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Parâmetro id_usuario deve ser numérico e maior que zero.'),
+		query('competencia')
+			.optional({ nullable: true, checkFalsy: true })
+			.isISO8601()
+			.withMessage('Parâmetro competencia deve estar em formato de data válido.'),
+		query('status')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 20 })
+			.withMessage('Parâmetro status deve ter no máximo 20 caracteres.')
+	],
+	validate,
+	controller.listarConsumoRegistros.bind(controller)
+);
+router.get(
+	'/consumo/registros/resumo/moradores',
+	auth,
+	[
+		query('page')
+			.optional()
+			.isInt({ min: 1 })
+			.withMessage('Parâmetro page deve ser numérico e maior que zero.'),
+		query('pageSize')
+			.optional()
+			.isInt({ min: 1 })
+			.withMessage('Parâmetro pageSize deve ser numérico e maior que zero.'),
+		query('morador')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 120 })
+			.withMessage('Parâmetro morador deve ter no máximo 120 caracteres.'),
+		query('status')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 20 })
+			.withMessage('Parâmetro status deve ter no máximo 20 caracteres.')
+	],
+	validate,
+	controller.listarConsumoResumoPorMorador.bind(controller)
+);
+router.get(
+	'/consumo/registros/resumo/unidades/:id_unidade(\\d+)',
+	auth,
+	[
+		param('id_unidade').isInt({ min: 1 }).withMessage('Parâmetro id_unidade inválido.'),
+		query('morador')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 120 })
+			.withMessage('Parâmetro morador deve ter no máximo 120 caracteres.'),
+		query('status')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 20 })
+			.withMessage('Parâmetro status deve ter no máximo 20 caracteres.')
+	],
+	validate,
+	controller.buscarConsumoResumoPorIdUnidade.bind(controller)
+);
+router.get(
+	'/consumo/registros/unidades/:id_unidade(\\d+)',
+	auth,
+	[
+		param('id_unidade').isInt({ min: 1 }).withMessage('Parâmetro id_unidade inválido.'),
+		query('page')
+			.optional()
+			.isInt({ min: 1 })
+			.withMessage('Parâmetro page deve ser numérico e maior que zero.'),
+		query('pageSize')
+			.optional()
+			.isInt({ min: 1 })
+			.withMessage('Parâmetro pageSize deve ser numérico e maior que zero.'),
+		query('status')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 20 })
+			.withMessage('Parâmetro status deve ter no máximo 20 caracteres.'),
+		query('competencia')
+			.optional({ nullable: true, checkFalsy: true })
+			.isISO8601()
+			.withMessage('Parâmetro competencia deve estar em formato de data válido.'),
+		query('id_tipo_consumo')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Parâmetro id_tipo_consumo deve ser numérico e maior que zero.')
+	],
+	validate,
+	controller.listarLancamentosConsumoPorUnidade.bind(controller)
+);
+router.get(
+	'/consumo/registros/:id(\\d+)',
+	auth,
+	[param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.')],
+	validate,
+	controller.buscarConsumoRegistroPorId.bind(controller)
+);
+router.post(
+	'/consumo/registros',
+	auth,
+	[
+		body('id_tipo_consumo')
+			.notEmpty()
+			.withMessage('Campo id_tipo_consumo é obrigatório.')
+			.bail()
+			.isInt({ min: 1 })
+			.withMessage('Campo id_tipo_consumo deve ser numérico e maior que zero.'),
+		body('id_condominio')
+			.notEmpty()
+			.withMessage('Campo id_condominio é obrigatório.')
+			.bail()
+			.isInt({ min: 1 })
+			.withMessage('Campo id_condominio deve ser numérico e maior que zero.'),
+		body('id_usuario')
+			.notEmpty()
+			.withMessage('Campo id_usuario é obrigatório.')
+			.bail()
+			.isInt({ min: 1 })
+			.withMessage('Campo id_usuario deve ser numérico e maior que zero.'),
+		body('leitura_atual')
+			.notEmpty()
+			.withMessage('Campo leitura_atual é obrigatório.')
+			.bail()
+			.isFloat()
+			.withMessage('Campo leitura_atual deve ser numérico.'),
+		body('competencia')
+			.optional({ nullable: true, checkFalsy: true })
+			.isISO8601()
+			.withMessage('Campo competencia deve estar em formato de data válido.'),
+		body('leitura_anterior')
+			.optional({ nullable: true, checkFalsy: true })
+			.isFloat()
+			.withMessage('Campo leitura_anterior deve ser numérico.'),
+		body('consumo')
+			.optional({ nullable: true, checkFalsy: true })
+			.isFloat()
+			.withMessage('Campo consumo deve ser numérico.'),
+		body('valor_unitario')
+			.optional({ nullable: true, checkFalsy: true })
+			.isFloat()
+			.withMessage('Campo valor_unitario deve ser numérico.'),
+		body('valor_total')
+			.optional({ nullable: true, checkFalsy: true })
+			.isFloat()
+			.withMessage('Campo valor_total deve ser numérico.'),
+		body('cobr_valor_minimo')
+			.optional({ nullable: true })
+			.isBoolean()
+			.withMessage('Campo cobr_valor_minimo deve ser booleano.'),
+		body('status')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 20 })
+			.withMessage('Campo status deve ter no máximo 20 caracteres.')
+	],
+	validate,
+	controller.criarConsumoRegistro.bind(controller)
+);
+router.put(
+	'/consumo/registros/:id(\\d+)',
+	auth,
+	[
+		param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.'),
+		body('id_tipo_consumo')
+			.notEmpty()
+			.withMessage('Campo id_tipo_consumo é obrigatório.')
+			.bail()
+			.isInt({ min: 1 })
+			.withMessage('Campo id_tipo_consumo deve ser numérico e maior que zero.'),
+		body('id_condominio')
+			.notEmpty()
+			.withMessage('Campo id_condominio é obrigatório.')
+			.bail()
+			.isInt({ min: 1 })
+			.withMessage('Campo id_condominio deve ser numérico e maior que zero.'),
+		body('id_usuario')
+			.notEmpty()
+			.withMessage('Campo id_usuario é obrigatório.')
+			.bail()
+			.isInt({ min: 1 })
+			.withMessage('Campo id_usuario deve ser numérico e maior que zero.'),
+		body('leitura_atual')
+			.notEmpty()
+			.withMessage('Campo leitura_atual é obrigatório.')
+			.bail()
+			.isFloat()
+			.withMessage('Campo leitura_atual deve ser numérico.'),
+		body('competencia')
+			.optional({ nullable: true, checkFalsy: true })
+			.isISO8601()
+			.withMessage('Campo competencia deve estar em formato de data válido.'),
+		body('leitura_anterior')
+			.optional({ nullable: true, checkFalsy: true })
+			.isFloat()
+			.withMessage('Campo leitura_anterior deve ser numérico.'),
+		body('consumo')
+			.optional({ nullable: true, checkFalsy: true })
+			.isFloat()
+			.withMessage('Campo consumo deve ser numérico.'),
+		body('valor_unitario')
+			.optional({ nullable: true, checkFalsy: true })
+			.isFloat()
+			.withMessage('Campo valor_unitario deve ser numérico.'),
+		body('valor_total')
+			.optional({ nullable: true, checkFalsy: true })
+			.isFloat()
+			.withMessage('Campo valor_total deve ser numérico.'),
+		body('cobr_valor_minimo')
+			.optional({ nullable: true })
+			.isBoolean()
+			.withMessage('Campo cobr_valor_minimo deve ser booleano.'),
+		body('status')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 20 })
+			.withMessage('Campo status deve ter no máximo 20 caracteres.')
+	],
+	validate,
+	controller.editarConsumoRegistro.bind(controller)
+);
+router.patch(
+	'/consumo/registros/:id(\\d+)',
+	auth,
+	[
+		param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.'),
+		body().custom((value, { req }) => {
+			const camposPermitidos = [
+				'id_tipo_consumo',
+				'id_condominio',
+				'id_usuario',
+				'competencia',
+				'leitura_anterior',
+				'leitura_atual',
+				'consumo',
+				'valor_unitario',
+				'valor_total',
+				'cobr_valor_minimo',
+				'observacao',
+				'status',
+				'origem_imagem'
+			];
+
+			const possuiCampo = camposPermitidos.some((campo) => req.body[campo] !== undefined);
+			if (!possuiCampo) {
+				throw new Error('Informe ao menos um campo para atualização.');
+			}
+
+			return true;
+		}),
+		body('id_tipo_consumo')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Campo id_tipo_consumo deve ser numérico e maior que zero.'),
+		body('id_condominio')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Campo id_condominio deve ser numérico e maior que zero.'),
+		body('id_usuario')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Campo id_usuario deve ser numérico e maior que zero.'),
+		body('competencia')
+			.optional({ nullable: true, checkFalsy: true })
+			.isISO8601()
+			.withMessage('Campo competencia deve estar em formato de data válido.'),
+		body('leitura_anterior')
+			.optional({ nullable: true, checkFalsy: true })
+			.isFloat()
+			.withMessage('Campo leitura_anterior deve ser numérico.'),
+		body('leitura_atual')
+			.optional({ nullable: true, checkFalsy: true })
+			.isFloat()
+			.withMessage('Campo leitura_atual deve ser numérico.'),
+		body('consumo')
+			.optional({ nullable: true, checkFalsy: true })
+			.isFloat()
+			.withMessage('Campo consumo deve ser numérico.'),
+		body('valor_unitario')
+			.optional({ nullable: true, checkFalsy: true })
+			.isFloat()
+			.withMessage('Campo valor_unitario deve ser numérico.'),
+		body('valor_total')
+			.optional({ nullable: true, checkFalsy: true })
+			.isFloat()
+			.withMessage('Campo valor_total deve ser numérico.'),
+		body('cobr_valor_minimo')
+			.optional({ nullable: true })
+			.isBoolean()
+			.withMessage('Campo cobr_valor_minimo deve ser booleano.'),
+		body('status')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 20 })
+			.withMessage('Campo status deve ter no máximo 20 caracteres.')
+	],
+	validate,
+	controller.atualizarParcialConsumoRegistro.bind(controller)
+);
 router.get('/perfis', auth, controller.listarPerfis.bind(controller));
 router.get(
 	'/menu/perfis/configuracao',
