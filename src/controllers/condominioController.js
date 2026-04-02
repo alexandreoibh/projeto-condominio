@@ -178,6 +178,17 @@ class CondominioController {
     );
   }
 
+  _getStatusConsumoPayload(payload = {}) {
+    return this._normalizarTextoOuNull(
+      payload.status ??
+      payload.status_consumo ??
+      payload.statusConsumo ??
+      payload.consumo_status ??
+      payload.consumoStatus ??
+      payload.situacao
+    );
+  }
+
   _normalizarEmailOuNull(value) {
     const text = this._normalizarTextoOuNull(value);
     return text ? text.toLowerCase() : null;
@@ -467,7 +478,10 @@ class CondominioController {
       const pageSize = Math.max(this._toInt(req.query.pageSize, 25), 1);
       const offset = (page - 1) * pageSize;
 
-      const whereParts = ['cr.id_condominio = :id_condominio'];
+      const whereParts = [
+        'cr.id_condominio = :id_condominio',
+        "UPPER(COALESCE(cr.status, '')) = 'ATIVO'"
+      ];
       const replacements = {
         id_condominio: idCondominioToken,
         limit: pageSize,
@@ -484,12 +498,6 @@ class CondominioController {
       if (idUsuario) {
         whereParts.push('cr.id_usuario = :id_usuario');
         replacements.id_usuario = idUsuario;
-      }
-
-      const status = this._normalizarTextoOuNull(req.query.status);
-      if (status) {
-        whereParts.push('UPPER(cr.status) = UPPER(:status)');
-        replacements.status = status;
       }
 
       const morador =
@@ -603,7 +611,7 @@ class CondominioController {
       const offset = (page - 1) * pageSize;
 
       const moradorFiltro = this._normalizarTextoOuNull(req.query.morador);
-      const statusFiltro = req.query.status;
+      const statusFiltro = 'ATIVO';
       const idTipoConsumoFiltro = this._getIdTipoConsumoQuery(req.query);
       const periodoInicio =
         this._normalizarTextoOuNull(req.query.periodo_inicio) ||
@@ -634,7 +642,7 @@ class CondominioController {
               ON cu.id_condominio = cr.id_condominio
              AND TRIM(LOWER(cu.unidades_bloco)) = TRIM(LOWER(COALESCE(tu.apartamento, '')))
             WHERE cr.id_condominio = :id_condominio
-              AND (:status IS NULL OR UPPER(cr.status) = UPPER(:status))
+              AND UPPER(COALESCE(cr.status, '')) = 'ATIVO'
               AND (:id_tipo_consumo IS NULL OR cr.id_tipo_consumo = :id_tipo_consumo)
               AND (:periodo_inicio IS NULL OR cr.created_at >= :periodo_inicio::date)
               AND (:periodo_fim IS NULL OR cr.created_at < (:periodo_fim::date + INTERVAL '1 day'))
@@ -687,7 +695,7 @@ class CondominioController {
             INNER JOIN "condominio-bh"."tb-condominios" c
               ON c.id = cr.id_condominio
             WHERE cr.id_condominio = :id_condominio
-              AND (:status IS NULL OR (cr.id_tipo_consumo) = (:status))
+              AND UPPER(COALESCE(cr.status, '')) = 'ATIVO'
               AND (:id_tipo_consumo IS NULL OR cr.id_tipo_consumo = :id_tipo_consumo)
               AND (:periodo_inicio IS NULL OR cr.created_at >= :periodo_inicio::date)
               AND (:periodo_fim IS NULL OR cr.created_at < (:periodo_fim::date + INTERVAL '1 day'))
@@ -724,7 +732,7 @@ class CondominioController {
               ON cu.id_condominio = cr.id_condominio
              AND TRIM(LOWER(cu.unidades_bloco)) = TRIM(LOWER(COALESCE(tu.apartamento, '')))
             WHERE cr.id_condominio = :id_condominio
-              AND (:status IS NULL OR (cr.id_tipo_consumo) = (:status))
+              AND UPPER(COALESCE(cr.status, '')) = 'ATIVO'
               AND (:id_tipo_consumo IS NULL OR cr.id_tipo_consumo = :id_tipo_consumo)
               AND (:periodo_inicio IS NULL OR cr.created_at >= :periodo_inicio::date)
               AND (:periodo_fim IS NULL OR cr.created_at < (:periodo_fim::date + INTERVAL '1 day'))
@@ -870,7 +878,7 @@ class CondominioController {
       }
 
       const moradorFiltro = this._normalizarTextoOuNull(req.query.morador);
-      const statusFiltro = this._normalizarTextoOuNull(req.query.status);
+      const statusFiltro = 'ATIVO';
       const idTipoConsumoFiltro = this._getIdTipoConsumoQuery(req.query);
 
       const replacements = {
@@ -914,7 +922,7 @@ class CondominioController {
               ON c.id = cr.id_condominio
             WHERE cr.id_condominio = :id_condominio
               AND cu.id = :id_unidade
-              AND (:status IS NULL OR UPPER(cr.status) = UPPER(:status))
+              AND UPPER(COALESCE(cr.status, '')) = 'ATIVO'
               AND (:id_tipo_consumo IS NULL OR cr.id_tipo_consumo = :id_tipo_consumo)
               AND (
                 :morador IS NULL
@@ -947,7 +955,7 @@ class CondominioController {
              AND TRIM(LOWER(cu.unidades_bloco)) = TRIM(LOWER(COALESCE(tu.apartamento, '')))
             WHERE cr.id_condominio = :id_condominio
               AND cu.id = :id_unidade
-              AND (:status IS NULL OR UPPER(cr.status) = UPPER(:status))
+              AND UPPER(COALESCE(cr.status, '')) = 'ATIVO'
               AND (:id_tipo_consumo IS NULL OR cr.id_tipo_consumo = :id_tipo_consumo)
               AND (
                 :morador IS NULL
@@ -1082,7 +1090,7 @@ class CondominioController {
       const pageSize = Math.max(this._toInt(req.query.pageSize, 25), 1);
       const offset = (page - 1) * pageSize;
 
-      const statusFiltro = this._normalizarTextoOuNull(req.query.status);
+      const statusFiltro = 'ATIVO';
       const competenciaFiltro = this._normalizarTextoOuNull(req.query.competencia);
       const idTipoConsumoFiltro = this._getIdTipoConsumoQuery(req.query);
 
@@ -1098,10 +1106,7 @@ class CondominioController {
         offset
       };
 
-      if (statusFiltro) {
-        whereParts.push('UPPER(cr.status) = UPPER(:status)');
-        replacements.status = statusFiltro;
-      }
+      whereParts.push("UPPER(COALESCE(cr.status, '')) = 'ATIVO'");
 
       if (competenciaFiltro) {
         whereParts.push('cr.competencia = :competencia::date');
@@ -1272,6 +1277,7 @@ class CondominioController {
             ON tu.id = cr.id_usuario
           WHERE cr.id = :id
             AND cr.id_condominio = :id_condominio
+            AND UPPER(COALESCE(cr.status, '')) = 'ATIVO'
           LIMIT 1`,
         {
           replacements: {
@@ -1509,6 +1515,31 @@ class CondominioController {
         });
       }
 
+      const atual = await postgres.query(
+        `SELECT id, status
+           FROM "condominio-bh".tb_consumo_registros
+          WHERE id = :id
+            AND id_condominio = :id_condominio
+          LIMIT 1`,
+        {
+          replacements: {
+            id,
+            id_condominio: idCondominioToken
+          },
+          type: QueryTypes.SELECT
+        }
+      );
+
+      if (!atual || atual.length === 0) {
+        return res.status(404).json({
+          message: 'Registro de consumo não encontrado.'
+        });
+      }
+
+      const statusPayload = this._getStatusConsumoPayload(req.body);
+      const statusAtual = this._normalizarTextoOuNull(atual[0]?.status);
+      const statusFinal = statusPayload || statusAtual || 'PENDENTE';
+
       const competencia = this._normalizarTextoOuNull(req.body.competencia) || new Date().toISOString().slice(0, 10);
       const leituraAnterior = parseNumero(req.body.leitura_anterior);
       let consumo = parseNumero(req.body.consumo);
@@ -1537,6 +1568,7 @@ class CondominioController {
                 observacao = :observacao,
                 status = :status,
                 id_usuario_cadastro = :id_usuario_cadastro,
+                id_usuario_update = :id_usuario_update,
                 origem_imagem = :origem_imagem,
                 updated_at = now()
           WHERE id = :id
@@ -1555,8 +1587,9 @@ class CondominioController {
             valor_total: valorTotal,
             cobr_valor_minimo: parseBoolean(req.body.cobr_valor_minimo, false),
             observacao: this._normalizarTextoOuNull(req.body.observacao),
-            status: this._normalizarTextoOuNull(req.body.status) || 'PENDENTE',
+            status: statusFinal,
             id_usuario_cadastro: String(idUsuarioCadastro),
+            id_usuario_update: String(idUsuarioCadastro),
             origem_imagem: this._normalizarTextoOuNull(req.body.origem_imagem),
             id_condominio: idCondominioToken
           }
@@ -1699,9 +1732,8 @@ class CondominioController {
       const observacao = req.body.observacao !== undefined
         ? this._normalizarTextoOuNull(req.body.observacao)
         : registroAtual.observacao;
-      const status = req.body.status !== undefined
-        ? this._normalizarTextoOuNull(req.body.status)
-        : registroAtual.status;
+      const statusPayload = this._getStatusConsumoPayload(req.body);
+      const status = statusPayload || registroAtual.status;
       const origemImagem = req.body.origem_imagem !== undefined
         ? this._normalizarTextoOuNull(req.body.origem_imagem)
         : registroAtual.origem_imagem;
@@ -1720,6 +1752,7 @@ class CondominioController {
                 observacao = :observacao,
                 status = :status,
                 id_usuario_cadastro = :id_usuario_cadastro,
+                id_usuario_update = :id_usuario_update,
                 origem_imagem = :origem_imagem,
                 updated_at = now()
           WHERE id = :id
@@ -1740,6 +1773,7 @@ class CondominioController {
             observacao,
             status,
             id_usuario_cadastro: String(idUsuarioCadastro),
+            id_usuario_update: String(idUsuarioCadastro),
             origem_imagem: origemImagem,
             id_condominio: idCondominioToken
           }
