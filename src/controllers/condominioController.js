@@ -3872,27 +3872,17 @@ class CondominioController {
 
       const rows = await postgres.query(
         `SELECT
-            tu.id,
-            tu.id_condominio,
             tc.nome AS nome_condominio,
-            tc.escrita_bloco,
-            tc.qtde_ap_bloco,
-            tc.modelo_fatura,
-            tc.qtde_blocos,
+            tu.bloco,
+            tu.apartamento,
             tu.nome,
             tu.sobrenome,
             tu.cpf,
             tu.email,
             tu.telefone,
-            tu.path_avatar,
             tu.tipo_morador,
-            tu.tipo_perfil_id,
             tu.tipo,
-            tu.status,
-            tu.apartamento,
-            tu.bloco,
-            tu.created_at,
-            tu.updated_at
+            tu.status
           FROM "condominio-bh"."tb-usuarios" tu
           LEFT JOIN "condominio-bh"."tb-condominios" tc
             ON tc.id = tu.id_condominio
@@ -3918,6 +3908,27 @@ class CondominioController {
     } catch (error) {
       return res.status(500).json({
         error: 'Falha ao gerar relatório de usuários no PostgreSQL',
+        detail: error.message
+      });
+    }
+  }
+
+  async relatorioExportPdf(req, res) {
+    try {
+      const modulo = this._normalizarTextoOuNull(req.query.modulo);
+      const moduloNormalizado = String(modulo || '').trim().toLowerCase();
+
+      if (moduloNormalizado === 'usuarios') {
+        return this.relatorioUsuarios(req, res);
+      }
+
+      return res.status(400).json({
+        message: 'Módulo de relatório inválido.',
+        modulos_suportados: ['usuarios']
+      });
+    } catch (error) {
+      return res.status(500).json({
+        error: 'Falha ao processar relatorio-export-pdf.php',
         detail: error.message
       });
     }

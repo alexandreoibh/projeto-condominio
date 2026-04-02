@@ -1163,6 +1163,44 @@ router.delete(
 );
 
 router.get(
+	'/relatorios-export-pdf.php',
+	auth,
+	[
+		query('modulo')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 80 })
+			.withMessage('Parâmetro modulo deve ter no máximo 80 caracteres.'),
+		query('page')
+			.optional()
+			.isInt({ min: 1 })
+			.withMessage('Parâmetro page deve ser numérico e maior que zero.'),
+		query('pageSize')
+			.optional()
+			.isInt({ min: 1, max: 100 })
+			.withMessage('Parâmetro pageSize deve estar entre 1 e 100.'),
+		query('status')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 30 })
+			.withMessage('Parâmetro status deve ter no máximo 30 caracteres.'),
+		query('tipo_morador')
+			.optional({ nullable: true, checkFalsy: true })
+			.custom((value) => {
+				const tipo = String(value || '').trim().toLowerCase();
+				if (tipo === '' || ['proprietario', 'inquilino'].includes(tipo)) {
+					return true;
+				}
+				throw new Error('Parâmetro tipo_morador deve ser proprietario ou inquilino.');
+			}),
+		query('id_condominio')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Parâmetro id_condominio deve ser numérico e maior que zero.')
+	],
+	validate,
+	controller.relatorioExportPdf.bind(controller)
+);
+
+router.get(
 	'/relatorios/usuarios',
 	auth,
 	[
