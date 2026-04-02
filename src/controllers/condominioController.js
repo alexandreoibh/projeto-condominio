@@ -1428,7 +1428,7 @@ class CondominioController {
             valor_total: valorTotal,
             cobr_valor_minimo: parseBoolean(req.body.cobr_valor_minimo, false),
             observacao: this._normalizarTextoOuNull(req.body.observacao),
-            status: this._normalizarTextoOuNull(req.body.status) || 'PENDENTE',
+            status: this._normalizarTextoOuNull(req.body.status) || 'ativo',
             id_condominio: idCondominioToken,
             id_usuario_cadastro: String(idUsuarioCadastro),
             origem_imagem: this._normalizarTextoOuNull(req.body.origem_imagem)
@@ -1538,7 +1538,7 @@ class CondominioController {
 
       const statusPayload = this._getStatusConsumoPayload(req.body);
       const statusAtual = this._normalizarTextoOuNull(atual[0]?.status);
-      const statusFinal = statusPayload || statusAtual || 'PENDENTE';
+      const statusFinal = statusPayload || statusAtual || 'ativo';
 
       const competencia = this._normalizarTextoOuNull(req.body.competencia) || new Date().toISOString().slice(0, 10);
       const leituraAnterior = parseNumero(req.body.leitura_anterior);
