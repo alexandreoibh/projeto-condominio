@@ -3800,6 +3800,129 @@ class CondominioController {
     }
   }
 
+  async relatorioUsuarios(req, res) {
+    try {
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      const idPerfilToken = this._toInt(req.IdPerfil, null);
+      const ehAdmin = idPerfilToken === 1;
+
+      if (!ehAdmin && !idCondominioToken) {
+        return res.status(403).json({
+          message: 'Token sem id_condominio para consultar relatório de usuários.'
+        });
+      }
+
+      const statusFiltro = this._normalizarTextoOuNull(req.query.status);
+      const tipoMoradorFiltro = this._normalizarTextoOuNull(req.query.tipo_morador);
+      const idCondominioFiltro = this._toInt(req.query.id_condominio, null);
+
+      const page = Math.max(this._toInt(req.query.page, 1), 1);
+      const pageSize = Math.min(Math.max(this._toInt(req.query.pageSize, 25), 1), 100);
+      const offset = (page - 1) * pageSize;
+
+      const replacements = {
+        eh_admin: ehAdmin,
+        id_condominio_token: idCondominioToken,
+        limit: pageSize,
+        offset
+      };
+
+      const whereParts = [
+        `(
+          :eh_admin = true
+          OR (
+            tu.id_condominio = :id_condominio_token
+            AND COALESCE(tu.tipo_perfil_id::text, '0') <> '1'
+          )
+        )`
+      ];
+
+      if (statusFiltro) {
+        whereParts.push("lower(COALESCE(tu.status, '')) = :status");
+        replacements.status = String(statusFiltro).toLowerCase();
+      }
+
+      if (tipoMoradorFiltro) {
+        whereParts.push("lower(COALESCE(tu.tipo_morador, '')) = :tipo_morador");
+        replacements.tipo_morador = String(tipoMoradorFiltro).toLowerCase();
+      }
+
+      if (idCondominioFiltro) {
+        if (!ehAdmin && idCondominioFiltro !== idCondominioToken) {
+          return res.status(403).json({
+            message: 'Sem permissão para consultar relatório de outro condomínio.'
+          });
+        }
+
+        whereParts.push('tu.id_condominio = :id_condominio_filtro');
+        replacements.id_condominio_filtro = idCondominioFiltro;
+      }
+
+      const whereClause = whereParts.join(' AND ');
+
+      const totalRows = await postgres.query(
+        `SELECT COUNT(*)::int AS total
+           FROM "condominio-bh"."tb-usuarios" tu
+          WHERE ${whereClause}`,
+        {
+          replacements,
+          type: QueryTypes.SELECT
+        }
+      );
+
+      const rows = await postgres.query(
+        `SELECT
+            tu.id,
+            tu.id_condominio,
+            tc.nome AS nome_condominio,
+            tc.escrita_bloco,
+            tc.qtde_ap_bloco,
+            tc.modelo_fatura,
+            tc.qtde_blocos,
+            tu.nome,
+            tu.sobrenome,
+            tu.cpf,
+            tu.email,
+            tu.telefone,
+            tu.path_avatar,
+            tu.tipo_morador,
+            tu.tipo_perfil_id,
+            tu.tipo,
+            tu.status,
+            tu.apartamento,
+            tu.bloco,
+            tu.created_at,
+            tu.updated_at
+          FROM "condominio-bh"."tb-usuarios" tu
+          LEFT JOIN "condominio-bh"."tb-condominios" tc
+            ON tc.id = tu.id_condominio
+          WHERE ${whereClause}
+          ORDER BY tc.nome ASC, tu.nome ASC, tu.id DESC
+          LIMIT :limit OFFSET :offset`,
+        {
+          replacements,
+          type: QueryTypes.SELECT
+        }
+      );
+
+      const total = totalRows[0]?.total || 0;
+      const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize);
+
+      return res.status(200).json({
+        page,
+        pageSize,
+        total,
+        totalPages,
+        data: rows
+      });
+    } catch (error) {
+      return res.status(500).json({
+        error: 'Falha ao gerar relatório de usuários no PostgreSQL',
+        detail: error.message
+      });
+    }
+  }
+
   async listarUsuariosPorPerfis(req, res) {
     try {
       const idCondominioToken = this._toInt(req.id_condominio, null);
