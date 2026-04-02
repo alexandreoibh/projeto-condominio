@@ -3643,6 +3643,7 @@ class CondominioController {
 
       const nomeFiltro = this._normalizarTextoOuNull(req.query.nome);
       const statusFiltro = this._normalizarTextoOuNull(req.query.status);
+      const tipoMoradorFiltro = this._normalizarTextoOuNull(req.query.tipo_morador);
       const ativoQuery = req.query.ativo;
       let ativoFiltro = null;
       if (ativoQuery !== undefined && ativoQuery !== null && String(ativoQuery).trim() !== '') {
@@ -3680,6 +3681,11 @@ class CondominioController {
       if (statusFiltro) {
         whereParts.push("lower(COALESCE(tu.status, '')) = :status");
         replacementsBase.status = String(statusFiltro).toLowerCase();
+      }
+
+      if (tipoMoradorFiltro) {
+        whereParts.push("lower(COALESCE(tu.tipo_morador, '')) = :tipo_morador");
+        replacementsBase.tipo_morador = String(tipoMoradorFiltro).toLowerCase();
       }
 
       if (ativoFiltro === true) {

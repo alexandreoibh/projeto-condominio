@@ -1182,6 +1182,10 @@ router.get(
 			.optional({ nullable: true, checkFalsy: true })
 			.isLength({ max: 30 })
 			.withMessage('Parâmetro status deve ter no máximo 30 caracteres.'),
+		query('tipo_morador')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 100 })
+			.withMessage('Parâmetro tipo_morador deve ter no máximo 100 caracteres.'),
 		query('ativo')
 			.optional({ nullable: true, checkFalsy: true })
 			.isBoolean()
@@ -1211,6 +1215,10 @@ router.get(
 			.optional({ nullable: true, checkFalsy: true })
 			.isLength({ max: 30 })
 			.withMessage('Parâmetro status deve ter no máximo 30 caracteres.'),
+		query('tipo_morador')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 100 })
+			.withMessage('Parâmetro tipo_morador deve ter no máximo 100 caracteres.'),
 		query('ativo')
 			.optional({ nullable: true, checkFalsy: true })
 			.isBoolean()
