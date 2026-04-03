@@ -4038,7 +4038,7 @@ class CondominioController {
             tc.nome AS nome_condominio,
             tc.cnpj AS cnpj_condominio,
             tc.email AS email_condominio,
-            tu.nome AS nome_morador,
+            tu.nome || ' ' || tu.sobrenome AS nome_morador,
             tu.sobrenome AS sobrenome_morador,
             tu.bloco as torre,
             tu.apartamento
@@ -4076,6 +4076,174 @@ class CondominioController {
     }
   }
 
+  async relatorioReservas(req, res) {
+    try {
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      const idPerfilToken = this._toInt(req.IdPerfil, null);
+      const ehAdmin = idPerfilToken === 1;
+
+      if (!ehAdmin && !idCondominioToken) {
+        return res.status(403).json({
+          message: 'Token sem id_condominio para consultar relatório de reservas.'
+        });
+      }
+
+      const statusFiltro = this._normalizarTextoOuNull(req.query.status);
+      const periodoInicio =
+        this._normalizarTextoOuNull(req.query.periodo_inicio) ||
+        this._normalizarTextoOuNull(req.query.periodoInicio);
+      const periodoFim =
+        this._normalizarTextoOuNull(req.query.periodo_fim) ||
+        this._normalizarTextoOuNull(req.query.periodoFim);
+      const idCondominioFiltro = this._toInt(req.query.id_condominio, null);
+      const idEspacoFiltro = this._toInt(req.query.id_espaco, null);
+      const idUsuarioFiltro = this._toInt(req.query.id_usuario, null);
+
+      const page = Math.max(this._toInt(req.query.page, 1), 1);
+      const pageSize = Math.min(Math.max(this._toInt(req.query.pageSize, 25), 1), 500);
+      const offset = (page - 1) * pageSize;
+
+      const replacements = {
+        eh_admin: ehAdmin,
+        id_condominio_token: idCondominioToken,
+        limit: pageSize,
+        offset
+      };
+
+      const whereParts = [
+        `(
+          :eh_admin = true
+          OR ea.id_condominio = :id_condominio_token
+        )`
+      ];
+
+      if (idCondominioFiltro) {
+        if (!ehAdmin && idCondominioFiltro !== idCondominioToken) {
+          return res.status(403).json({
+            message: 'Sem permissão para consultar relatório de reservas de outro condomínio.'
+          });
+        }
+
+        whereParts.push('ea.id_condominio = :id_condominio_filtro');
+        replacements.id_condominio_filtro = idCondominioFiltro;
+      }
+
+      if (idEspacoFiltro) {
+        whereParts.push('ea.id_espaco = :id_espaco');
+        replacements.id_espaco = idEspacoFiltro;
+      }
+
+      if (idUsuarioFiltro) {
+        whereParts.push('ea.id_usuario = :id_usuario');
+        replacements.id_usuario = idUsuarioFiltro;
+      }
+
+      if (periodoInicio) {
+        whereParts.push('ea.data_agendamento >= :periodo_inicio::date');
+        replacements.periodo_inicio = periodoInicio;
+      }
+
+      if (periodoFim) {
+        whereParts.push("ea.data_agendamento < (:periodo_fim::date + INTERVAL '1 day')");
+        replacements.periodo_fim = periodoFim;
+      }
+
+      if (statusFiltro) {
+        if (/^\d+$/.test(String(statusFiltro))) {
+          const statusCode = this._toInt(statusFiltro, null);
+          if (statusCode && statusCode > 0) {
+            whereParts.push('ea.status = :status_id');
+            replacements.status_id = statusCode;
+          }
+        } else {
+          const statusTexto = String(statusFiltro).trim().toLowerCase();
+          if (!['todos', 'all'].includes(statusTexto)) {
+            whereParts.push("LOWER(COALESCE(tt.descricao_status, '')) = :status_descricao");
+            replacements.status_descricao = statusTexto;
+          }
+        }
+      }
+
+      const whereClause = whereParts.join(' AND ');
+
+      const totalRows = await postgres.query(
+        `SELECT COUNT(*)::int AS total
+           FROM "condominio-bh".tb_espaco_agenda ea
+          LEFT JOIN "condominio-bh"."tb-usuarios" tu
+            ON tu.id = ea.id_usuario
+          LEFT JOIN "condominio-bh"."tb-condominios" tc
+            ON tc.id = ea.id_condominio
+          LEFT JOIN "condominio-bh".tb_espaco e
+            ON e.id = ea.id_espaco
+          WHERE ${whereClause}`,
+        {
+          replacements,
+          type: QueryTypes.SELECT
+        }
+      );
+
+      const rows = await postgres.query(
+        `SELECT
+            ea.id,
+            ea.id_condominio,
+            ea.id_espaco,
+            ea.id_usuario,
+            ea.id_usuario_cadastro,
+            ea.observacoes,
+            ea.created_at AS data_cadastro,
+            ea.data_agendamento,
+            ea.periodo_manha,
+            ea.periodo_tarde,
+            ea.periodo_noite,
+            ea.status,
+            tu.nome || ' ' || tu.sobrenome AS nome_morador,
+            tu.apartamento,
+            tu.bloco as torre,
+            tc.nome AS nome_condominio,
+            tc.cnpj AS cnpj_condominio,
+            tc.email AS email_condominio,
+            e.nome AS nome_espaco,
+            ea.taxa_reserva,
+            est.descricao_status AS descricao_status,
+            tu_cadastro.nome || ' ' || tu_cadastro.sobrenome AS nome_usuario_cadastro
+          FROM "condominio-bh".tb_espaco_agenda ea
+          LEFT JOIN "condominio-bh"."tb-usuarios" tu
+            ON tu.id = ea.id_usuario
+          LEFT JOIN "condominio-bh"."tb-condominios" tc
+            ON tc.id = ea.id_condominio
+          LEFT JOIN "condominio-bh".tb_espaco e
+            ON e.id = ea.id_espaco
+          LEFT JOIN "condominio-bh".tb_status_tratamento est
+            ON est.id = ea.status
+          LEFT JOIN "condominio-bh"."tb-usuarios" tu_cadastro
+            ON tu_cadastro.id = ea.id_usuario_cadastro
+          WHERE ${whereClause}
+          ORDER BY ea.data_agendamento asc, ea.id DESC
+          LIMIT :limit OFFSET :offset`,
+        {
+          replacements,
+          type: QueryTypes.SELECT
+        }
+      );
+
+      const total = totalRows[0]?.total || 0;
+      const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize);
+
+      return res.status(200).json({
+        page,
+        pageSize,
+        total,
+        totalPages,
+        data: rows
+      });
+    } catch (error) {
+      return res.status(500).json({
+        error: 'Falha ao gerar relatório de reservas no PostgreSQL',
+        detail: error.message
+      });
+    }
+  }
+
   async relatorioExportPdf(req, res) {
     try {
       const modulo = this._normalizarTextoOuNull(req.query.modulo);
@@ -4089,9 +4257,13 @@ class CondominioController {
         return this.relatorioConsumo(req, res);
       }
 
+      if (moduloNormalizado === 'reserva' || moduloNormalizado === 'reservas') {
+        return this.relatorioReservas(req, res);
+      }
+
       return res.status(400).json({
         message: 'Módulo de relatório inválido.',
-        modulos_suportados: ['usuarios', 'consumo']
+        modulos_suportados: ['usuarios', 'consumo', 'reserva']
       });
     } catch (error) {
       return res.status(500).json({
@@ -5580,7 +5752,7 @@ class CondominioController {
               c.qtde_blocos,
             e.nome AS espaco_nome,
             e.localizacao AS espaco_localizacao,
-            e.taxa_reserva,
+              COALESCE(ea.taxa_reserva, e.taxa_reserva) AS taxa_reserva,
             tt.descricao_status 
           FROM "condominio-bh".tb_espaco_agenda ea
           INNER JOIN "condominio-bh".tb_espaco e
@@ -6006,7 +6178,7 @@ class CondominioController {
       }
 
       const espaco = await postgres.query(
-        `SELECT id, nome, periodo_modo
+        `SELECT id, nome, periodo_modo, taxa_reserva
            FROM "condominio-bh".tb_espaco
           WHERE id = :idEspaco
             AND id_condominio = :idCondominio
@@ -6020,6 +6192,11 @@ class CondominioController {
       if (!espaco || espaco.length === 0) {
         return res.status(404).json({ message: 'Espaço não encontrado para este condomínio.' });
       }
+
+      const taxaReservaAgenda =
+        espaco[0].taxa_reserva === undefined || espaco[0].taxa_reserva === null
+          ? null
+          : Number(espaco[0].taxa_reserva);
 
       const periodo_manha = Math.max(this._toInt(req.body.periodo_manha, 0), 0) ? 1 : 0;
       const periodo_tarde = Math.max(this._toInt(req.body.periodo_tarde, 0), 0) ? 1 : 0;
@@ -6179,6 +6356,7 @@ class CondominioController {
              id_espaco,
              id_usuario,
              id_usuario_cadastro,
+             taxa_reserva,
              status,
              observacoes,
              periodo_manha,
@@ -6193,6 +6371,7 @@ class CondominioController {
              :id_espaco,
              :id_usuario,
              :id_usuario_cadastro,
+             :taxa_reserva,
              :status,
              :observacoes,
              :periodo_manha,
@@ -6210,6 +6389,7 @@ class CondominioController {
               id_espaco: idEspaco,
               id_usuario: idUsuarioReserva,
               id_usuario_cadastro: idUsuarioCadastro,
+              taxa_reserva: taxaReservaAgenda,
               status,
               observacoes,
               periodo_manha,
