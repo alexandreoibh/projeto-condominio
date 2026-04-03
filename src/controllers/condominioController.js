@@ -3838,8 +3838,20 @@ class CondominioController {
       ];
 
       if (statusFiltro) {
-        whereParts.push("lower(COALESCE(tu.status, '')) = :status");
-        replacements.status = String(statusFiltro).toLowerCase();
+        if (/^\d+$/.test(String(statusFiltro))) {
+          const statusCode = this._toInt(statusFiltro, null);
+          if (statusCode === 1) {
+            whereParts.push("lower(COALESCE(tu.status, '')) = :status_ativo");
+            replacements.status_ativo = 'ativo';
+          } else if (statusCode === 0) {
+            whereParts.push("lower(COALESCE(tu.status, '')) = :status_inativo");
+            replacements.status_inativo = 'inativo';
+          }
+          // statusCode 2 (todos) não aplica filtro adicional.
+        } else {
+          whereParts.push("lower(COALESCE(tu.status, '')) = :status");
+          replacements.status = String(statusFiltro).toLowerCase();
+        }
       }
 
       if (tipoMoradorFiltro) {
@@ -3913,6 +3925,157 @@ class CondominioController {
     }
   }
 
+  async relatorioConsumo(req, res) {
+    try {
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      const idPerfilToken = this._toInt(req.IdPerfil, null);
+      const ehAdmin = idPerfilToken === 1;
+
+      if (!ehAdmin && !idCondominioToken) {
+        return res.status(403).json({
+          message: 'Token sem id_condominio para consultar relatório de consumo.'
+        });
+      }
+
+      const statusFiltro = this._normalizarTextoOuNull(req.query.status);
+      const periodoInicio = this._normalizarTextoOuNull(req.query.periodo_inicio) || this._normalizarTextoOuNull(req.query.periodoInicio);
+      const periodoFim = this._normalizarTextoOuNull(req.query.periodo_fim) || this._normalizarTextoOuNull(req.query.periodoFim);
+      const idCondominioFiltro = this._toInt(req.query.id_condominio, null);
+      const idTipoConsumoFiltro = this._toInt(req.query.id_tipo_consumo, null);
+
+      const page = Math.max(this._toInt(req.query.page, 1), 1);
+      const pageSize = Math.min(Math.max(this._toInt(req.query.pageSize, 25), 1), 500);
+      const offset = (page - 1) * pageSize;
+
+      const replacements = {
+        eh_admin: ehAdmin,
+        id_condominio_token: idCondominioToken,
+        limit: pageSize,
+        offset
+      };
+
+      const whereParts = [
+        `(
+          :eh_admin = true
+          OR cr.id_condominio = :id_condominio_token
+        )`
+      ];
+
+      if (idCondominioFiltro) {
+        if (!ehAdmin && idCondominioFiltro !== idCondominioToken) {
+          return res.status(403).json({
+            message: 'Sem permissão para consultar relatório de consumo de outro condomínio.'
+          });
+        }
+
+        whereParts.push('cr.id_condominio = :id_condominio_filtro');
+        replacements.id_condominio_filtro = idCondominioFiltro;
+      }
+
+      if (periodoInicio) {
+        whereParts.push('cr.competencia >= :periodo_inicio::date');
+        replacements.periodo_inicio = periodoInicio;
+      }
+
+      if (periodoFim) {
+        whereParts.push("cr.competencia < (:periodo_fim::date + INTERVAL '1 day')");
+        replacements.periodo_fim = periodoFim;
+      }
+
+      if (idTipoConsumoFiltro) {
+        whereParts.push('cr.id_tipo_consumo = :id_tipo_consumo');
+        replacements.id_tipo_consumo = idTipoConsumoFiltro;
+      }
+
+      if (statusFiltro) {
+        if (/^\d+$/.test(String(statusFiltro))) {
+          const statusCode = this._toInt(statusFiltro, null);
+          if (statusCode === 1) {
+            whereParts.push("lower(COALESCE(cr.status, '')) = :status_ativo");
+            replacements.status_ativo = 'ativo';
+          } else if (statusCode === 0) {
+            whereParts.push("lower(COALESCE(cr.status, '')) = :status_inativo");
+            replacements.status_inativo = 'inativo';
+          }
+          // statusCode 2 (todos) não aplica filtro adicional.
+        } else {
+          whereParts.push("lower(COALESCE(cr.status, '')) = :status");
+          replacements.status = String(statusFiltro).toLowerCase();
+        }
+      }
+
+      const whereClause = whereParts.join(' AND ');
+
+      const totalRows = await postgres.query(
+        `SELECT COUNT(*)::int AS total
+           FROM "condominio-bh".tb_consumo_registros cr
+          LEFT JOIN "condominio-bh".tb_consumo_tipo ct
+            ON ct.id = cr.id_tipo_consumo
+          LEFT JOIN "condominio-bh"."tb-usuarios" tu
+            ON tu.id = cr.id_usuario
+          LEFT JOIN "condominio-bh"."tb-condominios" tc
+            ON tc.id = cr.id_condominio
+          WHERE ${whereClause}`,
+        {
+          replacements,
+          type: QueryTypes.SELECT
+        }
+      );
+
+      const rows = await postgres.query(
+        `SELECT
+            cr.id,
+            cr.id_tipo_consumo,
+            ct.nome AS tipo_consumo,
+            cr.created_at AS data_cadastro,
+            cr.leitura_anterior AS leitura_inicial,
+            cr.leitura_atual AS leitura_final,
+            cr.competencia AS mes_consumo,
+            cr.valor_unitario AS tarifa_cobranca,
+            cr.valor_total AS valor_total_calculado,
+            cr.observacao,
+            cr.status,
+            tc.nome AS nome_condominio,
+            tc.cnpj AS cnpj_condominio,
+            tc.email AS email_condominio,
+            tu.nome AS nome_morador,
+            tu.sobrenome AS sobrenome_morador,
+            tu.bloco as torre,
+            tu.apartamento
+          FROM "condominio-bh".tb_consumo_registros cr
+          LEFT JOIN "condominio-bh".tb_consumo_tipo ct
+            ON ct.id = cr.id_tipo_consumo
+          LEFT JOIN "condominio-bh"."tb-usuarios" tu
+            ON tu.id = cr.id_usuario
+          LEFT JOIN "condominio-bh"."tb-condominios" tc
+            ON tc.id = cr.id_condominio
+          WHERE ${whereClause}
+          ORDER BY cr.created_at DESC, cr.id DESC
+          LIMIT :limit OFFSET :offset`,
+        {
+          replacements,
+          type: QueryTypes.SELECT
+        }
+      );
+
+      const total = totalRows[0]?.total || 0;
+      const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize);
+
+      return res.status(200).json({
+        page,
+        pageSize,
+        total,
+        totalPages,
+        data: rows
+      });
+    } catch (error) {
+      return res.status(500).json({
+        error: 'Falha ao gerar relatório de consumo no PostgreSQL',
+        detail: error.message
+      });
+    }
+  }
+
   async relatorioExportPdf(req, res) {
     try {
       const modulo = this._normalizarTextoOuNull(req.query.modulo);
@@ -3922,9 +4085,13 @@ class CondominioController {
         return this.relatorioUsuarios(req, res);
       }
 
+      if (moduloNormalizado === 'consumo') {
+        return this.relatorioConsumo(req, res);
+      }
+
       return res.status(400).json({
         message: 'Módulo de relatório inválido.',
-        modulos_suportados: ['usuarios']
+        modulos_suportados: ['usuarios', 'consumo']
       });
     } catch (error) {
       return res.status(500).json({
