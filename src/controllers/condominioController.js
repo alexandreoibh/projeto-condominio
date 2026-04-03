@@ -4149,17 +4149,27 @@ class CondominioController {
       }
 
       if (statusFiltro) {
-        if (/^\d+$/.test(String(statusFiltro))) {
-          const statusCode = this._toInt(statusFiltro, null);
-          if (statusCode && statusCode > 0) {
+        const statusTokens = String(statusFiltro)
+          .split(',')
+          .map((item) => String(item).trim().toLowerCase())
+          .filter((item) => item !== '');
+
+        const hasTodos = statusTokens.some((item) => ['todos', 'all'].includes(item));
+        if (!hasTodos) {
+          const statusIds = [
+            ...new Set(
+              statusTokens
+                .map((item) => this._toInt(item, null))
+                .filter((item) => item !== null && item > 0)
+            )
+          ];
+
+          if (statusIds.length === 1) {
             whereParts.push('ea.status = :status_id');
-            replacements.status_id = statusCode;
-          }
-        } else {
-          const statusTexto = String(statusFiltro).trim().toLowerCase();
-          if (!['todos', 'all'].includes(statusTexto)) {
-            whereParts.push("LOWER(COALESCE(tt.descricao_status, '')) = :status_descricao");
-            replacements.status_descricao = statusTexto;
+            replacements.status_id = statusIds[0];
+          } else if (statusIds.length > 1) {
+            whereParts.push('ea.status IN (:status_ids)');
+            replacements.status_ids = statusIds;
           }
         }
       }
@@ -4244,6 +4254,170 @@ class CondominioController {
     }
   }
 
+  async relatorioComunicacoes(req, res) {
+    try {
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      const idPerfilToken = this._toInt(req.IdPerfil, null);
+      const ehAdmin = idPerfilToken === 1;
+
+      if (!ehAdmin && !idCondominioToken) {
+        return res.status(403).json({
+          message: 'Token sem id_condominio para consultar relatório de comunicações.'
+        });
+      }
+
+      const statusFiltro = this._normalizarTextoOuNull(req.query.status);
+      const idCondominioFiltro = this._toInt(req.query.id_condominio, null);
+      const idTipoDashboardFiltro = this._toInt(req.query.tipo ?? req.query.id_tipo_dashboard, null);
+      const idUsuarioLancamentoFiltro = this._toInt(
+        req.query.id_usuario_lancamento ?? req.query.id_usuario,
+        null
+      );
+      const periodoInicio =
+        this._normalizarTextoOuNull(req.query.periodo_inicio) ||
+        this._normalizarTextoOuNull(req.query.periodoInicio);
+      const periodoFim =
+        this._normalizarTextoOuNull(req.query.periodo_fim) ||
+        this._normalizarTextoOuNull(req.query.periodoFim);
+
+      const page = Math.max(this._toInt(req.query.page, 1), 1);
+      const pageSize = Math.min(Math.max(this._toInt(req.query.pageSize, 25), 1), 500);
+      const offset = (page - 1) * pageSize;
+
+      const replacements = {
+        eh_admin: ehAdmin,
+        id_condominio_token: idCondominioToken,
+        limit: pageSize,
+        offset
+      };
+
+      const whereParts = [
+        `(
+          :eh_admin = true
+          OR dr.id_condominio = :id_condominio_token
+        )`
+      ];
+
+      if (idCondominioFiltro) {
+        if (!ehAdmin && idCondominioFiltro !== idCondominioToken) {
+          return res.status(403).json({
+            message: 'Sem permissão para consultar comunicações de outro condomínio.'
+          });
+        }
+
+        whereParts.push('dr.id_condominio = :id_condominio_filtro');
+        replacements.id_condominio_filtro = idCondominioFiltro;
+      }
+
+      if (idTipoDashboardFiltro) {
+        whereParts.push('dr.tipo = :tipo');
+        replacements.tipo = idTipoDashboardFiltro;
+      }
+
+      if (idUsuarioLancamentoFiltro) {
+        whereParts.push('dr.id_usuario = :id_usuario_lancamento');
+        replacements.id_usuario_lancamento = idUsuarioLancamentoFiltro;
+      }
+
+      if (periodoInicio) {
+        whereParts.push('dr.created_at >= :periodo_inicio::date');
+        replacements.periodo_inicio = periodoInicio;
+      }
+
+      if (periodoFim) {
+        whereParts.push("dr.created_at < (:periodo_fim::date + INTERVAL '1 day')");
+        replacements.periodo_fim = periodoFim;
+      }
+
+      if (statusFiltro) {
+        const statusTokens = String(statusFiltro)
+          .split(',')
+          .map((item) => String(item).trim().toLowerCase())
+          .filter((item) => item !== '');
+
+        const hasTodos = statusTokens.some((item) => ['todos', 'all'].includes(item));
+        if (!hasTodos && statusTokens.length > 0) {
+          whereParts.push("LOWER(COALESCE(dr.status, '')) IN (:status_list)");
+          replacements.status_list = [...new Set(statusTokens)];
+        }
+      }
+
+      const whereClause = whereParts.join(' AND ');
+
+      const totalRows = await postgres.query(
+        `SELECT COUNT(*)::int AS total
+           FROM "condominio-bh".tb_dashboard_registro dr
+          LEFT JOIN "condominio-bh".tb_dashboard_tipo dt
+            ON dt.id = dr.tipo
+          LEFT JOIN "condominio-bh"."tb-usuarios" tu
+            ON tu.id = dr.id_usuario
+          WHERE ${whereClause}`,
+        {
+          replacements,
+          type: QueryTypes.SELECT
+        }
+      );
+
+      const rows = await postgres.query(
+        `SELECT
+            dr.id,
+            dr.tipo,
+            dt.codigo AS tipo_codigo,
+            dt.descricao AS tipo_descricao,
+            dr.titulo,
+            dr.descricao,
+            dr.status,
+            dr.data_inicio,
+            dr.data_fim,
+            dr.data_referencia,
+            dr.origem,
+            dr.prioridade,
+            dr.exibicao_dashboard,
+            dr.id_usuario AS id_usuario_lancamento,
+            tu.nome || ' ' || tu.sobrenome AS nome_usuario_lancamento,
+            tu.sobrenome AS sobrenome_usuario_lancamento,
+            TRIM(COALESCE(tu.nome, '') || ' ' || COALESCE(tu.sobrenome, '')) AS usuario_lancamento_nome_completo,
+            tu.email AS usuario_lancamento_email,
+            dr.id_condominio,
+            c.nome AS nome_condominio,
+            c.cnpj AS cnpj_condominio,
+            c.email AS email_condominio,
+            dr.created_at,
+            dr.updated_at
+          FROM "condominio-bh".tb_dashboard_registro dr
+          LEFT JOIN "condominio-bh".tb_dashboard_tipo dt
+            ON dt.id = dr.tipo
+          LEFT JOIN "condominio-bh"."tb-usuarios" tu
+            ON tu.id = dr.id_usuario
+          LEFT JOIN "condominio-bh"."tb-condominios" c
+            ON c.id = dr.id_condominio
+          WHERE ${whereClause}
+          ORDER BY dr.created_at DESC, dr.id DESC
+          LIMIT :limit OFFSET :offset`,
+        {
+          replacements,
+          type: QueryTypes.SELECT
+        }
+      );
+
+      const total = totalRows[0]?.total || 0;
+      const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize);
+
+      return res.status(200).json({
+        page,
+        pageSize,
+        total,
+        totalPages,
+        data: rows
+      });
+    } catch (error) {
+      return res.status(500).json({
+        error: 'Falha ao gerar relatório de comunicações no PostgreSQL',
+        detail: error.message
+      });
+    }
+  }
+
   async relatorioExportPdf(req, res) {
     try {
       const modulo = this._normalizarTextoOuNull(req.query.modulo);
@@ -4261,9 +4435,13 @@ class CondominioController {
         return this.relatorioReservas(req, res);
       }
 
+      if (moduloNormalizado === 'comunicacao' || moduloNormalizado === 'comunicacoes') {
+        return this.relatorioComunicacoes(req, res);
+      }
+
       return res.status(400).json({
         message: 'Módulo de relatório inválido.',
-        modulos_suportados: ['usuarios', 'consumo', 'reserva']
+        modulos_suportados: ['usuarios', 'consumo', 'reserva', 'comunicacoes']
       });
     } catch (error) {
       return res.status(500).json({
