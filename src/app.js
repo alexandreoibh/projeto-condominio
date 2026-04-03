@@ -32,6 +32,7 @@ app.use('/api/login', loginRoute);
 app.use('/api/condominio', condominioRoute);
 
 app.use('/login', loginRoute);
+app.use('/service/back-cond.php', loginRoute);
 app.use('/service', condominioRoute);
 
 app.use('/uploads', express.static(__dirname + '/uploads'))

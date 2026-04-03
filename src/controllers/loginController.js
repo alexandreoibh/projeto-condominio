@@ -130,17 +130,33 @@ class Login {
   } = {}) {
     try {
       const payload = req.body && typeof req.body === "object" ? req.body : {};
+      const headers = req.headers && typeof req.headers === "object" ? req.headers : {};
       const userAgent = req.headers?.["user-agent"] ? String(req.headers["user-agent"]) : null;
       const ipHeader = this._resolveRequestIp(req);
       const { dispositivo: dispositivoInferido, sistemaOperacional: soInferido, navegador: navegadorInferido } =
         this._extractClientInfo(userAgent);
 
       const loginPayload = this._normalizarTextoOuNull(payload.login ?? payload.email, 255);
-      const ipPayload = this._normalizarTextoOuNull(payload.ip, 64);
-      const dispositivoPayload = this._normalizarTextoOuNull(payload.dispositivo, 120);
-      const soPayload = this._normalizarTextoOuNull(payload.sistema_operacional, 120);
-      const navegadorPayload = this._normalizarTextoOuNull(payload.navegador, 120);
-      const localizacaoPayload = this._normalizarTextoOuNull(payload.localizacao_aproximada, 255);
+      const ipPayload = this._normalizarTextoOuNull(
+        payload.ip ?? headers["x-client-ip"] ?? headers["x-ip"],
+        64
+      );
+      const dispositivoPayload = this._normalizarTextoOuNull(
+        payload.dispositivo ?? headers["x-client-device"] ?? headers["x-dispositivo"],
+        120
+      );
+      const soPayload = this._normalizarTextoOuNull(
+        payload.sistema_operacional ?? headers["x-client-os"] ?? headers["x-sistema-operacional"],
+        120
+      );
+      const navegadorPayload = this._normalizarTextoOuNull(
+        payload.navegador ?? headers["x-client-browser"] ?? headers["x-navegador"],
+        120
+      );
+      const localizacaoPayload = this._normalizarTextoOuNull(
+        payload.localizacao_aproximada ?? headers["x-client-location"] ?? headers["x-localizacao-aproximada"],
+        255
+      );
 
       const ip = ipPayload || ipHeader;
       const dispositivo = dispositivoPayload || dispositivoInferido;
