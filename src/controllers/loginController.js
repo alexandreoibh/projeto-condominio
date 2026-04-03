@@ -103,6 +103,23 @@ class Login {
     };
   }
 
+  _normalizarTextoOuNull(value, maxLength = null) {
+    if (value === undefined || value === null) {
+      return null;
+    }
+
+    const text = String(value).trim();
+    if (text === "") {
+      return null;
+    }
+
+    if (maxLength && Number.isInteger(maxLength) && maxLength > 0) {
+      return text.slice(0, maxLength);
+    }
+
+    return text;
+  }
+
   async _registrarLogAcesso(req, {
     idUsuario = null,
     idCondominio = null,
@@ -112,9 +129,24 @@ class Login {
     mensagem = null
   } = {}) {
     try {
+      const payload = req.body && typeof req.body === "object" ? req.body : {};
       const userAgent = req.headers?.["user-agent"] ? String(req.headers["user-agent"]) : null;
-      const ip = this._resolveRequestIp(req);
-      const { dispositivo, sistemaOperacional, navegador } = this._extractClientInfo(userAgent);
+      const ipHeader = this._resolveRequestIp(req);
+      const { dispositivo: dispositivoInferido, sistemaOperacional: soInferido, navegador: navegadorInferido } =
+        this._extractClientInfo(userAgent);
+
+      const loginPayload = this._normalizarTextoOuNull(payload.login ?? payload.email, 255);
+      const ipPayload = this._normalizarTextoOuNull(payload.ip, 64);
+      const dispositivoPayload = this._normalizarTextoOuNull(payload.dispositivo, 120);
+      const soPayload = this._normalizarTextoOuNull(payload.sistema_operacional, 120);
+      const navegadorPayload = this._normalizarTextoOuNull(payload.navegador, 120);
+      const localizacaoPayload = this._normalizarTextoOuNull(payload.localizacao_aproximada, 255);
+
+      const ip = ipPayload || ipHeader;
+      const dispositivo = dispositivoPayload || dispositivoInferido;
+      const sistemaOperacional = soPayload || soInferido;
+      const navegador = navegadorPayload || navegadorInferido;
+      const emailNormalizado = this._normalizarTextoOuNull(emailInformado, 255);
 
       await postgres.query(
         `INSERT INTO "condominio-bh".tb_sgw_log_acesso (
@@ -150,7 +182,7 @@ class Login {
           replacements: {
             id_usuario: idUsuario,
             id_condominio: idCondominio,
-            email_informado: emailInformado,
+            email_informado: emailNormalizado || loginPayload,
             acao,
             sucesso: Boolean(sucesso),
             ip,
@@ -158,7 +190,7 @@ class Login {
             dispositivo,
             sistema_operacional: sistemaOperacional,
             navegador,
-            localizacao_aproximada: null,
+            localizacao_aproximada: localizacaoPayload,
             mensagem
           },
           type: QueryTypes.INSERT
