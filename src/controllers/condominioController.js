@@ -6557,6 +6557,7 @@ class CondominioController {
 
       const selectBaseQuery = `SELECT
             tu.nome,
+        tu.email,
             tu.apartamento,
             tu.bloco,
 			      ea.*,
@@ -6632,6 +6633,7 @@ class CondominioController {
               return {
                 ...row,
                 nome: '****',
+                email: '****',
                 apartamento: '****',
                 bloco: '****'
               };
@@ -6639,6 +6641,7 @@ class CondominioController {
           : data.map((row) => ({
               ...row,
               nome: '****',
+              email: '****',
               apartamento: '****',
               bloco: '****'
             }));
