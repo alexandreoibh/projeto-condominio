@@ -739,6 +739,108 @@ class CondominioController {
     }
   }
 
+  async resumoFaturasPendentes(req, res) {
+    try {
+      const idPerfilToken = this._toInt(req.IdPerfil, null);
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      const ehAdmin = idPerfilToken === 1;
+
+      if (!ehAdmin && !idCondominioToken) {
+        return res.status(403).json({
+          message: 'Token sem id_condominio para consultar pendências de fatura.'
+        });
+      }
+
+      const idCondominioFiltro = this._toInt(req.query.id_condominio, null);
+      if (idCondominioFiltro && !ehAdmin && idCondominioFiltro !== idCondominioToken) {
+        return res.status(403).json({
+          message: 'Sem permissão para consultar pendências de outro condomínio.'
+        });
+      }
+
+      const idCondominioRef = idCondominioFiltro || (ehAdmin ? null : idCondominioToken);
+      const limiteItens = Math.min(Math.max(this._toInt(req.query.limit, 5), 1), 20);
+
+      const whereParts = ["upper(COALESCE(fm.status, 'PENDENTE')) = 'PENDENTE'"];
+      const replacements = {
+        id_condominio_ref: idCondominioRef,
+        limit: limiteItens
+      };
+
+      if (idCondominioRef) {
+        whereParts.push('fm.id_condominio = :id_condominio_ref');
+      }
+
+      const whereClause = whereParts.join(' AND ');
+
+      const totalRows = await postgres.query(
+        `SELECT COUNT(1)::int AS total
+           FROM "condominio-bh".tb_fatura_mes fm
+          WHERE ${whereClause}`,
+        {
+          replacements,
+          type: QueryTypes.SELECT
+        }
+      );
+
+      const data = await postgres.query(
+        `SELECT
+            fm.id,
+            fm.id_condominio,
+            c.nome AS nome_condominio,
+            fm.id_plano,
+            fp.nome AS nome_plano,
+            fm.valor,
+            fm.data_vencimento,
+            fm.referencia,
+            fm.status,
+            COALESCE(
+              (
+                SELECT SUM(pg.valor_pago)::numeric(10,2)
+                  FROM "condominio-bh".tb_fatura_pagamento pg
+                 WHERE pg.id_fatura = fm.id
+              ),
+              0
+            ) AS valor_pago_total,
+            (fm.valor - COALESCE((
+              SELECT SUM(pg.valor_pago)
+                FROM "condominio-bh".tb_fatura_pagamento pg
+               WHERE pg.id_fatura = fm.id
+            ), 0))::numeric(10,2) AS valor_em_aberto
+          FROM "condominio-bh".tb_fatura_mes fm
+          LEFT JOIN "condominio-bh"."tb-condominios" c
+            ON c.id = fm.id_condominio
+          LEFT JOIN "condominio-bh".tb_fatura_planos fp
+            ON fp.id = fm.id_plano
+          WHERE ${whereClause}
+          ORDER BY fm.data_vencimento ASC, fm.id DESC
+          LIMIT :limit`,
+        {
+          replacements,
+          type: QueryTypes.SELECT
+        }
+      );
+
+      const totalPendentes = totalRows[0]?.total || 0;
+
+      return res.status(200).json({
+        possui_pendencia: totalPendentes > 0,
+        quantidade_pendencias: totalPendentes,
+        filtros: {
+          id_condominio: idCondominioRef,
+          status: 'PENDENTE',
+          limit: limiteItens
+        },
+        data
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao carregar resumo de faturas pendentes.',
+        detail: error.message
+      });
+    }
+  }
+
   async atualizarFaturaPlanoCondominio(req, res) {
     try {
       const idPerfilToken = this._toInt(req.IdPerfil, null);

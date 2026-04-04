@@ -101,6 +101,22 @@ router.get(
 	validate,
 	controller.listarFaturasPagamentos.bind(controller)
 );
+router.get(
+	'/fatura/pendencias/resumo',
+	auth,
+	[
+		query('id_condominio')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Parâmetro id_condominio deve ser numérico e maior que zero.'),
+		query('limit')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1, max: 20 })
+			.withMessage('Parâmetro limit deve estar entre 1 e 20.')
+	],
+	validate,
+	controller.resumoFaturasPendentes.bind(controller)
+);
 router.put(
 	'/fatura/planos/condominio',
 	auth,
