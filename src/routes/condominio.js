@@ -33,6 +33,104 @@ const publicRegistrationKeyGuard = (req, res, next) => {
 };
 
 router.get('/status', controller.status.bind(controller));
+router.get(
+	'/fatura/planos',
+	auth,
+	[
+		query('id_condominio')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Parâmetro id_condominio deve ser numérico e maior que zero.'),
+		query('ativo')
+			.optional({ nullable: true, checkFalsy: true })
+			.isIn(['true', 'false', '1', '0'])
+			.withMessage('Parâmetro ativo deve ser true, false, 1 ou 0.')
+	],
+	validate,
+	controller.listarFaturaPlanos.bind(controller)
+);
+router.get(
+	'/fatura/lancamentos',
+	auth,
+	[
+		query('page')
+			.optional()
+			.isInt({ min: 1 })
+			.withMessage('Parâmetro page deve ser numérico e maior que zero.'),
+		query('pageSize')
+			.optional()
+			.isInt({ min: 1, max: 500 })
+			.withMessage('Parâmetro pageSize deve estar entre 1 e 500.'),
+		query('id_condominio')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Parâmetro id_condominio deve ser numérico e maior que zero.'),
+		query('id_fatura')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Parâmetro id_fatura deve ser numérico e maior que zero.'),
+		query('id_plano')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Parâmetro id_plano deve ser numérico e maior que zero.'),
+		query('referencia')
+			.optional({ nullable: true, checkFalsy: true })
+			.matches(/^\d{4}-\d{2}$/)
+			.withMessage('Parâmetro referencia deve estar no formato YYYY-MM.'),
+		query('status')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 20 })
+			.withMessage('Parâmetro status deve ter no máximo 20 caracteres.'),
+		query('data_vencimento_inicio')
+			.optional({ nullable: true, checkFalsy: true })
+			.isISO8601()
+			.withMessage('Parâmetro data_vencimento_inicio deve estar em formato de data válido.'),
+		query('data_vencimento_fim')
+			.optional({ nullable: true, checkFalsy: true })
+			.isISO8601()
+			.withMessage('Parâmetro data_vencimento_fim deve estar em formato de data válido.'),
+		query('vencimento_inicio')
+			.optional({ nullable: true, checkFalsy: true })
+			.isISO8601()
+			.withMessage('Parâmetro vencimento_inicio deve estar em formato de data válido.'),
+		query('vencimento_fim')
+			.optional({ nullable: true, checkFalsy: true })
+			.isISO8601()
+			.withMessage('Parâmetro vencimento_fim deve estar em formato de data válido.')
+	],
+	validate,
+	controller.listarFaturasPagamentos.bind(controller)
+);
+router.put(
+	'/fatura/planos/condominio',
+	auth,
+	[
+		body('id_condominio')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Campo id_condominio deve ser numérico e maior que zero.'),
+		body('id_plano')
+			.notEmpty()
+			.withMessage('Campo id_plano é obrigatório.')
+			.bail()
+			.isInt({ min: 1 })
+			.withMessage('Campo id_plano deve ser numérico e maior que zero.'),
+		body('data_inicio')
+			.optional({ nullable: true, checkFalsy: true })
+			.isISO8601()
+			.withMessage('Campo data_inicio deve estar em formato de data válido.'),
+		body('data_fim_anterior')
+			.optional({ nullable: true, checkFalsy: true })
+			.isISO8601()
+			.withMessage('Campo data_fim_anterior deve estar em formato de data válido.'),
+		body('observacao')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 1250 })
+			.withMessage('Campo observacao deve ter no máximo 1250 caracteres.')
+	],
+	validate,
+	controller.atualizarFaturaPlanoCondominio.bind(controller)
+);
 router.get('/consumo/tipos/ativos', auth, controller.listarConsumoTiposAtivos.bind(controller));
 router.get(
 	'/consumo/registros',

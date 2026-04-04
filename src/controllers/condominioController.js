@@ -432,6 +432,552 @@ class CondominioController {
     });
   }
 
+  async listarFaturaPlanos(req, res) {
+    try {
+      const idPerfilToken = this._toInt(req.IdPerfil, null);
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      const ehAdmin = idPerfilToken === 1;
+
+      if (!ehAdmin && !idCondominioToken) {
+        return res.status(403).json({
+          message: 'Token sem id_condominio para consultar planos de fatura.'
+        });
+      }
+
+      const idCondominioFiltro = this._toInt(req.query.id_condominio, null);
+      if (idCondominioFiltro && !ehAdmin && idCondominioFiltro !== idCondominioToken) {
+        return res.status(403).json({
+          message: 'Sem permissão para consultar planos de outro condomínio.'
+        });
+      }
+
+      const idCondominioRef = idCondominioFiltro || (ehAdmin ? null : idCondominioToken);
+      const ativoParam = this._normalizarTextoOuNull(req.query.ativo);
+
+      const whereParts = ['fp.ativo = true'];
+      const replacements = {
+        id_condominio_ref: idCondominioRef
+      };
+
+      const data = await postgres.query(
+        `SELECT
+            fp.id,
+            fp.nome,
+            fp.valor,
+            fp.limite_usuarios,
+            fp.limite_unidades,
+            fp.possui_relatorios,
+            fp.possui_financeiro,
+            fp.possui_notificacoes,
+            fp.possui_app,
+            fp.suporte,
+            fp.ativo,
+            fp.criado_em,
+            fp.descricao,
+            fcp.id AS id_vinculo_condominio_plano,
+            fcp.id_condominio AS id_condominio_vinculado,
+            fcp.data_inicio AS vinculo_data_inicio,
+            fcp.data_fim AS vinculo_data_fim,
+            fcp.ativo AS vinculo_ativo,
+            CASE
+              WHEN fcp.id IS NOT NULL THEN true
+              ELSE false
+            END AS plano_vinculado_condominio
+          FROM "condominio-bh".tb_fatura_planos fp
+          LEFT JOIN "condominio-bh".tb_fatura_condominio_plano fcp
+            ON fcp.id = (
+              SELECT cp.id
+              FROM "condominio-bh".tb_fatura_condominio_plano cp
+              WHERE cp.id_plano = fp.id
+                AND (:id_condominio_ref IS NULL OR cp.id_condominio = :id_condominio_ref)
+              ORDER BY
+                CASE WHEN cp.ativo = true THEN 0 ELSE 1 END,
+                cp.data_inicio DESC,
+                cp.id DESC
+              LIMIT 1
+            )
+          WHERE ${whereParts.join(' AND ')}
+          ORDER BY fp.ativo DESC, fp.valor ASC, fp.id ASC`,
+        {
+          replacements,
+          type: QueryTypes.SELECT
+        }
+      );
+
+      const planoAtualCondominio = idCondominioRef
+        ? data.find((item) => Boolean(item.vinculo_ativo) === true && item.id_condominio_vinculado === idCondominioRef) || null
+        : null;
+
+      return res.status(200).json({
+        total: data.length,
+        filtros: {
+          id_condominio: idCondominioRef,
+          ativo: 'true'
+        },
+        plano_atual_condominio: planoAtualCondominio,
+        data
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao listar planos de fatura.',
+        detail: error.message
+      });
+    }
+  }
+
+  async listarFaturasPagamentos(req, res) {
+    try {
+      const idPerfilToken = this._toInt(req.IdPerfil, null);
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      const ehAdmin = idPerfilToken === 1;
+
+      if (!ehAdmin && !idCondominioToken) {
+        return res.status(403).json({
+          message: 'Token sem id_condominio para consultar faturas.'
+        });
+      }
+
+      const idCondominioFiltro = this._toInt(req.query.id_condominio, null);
+      if (idCondominioFiltro && !ehAdmin && idCondominioFiltro !== idCondominioToken) {
+        return res.status(403).json({
+          message: 'Sem permissão para consultar faturas de outro condomínio.'
+        });
+      }
+
+      const idCondominioRef = idCondominioFiltro || (ehAdmin ? null : idCondominioToken);
+      const idFaturaFiltro = this._toInt(req.query.id_fatura, null);
+      const idPlanoFiltro = this._toInt(req.query.id_plano, null);
+      const referenciaFiltro = this._normalizarTextoOuNull(req.query.referencia);
+      const statusFiltro = this._normalizarTextoOuNull(req.query.status);
+      const vencimentoInicio =
+        this._normalizarTextoOuNull(req.query.data_vencimento_inicio) ||
+        this._normalizarTextoOuNull(req.query.vencimento_inicio);
+      const vencimentoFim =
+        this._normalizarTextoOuNull(req.query.data_vencimento_fim) ||
+        this._normalizarTextoOuNull(req.query.vencimento_fim);
+
+      const page = Math.max(this._toInt(req.query.page, 1), 1);
+      const pageSize = Math.min(Math.max(this._toInt(req.query.pageSize, 25), 1), 500);
+      const offset = (page - 1) * pageSize;
+
+      const whereParts = ['1 = 1'];
+      const replacements = {
+        limit: pageSize,
+        offset,
+        id_condominio_ref: idCondominioRef
+      };
+
+      if (idCondominioRef) {
+        whereParts.push('fm.id_condominio = :id_condominio_ref');
+      }
+
+      if (idFaturaFiltro) {
+        whereParts.push('fm.id = :id_fatura');
+        replacements.id_fatura = idFaturaFiltro;
+      }
+
+      if (idPlanoFiltro) {
+        whereParts.push('fm.id_plano = :id_plano');
+        replacements.id_plano = idPlanoFiltro;
+      }
+
+      if (referenciaFiltro) {
+        whereParts.push('fm.referencia = :referencia');
+        replacements.referencia = referenciaFiltro;
+      }
+
+      if (statusFiltro) {
+        whereParts.push("upper(COALESCE(fm.status, '')) = :status_fatura");
+        replacements.status_fatura = String(statusFiltro).toUpperCase();
+      }
+
+      if (vencimentoInicio) {
+        whereParts.push('fm.data_vencimento >= :vencimento_inicio::date');
+        replacements.vencimento_inicio = vencimentoInicio;
+      }
+
+      if (vencimentoFim) {
+        whereParts.push('fm.data_vencimento <= :vencimento_fim::date');
+        replacements.vencimento_fim = vencimentoFim;
+      }
+
+      const whereClause = whereParts.join(' AND ');
+
+      const totalRows = await postgres.query(
+        `SELECT COUNT(1)::int AS total
+           FROM "condominio-bh".tb_fatura_mes fm
+          WHERE ${whereClause}`,
+        {
+          replacements,
+          type: QueryTypes.SELECT
+        }
+      );
+
+      const data = await postgres.query(
+        `SELECT
+            fm.id,
+            fm.id_condominio,
+            c.nome AS nome_condominio,
+            fm.id_plano,
+            fp2.nome AS nome_plano,
+            fm.id_condominio_plano,
+            fm.valor,
+            fm.data_vencimento,
+            fm.data_emissao,
+            fm.status,
+            fm.referencia,
+            fm.criado_em,
+            COALESCE(
+              (
+                SELECT SUM(pg.valor_pago)::numeric(10,2)
+                  FROM "condominio-bh".tb_fatura_pagamento pg
+                 WHERE pg.id_fatura = fm.id
+              ),
+              0
+            ) AS valor_pago_total,
+            CASE
+              WHEN COALESCE(
+                (
+                  SELECT SUM(pg.valor_pago)
+                    FROM "condominio-bh".tb_fatura_pagamento pg
+                   WHERE pg.id_fatura = fm.id
+                ),
+                0
+              ) >= fm.valor THEN true
+              ELSE false
+            END AS quitada
+          FROM "condominio-bh".tb_fatura_mes fm
+          LEFT JOIN "condominio-bh"."tb-condominios" c
+            ON c.id = fm.id_condominio
+          LEFT JOIN "condominio-bh".tb_fatura_planos fp2
+            ON fp2.id = fm.id_plano
+          WHERE ${whereClause}
+          ORDER BY fm.data_vencimento DESC, fm.id DESC
+          LIMIT :limit OFFSET :offset`,
+        {
+          replacements,
+          type: QueryTypes.SELECT
+        }
+      );
+
+      const idsFatura = data
+        .map((item) => this._toInt(item.id, null))
+        .filter((id) => id !== null);
+
+      let pagamentosRows = [];
+      if (idsFatura.length > 0) {
+        pagamentosRows = await postgres.query(
+          `SELECT
+              fp.id,
+              fp.id_fatura,
+              fp.valor_pago,
+              fp.data_pagamento,
+              fp.metodo_pagamento,
+              fp.status,
+              fp.transacao_gateway,
+              fp.cod_pix
+            FROM "condominio-bh".tb_fatura_pagamento fp
+            WHERE fp.id_fatura IN (:ids_fatura)
+            ORDER BY fp.data_pagamento DESC, fp.id DESC`,
+          {
+            replacements: {
+              ids_fatura: idsFatura
+            },
+            type: QueryTypes.SELECT
+          }
+        );
+      }
+
+      const pagamentosPorFatura = new Map();
+      for (const pagamento of pagamentosRows) {
+        const idFatura = this._toInt(pagamento.id_fatura, null);
+        if (!idFatura) {
+          continue;
+        }
+
+        if (!pagamentosPorFatura.has(idFatura)) {
+          pagamentosPorFatura.set(idFatura, []);
+        }
+
+        pagamentosPorFatura.get(idFatura).push(pagamento);
+      }
+
+      const dataComPagamentos = data.map((fatura) => {
+        const idFatura = this._toInt(fatura.id, null);
+        return {
+          ...fatura,
+          pagamentos: idFatura && pagamentosPorFatura.has(idFatura)
+            ? pagamentosPorFatura.get(idFatura)
+            : []
+        };
+      });
+
+      const total = totalRows[0]?.total || 0;
+      const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize);
+
+      return res.status(200).json({
+        page,
+        pageSize,
+        total,
+        totalPages,
+        filtros: {
+          id_condominio: idCondominioRef,
+          id_fatura: idFaturaFiltro,
+          id_plano: idPlanoFiltro,
+          referencia: referenciaFiltro,
+          status: statusFiltro,
+          data_vencimento_inicio: vencimentoInicio,
+          data_vencimento_fim: vencimentoFim
+        },
+        data: dataComPagamentos
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao listar faturas e pagamentos.',
+        detail: error.message
+      });
+    }
+  }
+
+  async atualizarFaturaPlanoCondominio(req, res) {
+    try {
+      const idPerfilToken = this._toInt(req.IdPerfil, null);
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      const idUsuarioToken = this._toInt(req.idcliente, null);
+      const ehAdmin = idPerfilToken === 1;
+
+      if (!ehAdmin && !idCondominioToken) {
+        return res.status(403).json({
+          message: 'Token sem id_condominio para atualizar plano de fatura.'
+        });
+      }
+
+      const idCondominioPayload = this._toInt(req.body.id_condominio, null);
+      const idCondominioRef = idCondominioPayload || idCondominioToken;
+      if (!idCondominioRef) {
+        return res.status(400).json({
+          message: 'Campo id_condominio é obrigatório.'
+        });
+      }
+
+      if (!ehAdmin && idCondominioRef !== idCondominioToken) {
+        return res.status(403).json({
+          message: 'Sem permissão para atualizar plano de outro condomínio.'
+        });
+      }
+
+      const idPlanoNovo = this._toInt(req.body.id_plano, null);
+      if (!idPlanoNovo) {
+        return res.status(400).json({
+          message: 'Campo id_plano é obrigatório e deve ser numérico.'
+        });
+      }
+
+      const dataInicioInput = this._normalizarTextoOuNull(req.body.data_inicio);
+      const dataFimAnteriorInput = this._normalizarTextoOuNull(req.body.data_fim_anterior);
+      const observacaoMudanca = this._normalizarTextoOuNull(req.body.observacao);
+
+      const transaction = await postgres.transaction();
+
+      try {
+        const planoRows = await postgres.query(
+          `SELECT id, nome, ativo
+             FROM "condominio-bh".tb_fatura_planos
+            WHERE id = :id_plano
+            LIMIT 1`,
+          {
+            replacements: { id_plano: idPlanoNovo },
+            type: QueryTypes.SELECT,
+            transaction
+          }
+        );
+
+        if (!planoRows || planoRows.length === 0) {
+          await transaction.rollback();
+          return res.status(404).json({
+            message: 'Plano de fatura não encontrado.'
+          });
+        }
+
+        const planoNovo = planoRows[0];
+        if (planoNovo.ativo === false) {
+          await transaction.rollback();
+          return res.status(400).json({
+            message: 'Não é permitido vincular um plano inativo.'
+          });
+        }
+
+        const vinculoAtualRows = await postgres.query(
+          `SELECT id, id_condominio, id_plano, data_inicio, data_fim, ativo
+             FROM "condominio-bh".tb_fatura_condominio_plano
+            WHERE id_condominio = :id_condominio
+              AND ativo = true
+            ORDER BY data_inicio DESC, id DESC
+            LIMIT 1`,
+          {
+            replacements: {
+              id_condominio: idCondominioRef
+            },
+            type: QueryTypes.SELECT,
+            transaction
+          }
+        );
+
+        const vinculoAtual = vinculoAtualRows && vinculoAtualRows.length > 0 ? vinculoAtualRows[0] : null;
+
+        if (vinculoAtual && this._toInt(vinculoAtual.id_plano, null) === idPlanoNovo) {
+          await transaction.rollback();
+          return res.status(200).json({
+            message: 'Condomínio já está vinculado ao plano informado.',
+            data: {
+              id_condominio: idCondominioRef,
+              id_plano: idPlanoNovo,
+              vinculo_atual: vinculoAtual
+            }
+          });
+        }
+
+        if (vinculoAtual) {
+          await postgres.query(
+            `UPDATE "condominio-bh".tb_fatura_condominio_plano
+                SET ativo = false,
+                    data_fim = COALESCE(:data_fim_anterior, CURRENT_DATE)
+              WHERE id = :id`,
+            {
+              replacements: {
+                id: vinculoAtual.id,
+                data_fim_anterior: dataFimAnteriorInput
+              },
+              type: QueryTypes.UPDATE,
+              transaction
+            }
+          );
+        }
+
+        const novoVinculoRows = await postgres.query(
+          `INSERT INTO "condominio-bh".tb_fatura_condominio_plano (
+              id_condominio,
+              id_plano,
+              data_inicio,
+              data_fim,
+              ativo
+            ) VALUES (
+              :id_condominio,
+              :id_plano,
+              COALESCE(:data_inicio, CURRENT_DATE),
+              NULL,
+              true
+            )
+            RETURNING id, id_condominio, id_plano, data_inicio, data_fim, ativo`,
+          {
+            replacements: {
+              id_condominio: idCondominioRef,
+              id_plano: idPlanoNovo,
+              data_inicio: dataInicioInput
+            },
+            transaction
+          }
+        );
+
+        const novoVinculo = novoVinculoRows[0][0];
+
+        await postgres.query(
+          `INSERT INTO "condominio-bh".tb_log_tratamento_reserva (
+             id_pedido,
+             id_tratamento_status,
+             tratamento_motivo_pendente,
+             tratamento_taxa_paga,
+             tratamento_observacao,
+             id_usuario,
+             created_at
+           ) VALUES (
+             :id_pedido,
+             :id_tratamento_status,
+             :tratamento_motivo_pendente,
+             :tratamento_taxa_paga,
+             :tratamento_observacao,
+             :id_usuario,
+             now()
+           )`,
+          {
+            replacements: {
+              id_pedido: idCondominioRef,
+              id_tratamento_status: idPlanoNovo,
+              tratamento_motivo_pendente: 'MUDANCA_PLANO_FATURA',
+              tratamento_taxa_paga: 0,
+              tratamento_observacao: [
+                `Alteracao de plano do condominio ${idCondominioRef}`,
+                vinculoAtual ? `de plano ${vinculoAtual.id_plano}` : 'sem plano anterior',
+                `para plano ${idPlanoNovo}`,
+                observacaoMudanca ? `obs: ${observacaoMudanca}` : null
+              ]
+                .filter((parte) => parte)
+                .join(' | '),
+              id_usuario: idUsuarioToken
+            },
+            transaction
+          }
+        );
+
+        await postgres.query(
+          `INSERT INTO "condominio-bh".tb_faturas_log_plano (
+             id_condominio,
+             id_plano_anterior,
+             id_plano_novo,
+             id_condominio_plano,
+             tipo_alteracao,
+             motivo,
+             usuario_responsavel,
+             origem,
+             criado_em
+           ) VALUES (
+             :id_condominio,
+             :id_plano_anterior,
+             :id_plano_novo,
+             :id_condominio_plano,
+             :tipo_alteracao,
+             :motivo,
+             :usuario_responsavel,
+             :origem,
+             now()
+           )`,
+          {
+            replacements: {
+              id_condominio: idCondominioRef,
+              id_plano_anterior: vinculoAtual ? this._toInt(vinculoAtual.id_plano, null) : null,
+              id_plano_novo: idPlanoNovo,
+              id_condominio_plano: this._toInt(novoVinculo.id, null),
+              tipo_alteracao: 'ATUALIZACAO_PLANO',
+              motivo: observacaoMudanca || null,
+              usuario_responsavel: idUsuarioToken,
+              origem: 'API'
+            },
+            transaction
+          }
+        );
+
+        await transaction.commit();
+
+        return res.status(200).json({
+          message: 'Plano de fatura atualizado com sucesso.',
+          data: {
+            id_condominio: idCondominioRef,
+            plano_anterior: vinculoAtual,
+            plano_atual: novoVinculo
+          }
+        });
+      } catch (transactionError) {
+        await transaction.rollback();
+        throw transactionError;
+      }
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao atualizar plano de fatura do condomínio.',
+        detail: error.message
+      });
+    }
+  }
+
   async listarConsumoTiposAtivos(req, res) {
     try {
       const data = await postgres.query(
