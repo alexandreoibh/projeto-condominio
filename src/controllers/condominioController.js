@@ -6429,9 +6429,10 @@ class CondominioController {
       const idPerfilToken = this._toInt(req.IdPerfil, null);
       const idCondominioToken = this._toInt(req.id_condominio, null);
       const idUsuarioToken = this._toInt(req.idcliente, null);
+      const ehAdmin = idPerfilToken === 1;
       const ehMorador = idPerfilToken === 2;
 
-      if (!idCondominioToken) {
+      if (!ehAdmin && !idCondominioToken) {
         return res.status(403).json({
           message: 'Token sem id_condominio para listar reservas.'
         });
@@ -6456,8 +6457,13 @@ class CondominioController {
       const pageSize = Math.min(Math.max(this._toInt(req.query.pageSize, 10), 1), 100);
       const offset = (page - 1) * pageSize;
 
-      const whereParts = ['ea.id_condominio = :idCondominio'];
-      const baseReplacements = { idCondominio: idCondominioToken };
+      const whereParts = ['1 = 1'];
+      const baseReplacements = {};
+
+      if (!ehAdmin) {
+        whereParts.push('ea.id_condominio = :idCondominio');
+        baseReplacements.idCondominio = idCondominioToken;
+      }
 
       // Para calendário por período, morador precisa enxergar a ocupação do espaço.
       if (ehMorador && !listarTodosDados && !usarPeriodo) {
