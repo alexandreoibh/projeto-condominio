@@ -5799,6 +5799,99 @@ class CondominioController {
     }
   }
 
+  async authRecoveryLookup(req, res) {
+    try {
+      const loginRaw = this._normalizarTextoOuNull(req.body?.login);
+      if (!loginRaw) {
+        return res.status(400).json({
+          success: false,
+          message: 'Campo login é obrigatório.'
+        });
+      }
+
+      const loginEmail = String(loginRaw).trim().toLowerCase();
+      const loginCpf = String(loginRaw).replace(/\D/g, '');
+
+      const usuarios = await postgres.query(
+        `SELECT
+            tu.id,
+            tu.id_condominio,
+            tu.nome,
+            tu.sobrenome,
+            tu.email,
+            tu.cpf,
+            tu.status,
+            tc.nome AS nome_condominio,
+            tc.ativo AS condominio_ativo
+           FROM "condominio-bh"."tb-usuarios" tu
+           LEFT JOIN "condominio-bh"."tb-condominios" tc
+             ON tc.id::text = tu.id_condominio::text
+          WHERE (lower(tu.email) = :login_email OR tu.cpf = :login_cpf)
+          ORDER BY tu.id DESC
+          LIMIT 1`,
+        {
+          replacements: {
+            login_email: loginEmail,
+            login_cpf: loginCpf
+          },
+          type: QueryTypes.SELECT
+        }
+      );
+
+      if (!usuarios || usuarios.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: 'Usuario nao encontrado para o e-mail/CPF informado.'
+        });
+      }
+
+      const usuario = usuarios[0];
+      const usuarioAtivo = ['ativo'].includes(String(usuario.status || '').trim().toLowerCase());
+      const condominioAtivo = Boolean(usuario.condominio_ativo);
+
+      if (!usuarioAtivo || !condominioAtivo) {
+        return res.status(200).json({
+          success: false,
+          message: 'Dados com impedimentos, favor procurar o sindico.'
+        });
+      }
+
+      const inviteToken = jwt.sign(
+        {
+          id_usuario: this._toInt(usuario.id, null),
+          id_condominio: this._toInt(usuario.id_condominio, null),
+          email: this._normalizarEmailOuNull(usuario.email),
+          flow: 'password_recovery',
+          jti: crypto.randomBytes(16).toString('hex')
+        },
+        INVITE_TOKEN_SECRET,
+        { expiresIn: '24h' }
+      );
+
+      return res.status(200).json({
+        success: true,
+        message: 'Dados validos.',
+        data: {
+          id_usuario: this._toInt(usuario.id, null),
+          id_condominio: this._toInt(usuario.id_condominio, null),
+          nome: this._normalizarNomeCapitalizado(`${usuario.nome || ''} ${usuario.sobrenome || ''}`.trim()) || null,
+          email: this._normalizarEmailOuNull(usuario.email),
+          nome_condominio: this._normalizarTextoOuNull(usuario.nome_condominio)
+        },
+        invite_token: inviteToken,
+        token: inviteToken,
+        token_type: 'invite_token',
+        expires_in: '24h'
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        message: 'Falha ao validar dados para recuperacao de senha.',
+        detail: error.message
+      });
+    }
+  }
+
   async editarUsuario(req, res) {
     try {
       let idCondominioToken = this._toInt(req.id_condominio, null);

@@ -1602,6 +1602,34 @@ router.get(
 );
 
 router.post(
+	'/auth-recovery-lookup',
+	[
+		body('login')
+			.notEmpty()
+			.withMessage('Campo login é obrigatório.')
+			.bail()
+			.isLength({ max: 255 })
+			.withMessage('Campo login deve ter no máximo 255 caracteres.')
+	],
+	validate,
+	controller.authRecoveryLookup.bind(controller)
+);
+
+router.post(
+	'/auth-recovery-lookup.php',
+	[
+		body('login')
+			.notEmpty()
+			.withMessage('Campo login é obrigatório.')
+			.bail()
+			.isLength({ max: 255 })
+			.withMessage('Campo login deve ter no máximo 255 caracteres.')
+	],
+	validate,
+	controller.authRecoveryLookup.bind(controller)
+);
+
+router.post(
 	'/usuarios/cadastro-por-convite',
 	publicRegistrationKeyGuard,
 	[
