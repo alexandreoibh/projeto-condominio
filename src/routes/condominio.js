@@ -32,6 +32,17 @@ const publicRegistrationKeyGuard = (req, res, next) => {
 	return next();
 };
 
+const authOrInviteToken = (req, res, next) => {
+	const hasAuthorization = Boolean(req.header('Authorization') || req.header('authorization'));
+	const hasInviteToken = Boolean(req.body?.invite_token || req.body?.token);
+
+	if (!hasAuthorization && hasInviteToken) {
+		return next();
+	}
+
+	return auth(req, res, next);
+};
+
 router.get('/status', controller.status.bind(controller));
 router.get(
 	'/fatura/planos',
@@ -1735,7 +1746,7 @@ router.post(
 
 router.put(
 	'/usuarios/:id(\\d+)',
-	auth,
+	authOrInviteToken,
 	[
 		param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.'),
 		body('nome')
@@ -1814,7 +1825,7 @@ router.put(
 
 router.patch(
 	'/usuarios/:id(\\d+)',
-	auth,
+	authOrInviteToken,
 	[
 		param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.'),
 		body('nome')

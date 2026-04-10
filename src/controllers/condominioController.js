@@ -4,7 +4,11 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const { QueryTypes } = require('sequelize');
 
-const INVITE_TOKEN_SECRET = process.env.INVITE_TOKEN_SECRET || process.env.JWT_SECRET || 'dev_invite_secret_change_me';
+const INVITE_TOKEN_SECRET =
+  process.env.SERVICE_INVITE_TOKEN_SECRET ||
+  process.env.INVITE_TOKEN_SECRET ||
+  process.env.JWT_SECRET ||
+  'dev_invite_secret_change_me';
 const PUBLIC_REGISTER_RATE_WINDOW_MS = 15 * 60 * 1000;
 const PUBLIC_REGISTER_RATE_MAX_ATTEMPTS = 5;
 const INVITE_TOKEN_USAGE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -5797,7 +5801,31 @@ class CondominioController {
 
   async editarUsuario(req, res) {
     try {
-      const idCondominioToken = this._toInt(req.id_condominio, null);
+      let idCondominioToken = this._toInt(req.id_condominio, null);
+      let invitePayload = null;
+
+      if (!idCondominioToken) {
+        const inviteToken = this._normalizarTextoOuNull(req.body?.invite_token ?? req.body?.token);
+        if (!inviteToken) {
+          return res.status(403).json({
+            message: 'Token sem id_condominio para editar usuário.'
+          });
+        }
+
+        try {
+          invitePayload = this._verifyInviteToken(inviteToken);
+        } catch (tokenError) {
+          return res.status(401).json({
+            message: 'invite_token inválido ou expirado.'
+          });
+        }
+
+        idCondominioToken = this._toInt(
+          invitePayload.id_condominio ?? invitePayload.condominio_id ?? invitePayload.idCondominio,
+          null
+        );
+      }
+
       if (!idCondominioToken) {
         return res.status(403).json({
           message: 'Token sem id_condominio para editar usuário.'
@@ -5831,6 +5859,27 @@ class CondominioController {
       }
 
       const atual = usuarioAtual[0];
+
+      if (invitePayload) {
+        const idUsuarioInvite = this._toInt(
+          invitePayload.id_usuario ?? invitePayload.usuario_id ?? invitePayload.idUsuario ?? invitePayload.id,
+          null
+        );
+        const emailInvite = this._normalizarEmailOuNull(invitePayload.email ?? invitePayload.email_usuario);
+        const emailAtual = this._normalizarEmailOuNull(atual.email);
+
+        if (idUsuarioInvite && idUsuarioInvite !== idUsuario) {
+          return res.status(403).json({
+            message: 'invite_token não autorizado para este usuário.'
+          });
+        }
+
+        if (emailInvite && emailAtual && emailInvite !== emailAtual) {
+          return res.status(403).json({
+            message: 'invite_token não autorizado para este usuário.'
+          });
+        }
+      }
 
       const nome = req.body.nome !== undefined ? req.body.nome : atual.nome;
       const sobrenome = req.body.sobrenome !== undefined ? req.body.sobrenome : atual.sobrenome;
