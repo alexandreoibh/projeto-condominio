@@ -3996,7 +3996,10 @@ class CondominioController {
   }
 
   async criarDashboardRegistro(req, res) {
+    let transaction;
     try {
+      transaction = await postgres.transaction();
+
       const idPerfilToken = this._toInt(req.IdPerfil, null);
       const idUsuarioToken = this._toInt(req.idcliente, null);
       const idCondominioToken = this._toInt(req.id_condominio, null);
@@ -4025,10 +4028,32 @@ class CondominioController {
         : this._toInt(req.body.id_usuario, idUsuarioToken);
 
       if (ehMorador && !idUsuarioFinal) {
+        await transaction.rollback();
         return res.status(403).json({
           message: 'Token sem id de usuário para criar registro do dashboard do morador.'
         });
       }
+
+      const apartamentoFinal =
+        req.body.apartamento !== undefined
+          ? String(req.body.apartamento || '').trim() || null
+          : req.body.encomenda_apartamento !== undefined
+            ? String(req.body.encomenda_apartamento || '').trim() || null
+            : null;
+
+      const blocoFinal =
+        req.body.bloco !== undefined
+          ? String(req.body.bloco || '').trim() || null
+          : req.body.encomenda_bloco !== undefined
+            ? String(req.body.encomenda_bloco || '').trim() || null
+            : null;
+
+      const empresaEntregaFinal =
+        req.body.empresa_entrega !== undefined
+          ? String(req.body.empresa_entrega || '').trim() || null
+          : null;
+
+      const tipoRegistro = this._toInt(req.body.tipo, 0);
 
       const insert = await postgres.query(
         `INSERT INTO "condominio-bh".tb_dashboard_registro (
@@ -4073,7 +4098,7 @@ class CondominioController {
         RETURNING *`,
         {
           replacements: {
-            tipo: this._toInt(req.body.tipo, 0),
+            tipo: tipoRegistro,
             titulo: String(req.body.titulo || '').trim(),
             descricao: req.body.descricao ? String(req.body.descricao).trim() : null,
             status: req.body.status ? String(req.body.status).trim() : 'ativo',
@@ -4085,32 +4110,123 @@ class CondominioController {
             prioridade: this._toInt(req.body.prioridade, 0),
             exibicao_dashboard: this._toInt(req.body.exibicao_dashboard, 1),
             id_usuario: idUsuarioFinal,
-            apartamento:
-              req.body.apartamento !== undefined
-                ? String(req.body.apartamento || '').trim() || null
-                : req.body.encomenda_apartamento !== undefined
-                  ? String(req.body.encomenda_apartamento || '').trim() || null
-                  : null,
-            bloco:
-              req.body.bloco !== undefined
-                ? String(req.body.bloco || '').trim() || null
-                : req.body.encomenda_bloco !== undefined
-                  ? String(req.body.encomenda_bloco || '').trim() || null
-                  : null,
-            empresa_entrega:
-              req.body.empresa_entrega !== undefined
-                ? String(req.body.empresa_entrega || '').trim() || null
-                : null,
+            apartamento: apartamentoFinal,
+            bloco: blocoFinal,
+            empresa_entrega: empresaEntregaFinal,
             id_condominio: idCondominioFinal
-          }
+          },
+          transaction
         }
       );
 
+      const registroCriado = insert?.[0]?.[0];
+      const idCodigoRegistro = this._toInt(registroCriado?.id, null);
+
+      if (tipoRegistro === 3) {
+        const tipoNotificacaoRows = await postgres.query(
+          `SELECT id
+           FROM "condominio-bh".tb_notificacao_tipo
+          WHERE codigo::text = '8' OR id = 8
+          ORDER BY CASE WHEN codigo::text = '8' THEN 0 ELSE 1 END
+          LIMIT 1`,
+          {
+            type: QueryTypes.SELECT,
+            transaction
+          }
+        );
+
+        const idNotificacaoTipo = this._toInt(tipoNotificacaoRows?.[0]?.id, null);
+        if (!idNotificacaoTipo) {
+          throw new Error('Tipo de notificação 8 não encontrado na tb_notificacao_tipo.');
+        }
+
+        let idUsuarioPedido = this._toInt(
+          req.body.id_usuario_pedido ?? req.body.id_usuario_encomenda ?? req.body.id_usuario_destino,
+          null
+        );
+
+        if (!idUsuarioPedido && apartamentoFinal) {
+          const usuarioPedidoRows = await postgres.query(
+            `SELECT id
+             FROM "condominio-bh"."tb-usuarios"
+            WHERE id_condominio = :id_condominio
+              AND COALESCE(apartamento, '') = :apartamento
+              AND (:bloco IS NULL OR COALESCE(bloco, '') = :bloco)
+            ORDER BY id DESC
+            LIMIT 1`,
+            {
+              replacements: {
+                id_condominio: idCondominioFinal,
+                apartamento: apartamentoFinal,
+                bloco: blocoFinal
+              },
+              type: QueryTypes.SELECT,
+              transaction
+            }
+          );
+
+          idUsuarioPedido = this._toInt(usuarioPedidoRows?.[0]?.id, null);
+        }
+
+        const idUsuarioRegistrando = this._toInt(idUsuarioToken, null) || this._toInt(idUsuarioFinal, null);
+        if (!idUsuarioRegistrando) {
+          throw new Error('Usuário registrante não identificado para salvar notificação.');
+        }
+
+        const mensagemNotificacao = [
+          'Nova ocorrência registrada',
+          apartamentoFinal ? `apto ${apartamentoFinal}` : null,
+          blocoFinal ? `bloco ${blocoFinal}` : null,
+          empresaEntregaFinal ? `empresa ${empresaEntregaFinal}` : null
+        ]
+          .filter((item) => item)
+          .join(' - ');
+
+        await postgres.query(
+          `INSERT INTO "condominio-bh".tb_notificacao_log (
+            id_notificacao_tipo,
+            id_usuario,
+            mensagem,
+            id_usuario_pedido,
+            id_condominio,
+            id_codigo
+         ) VALUES (
+            :id_notificacao_tipo,
+            :id_usuario,
+            :mensagem,
+            :id_usuario_pedido,
+            :id_condominio,
+            :id_codigo
+         )`,
+          {
+            replacements: {
+              id_notificacao_tipo: idNotificacaoTipo,
+              id_usuario: idUsuarioRegistrando,
+              mensagem: mensagemNotificacao,
+              id_usuario_pedido: idUsuarioPedido,
+              id_condominio: idCondominioFinal,
+              id_codigo: idCodigoRegistro
+            },
+            transaction
+          }
+        );
+      }
+
+      await transaction.commit();
+
       return res.status(201).json({
         message: 'Registro de dashboard criado com sucesso.',
-        data: insert[0][0]
+        data: registroCriado
       });
     } catch (error) {
+      if (transaction) {
+        try {
+          await transaction.rollback();
+        } catch (rollbackError) {
+          // noop
+        }
+      }
+
       return res.status(500).json({
         message: 'Falha ao criar registro do dashboard.',
         detail: error.message
@@ -4447,6 +4563,116 @@ class CondominioController {
     } catch (error) {
       return res.status(500).json({
         error: 'Falha ao listar moradores no PostgreSQL',
+        detail: error.message
+      });
+    }
+  }
+
+  async consultarUsuariosBase(req, res) {
+    try {
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      const idPerfilToken = this._toInt(req.IdPerfil, null);
+      const ehAdmin = idPerfilToken === 1;
+
+      if (!ehAdmin && !idCondominioToken) {
+        return res.status(403).json({
+          success: false,
+          message: 'Token sem id_condominio para consultar usuários.'
+        });
+      }
+
+      const idCondominioFiltro = this._toInt(req.query.id_condominio, null);
+      const blocoFiltro = this._normalizarTextoOuNull(req.query.bloco);
+      const apartamentoFiltro = this._normalizarTextoOuNull(req.query.apartamento);
+
+      if (!ehAdmin && idCondominioFiltro && idCondominioFiltro !== idCondominioToken) {
+        return res.status(403).json({
+          success: false,
+          message: 'Sem permissão para consultar usuários de outro condomínio.'
+        });
+      }
+
+      const replacements = {
+        eh_admin: ehAdmin,
+        id_condominio_token: idCondominioToken
+      };
+
+      const whereParts = [
+        '(:eh_admin = true OR tu.id_condominio = :id_condominio_token)'
+      ];
+
+      if (idCondominioFiltro) {
+        whereParts.push('tu.id_condominio = :id_condominio_filtro');
+        replacements.id_condominio_filtro = idCondominioFiltro;
+      }
+
+      if (blocoFiltro) {
+        whereParts.push("lower(COALESCE(tu.bloco, '')) = :bloco");
+        replacements.bloco = String(blocoFiltro).toLowerCase();
+      }
+
+      if (apartamentoFiltro) {
+        whereParts.push("lower(COALESCE(tu.apartamento, '')) = :apartamento");
+        replacements.apartamento = String(apartamentoFiltro).toLowerCase();
+      }
+
+      const whereClause = whereParts.join(' AND ');
+
+      const usuarios = await postgres.query(
+        `SELECT
+            tu.id,
+            tu.id_condominio,
+            tc.nome AS nome_condominio,
+            tu.nome,
+            tu.sobrenome,
+            tu.cpf,
+            tu.email,
+            tu.telefone,
+            tu.path_avatar,
+            tu.tipo_morador,
+            tu.tipo_perfil_id,
+            tu.tipo,
+            tu.status,
+            tu.data_nascimento,
+            tu.genero,
+            tu.endereco_logradouro,
+            tu.endereco_numero,
+            tu.endereco_complemento,
+            tu.endereco_bairro,
+            tu.endereco_cidade,
+            tu.endereco_uf,
+            tu.endereco_cep,
+            tu.apartamento,
+            tu.bloco,
+            tu.observacoes,
+            tu.last_login_at,
+            tu.created_at,
+            tu.updated_at
+          FROM "condominio-bh"."tb-usuarios" tu
+          LEFT JOIN "condominio-bh"."tb-condominios" tc
+            ON tc.id = tu.id_condominio
+          WHERE ${whereClause}
+          ORDER BY tu.id DESC`,
+        {
+          replacements,
+          type: QueryTypes.SELECT
+        }
+      );
+
+      return res.status(200).json({
+        success: true,
+        total: usuarios.length,
+        filtros: {
+          id_condominio: idCondominioFiltro || (ehAdmin ? null : idCondominioToken),
+          bloco: blocoFiltro,
+          apartamento: apartamentoFiltro
+        },
+        data: usuarios
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        message: 'Falha ao consultar usuários da base.',
         detail: error.message
       });
     }

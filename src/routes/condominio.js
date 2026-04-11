@@ -1594,6 +1594,27 @@ router.get(
 );
 
 router.get(
+	'/usuarios/base',
+	auth,
+	[
+		query('id_condominio')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Parâmetro id_condominio deve ser numérico e maior que zero.'),
+		query('bloco')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 50 })
+			.withMessage('Parâmetro bloco deve ter no máximo 50 caracteres.'),
+		query('apartamento')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 50 })
+			.withMessage('Parâmetro apartamento deve ter no máximo 50 caracteres.')
+	],
+	validate,
+	controller.consultarUsuariosBase.bind(controller)
+);
+
+router.get(
 	'/usuarios/:id(\\d+)',
 	auth,
 	[param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.')],
