@@ -4226,9 +4226,9 @@ class CondominioController {
           {
             replacements: {
               id_notificacao_tipo: idNotificacaoTipo,
-              id_usuario: idUsuarioRegistrando,
+              id_usuario: idUsuarioPedido,
               mensagem: mensagemNotificacao,
-              id_usuario_pedido: idUsuarioPedido,
+              id_usuario_pedido: idUsuarioRegistrando,
               id_condominio: idCondominioFinal,
               id_codigo: idCodigoRegistro
             },
