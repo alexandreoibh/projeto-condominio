@@ -4176,11 +4176,33 @@ class CondominioController {
           throw new Error('Usuário do token não identificado para salvar notificação.');
         }
 
+        let empresaEntregaMensagem = empresaEntregaFinal;
+        if (empresaEntregaFinal && /^\d+$/.test(String(empresaEntregaFinal))) {
+          const empresaRows = await postgres.query(
+            `SELECT empresa
+               FROM "condominio-bh".tb_dashboard_empresas
+              WHERE id = :id
+              LIMIT 1`,
+            {
+              replacements: {
+                id: this._toInt(empresaEntregaFinal, null)
+              },
+              type: QueryTypes.SELECT,
+              transaction
+            }
+          );
+
+          const nomeEmpresa = this._normalizarTextoOuNull(empresaRows?.[0]?.empresa);
+          if (nomeEmpresa) {
+            empresaEntregaMensagem = nomeEmpresa;
+          }
+        }
+
         const mensagemNotificacao = [
           'Nova ocorrência registrada',
           apartamentoFinal ? `apto ${apartamentoFinal}` : null,
           blocoFinal ? `bloco ${blocoFinal}` : null,
-          empresaEntregaFinal ? `empresa ${empresaEntregaFinal}` : null
+          empresaEntregaMensagem ? `empresa ${empresaEntregaMensagem}` : null
         ]
           .filter((item) => item)
           .join(' - ');
