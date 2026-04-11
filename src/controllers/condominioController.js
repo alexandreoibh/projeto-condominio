@@ -4148,7 +4148,7 @@ class CondominioController {
           null
         );
 
-        if (!idUsuarioPedido && apartamentoFinal) {
+        if (apartamentoFinal) {
           const usuarioPedidoRows = await postgres.query(
             `SELECT id
              FROM "condominio-bh"."tb-usuarios"
@@ -4168,7 +4168,10 @@ class CondominioController {
             }
           );
 
-          idUsuarioPedido = this._toInt(usuarioPedidoRows?.[0]?.id, null);
+          const idUsuarioMorador = this._toInt(usuarioPedidoRows?.[0]?.id, null);
+          if (idUsuarioMorador) {
+            idUsuarioPedido = idUsuarioMorador;
+          }
         }
 
         const idUsuarioRegistrando = this._toInt(idUsuarioToken, null);
