@@ -275,6 +275,35 @@ class CondominioController {
     }
   }
 
+  _extractInviteTokenFromRequest(req) {
+    return this._normalizarTextoOuNull(
+      req.body?.invite_token ??
+      req.body?.token ??
+      req.query?.invite_token ??
+      req.query?.token ??
+      req.header?.('x-invite-token') ??
+      req.header?.('invite-token')
+    );
+  }
+
+  _resolveInviteAuthContext(req) {
+    const inviteToken = this._extractInviteTokenFromRequest(req);
+    if (!inviteToken) {
+      return null;
+    }
+
+    const invitePayload = this._verifyInviteToken(inviteToken);
+    const idCondominioInvite = this._toInt(
+      invitePayload.id_condominio ?? invitePayload.condominio_id ?? invitePayload.idCondominio,
+      null
+    );
+
+    return {
+      invitePayload,
+      idCondominioInvite
+    };
+  }
+
   async _podeVisualizarDadosMorador(req) {
     const perfilToken = this._normalizarPerfil(req.nomePerfil);
     if (perfilToken === 'admin' || perfilToken === 'sindico') {
@@ -4427,6 +4456,983 @@ class CondominioController {
     } catch (error) {
       return res.status(500).json({
         message: 'Falha ao remover registro do dashboard.',
+        detail: error.message
+      });
+    }
+  }
+
+  async listarRelEnvioConfig(req, res) {
+    try {
+      const idPerfilToken = this._toInt(req.IdPerfil, null);
+      let idCondominioToken = this._toInt(req.id_condominio, null);
+      let inviteContext = null;
+
+      if (!idCondominioToken) {
+        try {
+          inviteContext = this._resolveInviteAuthContext(req);
+        } catch (tokenError) {
+          return res.status(401).json({
+            message: 'invite_token inválido ou expirado.'
+          });
+        }
+
+        if (inviteContext?.idCondominioInvite) {
+          idCondominioToken = inviteContext.idCondominioInvite;
+        }
+      }
+
+      const ehAdmin = idPerfilToken === 1;
+
+      if (!ehAdmin && !idCondominioToken) {
+        return res.status(403).json({
+          message: 'Token sem id_condominio para listar configurações de envio.'
+        });
+      }
+
+      const idCondominioFiltro = this._toInt(req.query.id_condominio, null);
+      if (!ehAdmin && idCondominioFiltro && idCondominioFiltro !== idCondominioToken) {
+        return res.status(403).json({
+          message: 'Sem permissão para consultar configurações de outro condomínio.'
+        });
+      }
+
+      if (
+        inviteContext?.idCondominioInvite &&
+        idCondominioFiltro &&
+        idCondominioFiltro !== inviteContext.idCondominioInvite
+      ) {
+        return res.status(403).json({
+          message: 'invite_token sem permissão para consultar outro condomínio.'
+        });
+      }
+
+      const whereParts = ['1 = 1'];
+      const replacements = {};
+
+      const idCondominioFinal = idCondominioFiltro || (ehAdmin ? null : idCondominioToken);
+      if (idCondominioFinal) {
+        whereParts.push('rc.id_condominio = :id_condominio');
+        replacements.id_condominio = idCondominioFinal;
+      }
+
+      if (req.query.ativo !== undefined && req.query.ativo !== null && String(req.query.ativo).trim() !== '') {
+        const ativoRaw = String(req.query.ativo).trim().toLowerCase();
+        const ativo = ['true', '1'].includes(ativoRaw);
+        whereParts.push('COALESCE(rc.ativo, true) = :ativo');
+        replacements.ativo = ativo;
+      }
+
+      const data = await postgres.query(
+        `SELECT
+            rc.id,
+            rc.id_condominio,
+            c.nome AS nome_condominio,
+            rc.dia_envio,
+            rc.horario_envio,
+            rc.relatorio,
+            COALESCE(rc.ativo, true) AS ativo,
+            rc.criado_em
+          FROM "condominio-bh".tb_sgw_rel_envio_config rc
+          LEFT JOIN "condominio-bh"."tb-condominios" c
+            ON c.id = rc.id_condominio
+          WHERE ${whereParts.join(' AND ')}
+          ORDER BY rc.id DESC`,
+        {
+          replacements,
+          type: QueryTypes.SELECT
+        }
+      );
+
+      const idsConfiguracao = data
+        .map((item) => this._toInt(item?.id, null))
+        .filter((item) => item !== null);
+
+      const emailsPorConfig = new Map();
+      const ultimosLogsPorConfig = new Map();
+
+      if (idsConfiguracao.length > 0) {
+        const logsRows = await postgres.query(
+          `SELECT
+              logs.id,
+              logs.id_relatorio,
+              logs.id_condominio,
+              logs.data_envio,
+              logs.status,
+              logs.mensagem,
+              rc.relatorio
+            FROM (
+              SELECT
+                rl.id,
+                rl.id_relatorio,
+                rl.id_condominio,
+                rl.data_envio,
+                rl.status,
+                rl.mensagem,
+                ROW_NUMBER() OVER (
+                  PARTITION BY rl.id_relatorio
+                  ORDER BY rl.data_envio DESC, rl.id DESC
+                ) AS row_num
+              FROM "condominio-bh".tb_sgw_rel_envio_log rl
+              WHERE rl.id_relatorio IN (:ids_rel_config)
+            ) logs
+            LEFT JOIN "condominio-bh".tb_sgw_rel_envio_config rc
+              ON rc.id = logs.id_relatorio
+            WHERE logs.row_num <= 3
+            ORDER BY logs.id_relatorio ASC, logs.data_envio DESC, logs.id DESC`,
+          {
+            replacements: {
+              ids_rel_config: idsConfiguracao
+            },
+            type: QueryTypes.SELECT
+          }
+        );
+
+        for (const row of logsRows || []) {
+          const idRelConfig = this._toInt(row?.id_relatorio, null);
+          if (!idRelConfig) {
+            continue;
+          }
+
+          const listaAtual = ultimosLogsPorConfig.get(idRelConfig) || [];
+          listaAtual.push({
+            id: this._toInt(row?.id, null),
+            id_relatorio: idRelConfig,
+            relatorio: this._normalizarTextoOuNull(row?.relatorio),
+            id_condominio: this._toInt(row?.id_condominio, null),
+            data_envio: row?.data_envio || null,
+            status: this._normalizarTextoOuNull(row?.status),
+            mensagem: this._normalizarTextoOuNull(row?.mensagem)
+          });
+          ultimosLogsPorConfig.set(idRelConfig, listaAtual);
+        }
+
+        const colunasRows = await postgres.query(
+          `SELECT column_name
+             FROM information_schema.columns
+            WHERE table_schema = 'condominio-bh'
+              AND table_name = 'tb_sgw_rel_destinatario'`,
+          {
+            type: QueryTypes.SELECT
+          }
+        );
+
+        const colunasTabela = new Set((colunasRows || []).map((item) => String(item.column_name || '').toLowerCase()));
+        const colunaIdRelConfig = ['id_rel_config', 'id_relatorio_config', 'id_config_envio', 'id_envio_config']
+          .find((item) => colunasTabela.has(item));
+        const colunaEmail = ['email_destinatario', 'email', 'destinatario', 'email_to']
+          .find((item) => colunasTabela.has(item));
+
+        if (colunaIdRelConfig && colunaEmail) {
+          const destinatariosRows = await postgres.query(
+            `SELECT
+                ${colunaIdRelConfig} AS id_rel_config,
+                ${colunaEmail} AS email_destinatario
+              FROM "condominio-bh".tb_sgw_rel_destinatario
+              WHERE ${colunaIdRelConfig} IN (:ids_rel_config)`,
+            {
+              replacements: {
+                ids_rel_config: idsConfiguracao
+              },
+              type: QueryTypes.SELECT
+            }
+          );
+
+          for (const row of destinatariosRows || []) {
+            const idRelConfig = this._toInt(row?.id_rel_config, null);
+            const email = this._normalizarEmailOuNull(row?.email_destinatario);
+
+            if (!idRelConfig || !email) {
+              continue;
+            }
+
+            const listaAtual = emailsPorConfig.get(idRelConfig) || [];
+            if (!listaAtual.includes(email)) {
+              listaAtual.push(email);
+            }
+            emailsPorConfig.set(idRelConfig, listaAtual);
+          }
+        }
+      }
+
+      const dataComEmails = data.map((item) => {
+        const idRelConfig = this._toInt(item?.id, null);
+        return {
+          ...item,
+          emails_destinatarios: idRelConfig ? (emailsPorConfig.get(idRelConfig) || []) : [],
+          ultimos_logs: idRelConfig ? (ultimosLogsPorConfig.get(idRelConfig) || []) : []
+        };
+      });
+
+      return res.status(200).json({
+        total: dataComEmails.length,
+        data: dataComEmails
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao listar configurações de envio de relatório.',
+        detail: error.message
+      });
+    }
+  }
+
+  async criarRelEnvioConfig(req, res) {
+    const transaction = await postgres.transaction();
+    try {
+      const idPerfilToken = this._toInt(req.IdPerfil, null);
+      let idCondominioToken = this._toInt(req.id_condominio, null);
+      let inviteContext = null;
+
+      if (!idCondominioToken) {
+        try {
+          inviteContext = this._resolveInviteAuthContext(req);
+        } catch (tokenError) {
+          await transaction.rollback();
+          return res.status(401).json({
+            message: 'invite_token inválido ou expirado.'
+          });
+        }
+
+        if (inviteContext?.idCondominioInvite) {
+          idCondominioToken = inviteContext.idCondominioInvite;
+        }
+      }
+
+      const ehAdmin = idPerfilToken === 1;
+
+      const idCondominioPayload = this._toInt(req.body.id_condominio, null);
+
+      if (
+        inviteContext?.idCondominioInvite &&
+        idCondominioPayload &&
+        idCondominioPayload !== inviteContext.idCondominioInvite
+      ) {
+        await transaction.rollback();
+        return res.status(403).json({
+          message: 'invite_token sem permissão para criar configuração em outro condomínio.'
+        });
+      }
+
+      const idCondominioFinal = ehAdmin ? idCondominioPayload : (idCondominioToken || idCondominioPayload);
+
+      if (!idCondominioFinal) {
+        await transaction.rollback();
+        return res.status(400).json({
+          message: 'id_condominio é obrigatório para criar configuração de envio.'
+        });
+      }
+
+      if (!ehAdmin && idCondominioFinal !== idCondominioToken) {
+        await transaction.rollback();
+        return res.status(403).json({
+          message: 'Sem permissão para criar configuração em outro condomínio.'
+        });
+      }
+
+      const diaEnvio = this._toInt(req.body.dia_envio, null);
+      const horarioEnvio = this._normalizarTextoOuNull(req.body.horario_envio);
+
+      if (diaEnvio === null || diaEnvio < 1 || diaEnvio > 31) {
+        await transaction.rollback();
+        return res.status(400).json({
+          message: 'Campo dia_envio deve ser numérico entre 1 e 31.'
+        });
+      }
+
+      if (!horarioEnvio) {
+        await transaction.rollback();
+        return res.status(400).json({
+          message: 'Campo horario_envio é obrigatório.'
+        });
+      }
+
+      const emailsPayload = Array.isArray(req.body.emails_destinatarios)
+        ? req.body.emails_destinatarios
+        : [];
+
+      const emailsDestinatarios = [...new Set(
+        emailsPayload
+          .map((email) => this._normalizarEmailOuNull(email))
+          .filter((email) => Boolean(email))
+      )];
+
+      const created = await postgres.query(
+        `INSERT INTO "condominio-bh".tb_sgw_rel_envio_config (
+            id_condominio,
+            dia_envio,
+            horario_envio,
+            ativo,
+            relatorio,
+            criado_em
+          ) VALUES (
+            :id_condominio,
+            :dia_envio,
+            :horario_envio::time,
+            :ativo,
+            :relatorio,
+            now()
+          )
+          RETURNING *`,
+        {
+          replacements: {
+            id_condominio: idCondominioFinal,
+            dia_envio: diaEnvio,
+            horario_envio: horarioEnvio,
+            ativo: req.body.ativo !== undefined ? Boolean(req.body.ativo) : true,
+            relatorio: this._normalizarTextoOuNull(req.body.relatorio)
+          },
+          transaction
+        }
+      );
+
+      const registroCriado = created?.[0]?.[0] || null;
+      const idRelConfigCriado = this._toInt(registroCriado?.id, null);
+
+      if (emailsDestinatarios.length > 0 && idRelConfigCriado) {
+        const colunasRows = await postgres.query(
+          `SELECT column_name
+             FROM information_schema.columns
+            WHERE table_schema = 'condominio-bh'
+              AND table_name = 'tb_sgw_rel_destinatario'`,
+          {
+            type: QueryTypes.SELECT,
+            transaction
+          }
+        );
+
+        const colunasTabela = new Set((colunasRows || []).map((item) => String(item.column_name || '').toLowerCase()));
+
+        const colunaIdRelConfig = ['id_rel_config', 'id_relatorio_config', 'id_config_envio', 'id_envio_config']
+          .find((item) => colunasTabela.has(item));
+        const colunaEmail = ['email_destinatario', 'email', 'destinatario', 'email_to']
+          .find((item) => colunasTabela.has(item));
+        const colunaAtivo = colunasTabela.has('ativo') ? 'ativo' : null;
+        const colunaCriadoEm = colunasTabela.has('criado_em') ? 'criado_em' : (colunasTabela.has('created_at') ? 'created_at' : null);
+        const colunaIdCondominio = colunasTabela.has('id_condominio') ? 'id_condominio' : null;
+
+        if (!colunaIdRelConfig || !colunaEmail) {
+          throw new Error('Tabela tb_sgw_rel_destinatario sem colunas esperadas para vínculo e e-mail.');
+        }
+
+        for (const emailDestinatario of emailsDestinatarios) {
+          const colunasInsert = [colunaIdRelConfig, colunaEmail];
+          const valoresInsert = [':id_rel_config', ':email_destinatario'];
+          const replacementsInsert = {
+            id_rel_config: idRelConfigCriado,
+            email_destinatario: emailDestinatario
+          };
+
+          if (colunaAtivo) {
+            colunasInsert.push(colunaAtivo);
+            valoresInsert.push(':ativo');
+            replacementsInsert.ativo = true;
+          }
+
+          if (colunaIdCondominio) {
+            colunasInsert.push(colunaIdCondominio);
+            valoresInsert.push(':id_condominio');
+            replacementsInsert.id_condominio = idCondominioFinal;
+          }
+
+          if (colunaCriadoEm) {
+            colunasInsert.push(colunaCriadoEm);
+            valoresInsert.push('now()');
+          }
+
+          await postgres.query(
+            `INSERT INTO "condominio-bh".tb_sgw_rel_destinatario (
+              ${colunasInsert.join(', ')}
+            ) VALUES (
+              ${valoresInsert.join(', ')}
+            )`,
+            {
+              replacements: replacementsInsert,
+              transaction
+            }
+          );
+        }
+      }
+
+      await transaction.commit();
+
+      return res.status(201).json({
+        message: 'Configuração de envio criada com sucesso.',
+        data: registroCriado,
+        emails_destinatarios: emailsDestinatarios
+      });
+    } catch (error) {
+      await transaction.rollback();
+      return res.status(500).json({
+        message: 'Falha ao criar configuração de envio de relatório.',
+        detail: error.message
+      });
+    }
+  }
+
+  async atualizarRelEnvioConfig(req, res) {
+    const transaction = await postgres.transaction();
+    try {
+      const idPerfilToken = this._toInt(req.IdPerfil, null);
+      let idCondominioToken = this._toInt(req.id_condominio, null);
+      let inviteContext = null;
+
+      if (!idCondominioToken) {
+        try {
+          inviteContext = this._resolveInviteAuthContext(req);
+        } catch (tokenError) {
+          await transaction.rollback();
+          return res.status(401).json({
+            message: 'invite_token inválido ou expirado.'
+          });
+        }
+
+        if (inviteContext?.idCondominioInvite) {
+          idCondominioToken = inviteContext.idCondominioInvite;
+        }
+      }
+
+      const ehAdmin = idPerfilToken === 1;
+
+      const id = this._toInt(req.params.id, null);
+      if (!id) {
+        return res.status(400).json({ message: 'Parâmetro id inválido.' });
+      }
+
+      const atualRows = await postgres.query(
+        `SELECT *
+           FROM "condominio-bh".tb_sgw_rel_envio_config
+          WHERE id = :id
+          LIMIT 1`,
+        {
+          replacements: { id },
+          type: QueryTypes.SELECT,
+          transaction
+        }
+      );
+
+      if (!atualRows || atualRows.length === 0) {
+        return res.status(404).json({ message: 'Configuração de envio não encontrada.' });
+      }
+
+      const atual = atualRows[0];
+      const idCondominioAtual = this._toInt(atual.id_condominio, null);
+
+      if (!ehAdmin && (!idCondominioToken || idCondominioAtual !== idCondominioToken)) {
+        return res.status(403).json({
+          message: 'Sem permissão para atualizar configuração de outro condomínio.'
+        });
+      }
+
+      if (
+        inviteContext?.idCondominioInvite &&
+        idCondominioAtual !== inviteContext.idCondominioInvite
+      ) {
+        return res.status(403).json({
+          message: 'invite_token sem permissão para atualizar configuração de outro condomínio.'
+        });
+      }
+
+      const diaEnvio =
+        req.body.dia_envio !== undefined ? this._toInt(req.body.dia_envio, null) : this._toInt(atual.dia_envio, null);
+      if (diaEnvio === null || diaEnvio < 1 || diaEnvio > 31) {
+        return res.status(400).json({
+          message: 'Campo dia_envio deve ser numérico entre 1 e 31.'
+        });
+      }
+
+      const horarioEnvio =
+        req.body.horario_envio !== undefined
+          ? this._normalizarTextoOuNull(req.body.horario_envio)
+          : this._normalizarTextoOuNull(atual.horario_envio);
+
+      if (!horarioEnvio) {
+        return res.status(400).json({
+          message: 'Campo horario_envio é obrigatório.'
+        });
+      }
+
+      const updated = await postgres.query(
+        `UPDATE "condominio-bh".tb_sgw_rel_envio_config
+            SET dia_envio = :dia_envio,
+                horario_envio = :horario_envio::time,
+                relatorio = :relatorio,
+                ativo = :ativo
+          WHERE id = :id
+          RETURNING *`,
+        {
+          replacements: {
+            id,
+            dia_envio: diaEnvio,
+            horario_envio: horarioEnvio,
+            relatorio:
+              req.body.relatorio !== undefined
+                ? this._normalizarTextoOuNull(req.body.relatorio)
+                : this._normalizarTextoOuNull(atual.relatorio),
+            ativo: req.body.ativo !== undefined ? Boolean(req.body.ativo) : Boolean(atual.ativo)
+          },
+          transaction
+        }
+      );
+
+      const emailsForamInformados = req.body.emails_destinatarios !== undefined;
+      let emailsDestinatarios = null;
+
+      if (emailsForamInformados) {
+        const emailsPayload = Array.isArray(req.body.emails_destinatarios)
+          ? req.body.emails_destinatarios
+          : [];
+
+        emailsDestinatarios = [...new Set(
+          emailsPayload
+            .map((email) => this._normalizarEmailOuNull(email))
+            .filter((email) => Boolean(email))
+        )];
+
+        const colunasRows = await postgres.query(
+          `SELECT column_name
+             FROM information_schema.columns
+            WHERE table_schema = 'condominio-bh'
+              AND table_name = 'tb_sgw_rel_destinatario'`,
+          {
+            type: QueryTypes.SELECT,
+            transaction
+          }
+        );
+
+        const colunasTabela = new Set((colunasRows || []).map((item) => String(item.column_name || '').toLowerCase()));
+
+        const colunaIdRelConfig = ['id_rel_config', 'id_relatorio_config', 'id_config_envio', 'id_envio_config']
+          .find((item) => colunasTabela.has(item));
+        const colunaEmail = ['email_destinatario', 'email', 'destinatario', 'email_to']
+          .find((item) => colunasTabela.has(item));
+        const colunaAtivo = colunasTabela.has('ativo') ? 'ativo' : null;
+        const colunaCriadoEm = colunasTabela.has('criado_em') ? 'criado_em' : (colunasTabela.has('created_at') ? 'created_at' : null);
+        const colunaIdCondominio = colunasTabela.has('id_condominio') ? 'id_condominio' : null;
+
+        if (!colunaIdRelConfig || !colunaEmail) {
+          throw new Error('Tabela tb_sgw_rel_destinatario sem colunas esperadas para vínculo e e-mail.');
+        }
+
+        await postgres.query(
+          `DELETE FROM "condominio-bh".tb_sgw_rel_destinatario
+            WHERE ${colunaIdRelConfig} = :id_rel_config`,
+          {
+            replacements: {
+              id_rel_config: id
+            },
+            type: QueryTypes.DELETE,
+            transaction
+          }
+        );
+
+        for (const emailDestinatario of emailsDestinatarios) {
+          const colunasInsert = [colunaIdRelConfig, colunaEmail];
+          const valoresInsert = [':id_rel_config', ':email_destinatario'];
+          const replacementsInsert = {
+            id_rel_config: id,
+            email_destinatario: emailDestinatario
+          };
+
+          if (colunaAtivo) {
+            colunasInsert.push(colunaAtivo);
+            valoresInsert.push(':ativo');
+            replacementsInsert.ativo = true;
+          }
+
+          if (colunaIdCondominio) {
+            colunasInsert.push(colunaIdCondominio);
+            valoresInsert.push(':id_condominio');
+            replacementsInsert.id_condominio = idCondominioAtual;
+          }
+
+          if (colunaCriadoEm) {
+            colunasInsert.push(colunaCriadoEm);
+            valoresInsert.push('now()');
+          }
+
+          await postgres.query(
+            `INSERT INTO "condominio-bh".tb_sgw_rel_destinatario (
+              ${colunasInsert.join(', ')}
+            ) VALUES (
+              ${valoresInsert.join(', ')}
+            )`,
+            {
+              replacements: replacementsInsert,
+              transaction
+            }
+          );
+        }
+      }
+
+      await transaction.commit();
+
+      return res.status(200).json({
+        message: 'Configuração de envio atualizada com sucesso.',
+        data: updated[0][0],
+        emails_destinatarios: emailsDestinatarios
+      });
+    } catch (error) {
+      await transaction.rollback();
+      return res.status(500).json({
+        message: 'Falha ao atualizar configuração de envio de relatório.',
+        detail: error.message
+      });
+    }
+  }
+
+  async excluirRelEnvioConfig(req, res) {
+    const transaction = await postgres.transaction();
+    try {
+      const idPerfilToken = this._toInt(req.IdPerfil, null);
+      let idCondominioToken = this._toInt(req.id_condominio, null);
+      let inviteContext = null;
+
+      if (!idCondominioToken) {
+        try {
+          inviteContext = this._resolveInviteAuthContext(req);
+        } catch (tokenError) {
+          await transaction.rollback();
+          return res.status(401).json({
+            message: 'invite_token inválido ou expirado.'
+          });
+        }
+
+        if (inviteContext?.idCondominioInvite) {
+          idCondominioToken = inviteContext.idCondominioInvite;
+        }
+      }
+
+      const ehAdmin = idPerfilToken === 1;
+
+      const id = this._toInt(req.params.id, null);
+      if (!id) {
+        await transaction.rollback();
+        return res.status(400).json({ message: 'Parâmetro id inválido.' });
+      }
+
+      const atualRows = await postgres.query(
+        `SELECT id, id_condominio
+           FROM "condominio-bh".tb_sgw_rel_envio_config
+          WHERE id = :id
+          LIMIT 1`,
+        {
+          replacements: { id },
+          type: QueryTypes.SELECT,
+          transaction
+        }
+      );
+
+      if (!atualRows || atualRows.length === 0) {
+        await transaction.rollback();
+        return res.status(404).json({ message: 'Configuração de envio não encontrada.' });
+      }
+
+      const idCondominioAtual = this._toInt(atualRows[0].id_condominio, null);
+      if (!ehAdmin && (!idCondominioToken || idCondominioAtual !== idCondominioToken)) {
+        await transaction.rollback();
+        return res.status(403).json({
+          message: 'Sem permissão para excluir configuração de outro condomínio.'
+        });
+      }
+
+      if (
+        inviteContext?.idCondominioInvite &&
+        idCondominioAtual !== inviteContext.idCondominioInvite
+      ) {
+        await transaction.rollback();
+        return res.status(403).json({
+          message: 'invite_token sem permissão para excluir configuração de outro condomínio.'
+        });
+      }
+
+      const colunasRows = await postgres.query(
+        `SELECT column_name
+           FROM information_schema.columns
+          WHERE table_schema = 'condominio-bh'
+            AND table_name = 'tb_sgw_rel_destinatario'`,
+        {
+          type: QueryTypes.SELECT,
+          transaction
+        }
+      );
+
+      const colunasTabela = new Set((colunasRows || []).map((item) => String(item.column_name || '').toLowerCase()));
+      const colunaIdRelConfig = ['id_rel_config', 'id_relatorio_config', 'id_config_envio', 'id_envio_config']
+        .find((item) => colunasTabela.has(item));
+
+      if (colunaIdRelConfig) {
+        await postgres.query(
+          `DELETE FROM "condominio-bh".tb_sgw_rel_destinatario
+            WHERE ${colunaIdRelConfig} = :id_rel_config`,
+          {
+            replacements: {
+              id_rel_config: id
+            },
+            type: QueryTypes.DELETE,
+            transaction
+          }
+        );
+      }
+
+      await postgres.query(
+        `DELETE FROM "condominio-bh".tb_sgw_rel_envio_config
+          WHERE id = :id`,
+        {
+          replacements: { id },
+          type: QueryTypes.DELETE,
+          transaction
+        }
+      );
+
+      await transaction.commit();
+
+      return res.status(200).json({
+        message: 'Configuração de envio excluída com sucesso.'
+      });
+    } catch (error) {
+      await transaction.rollback();
+      return res.status(500).json({
+        message: 'Falha ao excluir configuração de envio de relatório.',
+        detail: error.message
+      });
+    }
+  }
+
+  async listarRelEnvioLog(req, res) {
+    try {
+      const idPerfilToken = this._toInt(req.IdPerfil, null);
+      let idCondominioToken = this._toInt(req.id_condominio, null);
+      let inviteContext = null;
+
+      if (!idCondominioToken) {
+        try {
+          inviteContext = this._resolveInviteAuthContext(req);
+        } catch (tokenError) {
+          return res.status(401).json({
+            message: 'invite_token inválido ou expirado.'
+          });
+        }
+
+        if (inviteContext?.idCondominioInvite) {
+          idCondominioToken = inviteContext.idCondominioInvite;
+        }
+      }
+
+      const ehAdmin = idPerfilToken === 1;
+
+      if (!ehAdmin && !idCondominioToken) {
+        return res.status(403).json({
+          message: 'Token sem id_condominio para listar logs de envio.'
+        });
+      }
+
+      const idCondominioFiltro = this._toInt(req.query.id_condominio, null);
+      if (!ehAdmin && idCondominioFiltro && idCondominioFiltro !== idCondominioToken) {
+        return res.status(403).json({
+          message: 'Sem permissão para consultar logs de outro condomínio.'
+        });
+      }
+
+      if (
+        inviteContext?.idCondominioInvite &&
+        idCondominioFiltro &&
+        idCondominioFiltro !== inviteContext.idCondominioInvite
+      ) {
+        return res.status(403).json({
+          message: 'invite_token sem permissão para consultar logs de outro condomínio.'
+        });
+      }
+
+      const page = Math.max(this._toInt(req.query.page, 1), 1);
+      const pageSize = Math.min(Math.max(this._toInt(req.query.pageSize, 25), 1), 200);
+      const offset = (page - 1) * pageSize;
+
+      const whereParts = ['1 = 1'];
+      const replacements = {
+        limit: pageSize,
+        offset
+      };
+
+      const idCondominioFinal = idCondominioFiltro || (ehAdmin ? null : idCondominioToken);
+      if (idCondominioFinal) {
+        whereParts.push('rl.id_condominio = :id_condominio');
+        replacements.id_condominio = idCondominioFinal;
+      }
+
+      const idRelatorioFiltro = this._toInt(req.query.id_relatorio, null);
+      if (idRelatorioFiltro) {
+        whereParts.push('rl.id_relatorio = :id_relatorio');
+        replacements.id_relatorio = idRelatorioFiltro;
+      }
+
+      const statusFiltro = this._normalizarTextoOuNull(req.query.status);
+      if (statusFiltro) {
+        whereParts.push("lower(COALESCE(rl.status, '')) = :status");
+        replacements.status = String(statusFiltro).toLowerCase();
+      }
+
+      const dataInicio =
+        this._normalizarTextoOuNull(req.query.data_inicio) ||
+        this._normalizarTextoOuNull(req.query.periodo_inicio);
+      if (dataInicio) {
+        whereParts.push('rl.data_envio >= :data_inicio::timestamp');
+        replacements.data_inicio = dataInicio;
+      }
+
+      const dataFim =
+        this._normalizarTextoOuNull(req.query.data_fim) ||
+        this._normalizarTextoOuNull(req.query.periodo_fim);
+      if (dataFim) {
+        whereParts.push('rl.data_envio < (:data_fim::date + interval \'1 day\')');
+        replacements.data_fim = dataFim;
+      }
+
+      const whereClause = whereParts.join(' AND ');
+
+      const totalRows = await postgres.query(
+        `SELECT COUNT(1)::int AS total
+           FROM "condominio-bh".tb_sgw_rel_envio_log rl
+          WHERE ${whereClause}`,
+        {
+          replacements,
+          type: QueryTypes.SELECT
+        }
+      );
+
+      const data = await postgres.query(
+        `SELECT
+            rl.id,
+            rl.id_condominio,
+            c.nome AS nome_condominio,
+            rl.id_relatorio,
+            rc.relatorio AS nome_relatorio,
+            rl.data_envio,
+            rl.status,
+            rl.mensagem
+          FROM "condominio-bh".tb_sgw_rel_envio_log rl
+          LEFT JOIN "condominio-bh"."tb-condominios" c
+            ON c.id = rl.id_condominio
+          LEFT JOIN "condominio-bh".tb_sgw_rel_envio_config rc
+            ON rc.id = rl.id_relatorio
+          WHERE ${whereClause}
+          ORDER BY rl.data_envio DESC, rl.id DESC
+          LIMIT :limit OFFSET :offset`,
+        {
+          replacements,
+          type: QueryTypes.SELECT
+        }
+      );
+
+      const total = totalRows[0]?.total || 0;
+      const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize);
+
+      return res.status(200).json({
+        page,
+        pageSize,
+        total,
+        totalPages,
+        filtros: {
+          id_condominio: idCondominioFinal,
+          id_relatorio: idRelatorioFiltro,
+          status: statusFiltro,
+          data_inicio: dataInicio,
+          data_fim: dataFim
+        },
+        data
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao listar logs de envio de relatório.',
+        detail: error.message
+      });
+    }
+  }
+
+  async criarRelEnvioLog(req, res) {
+    try {
+      const idPerfilToken = this._toInt(req.IdPerfil, null);
+      let idCondominioToken = this._toInt(req.id_condominio, null);
+      let inviteContext = null;
+
+      if (!idCondominioToken) {
+        try {
+          inviteContext = this._resolveInviteAuthContext(req);
+        } catch (tokenError) {
+          return res.status(401).json({
+            message: 'invite_token inválido ou expirado.'
+          });
+        }
+
+        if (inviteContext?.idCondominioInvite) {
+          idCondominioToken = inviteContext.idCondominioInvite;
+        }
+      }
+
+      const ehAdmin = idPerfilToken === 1;
+
+      const idCondominioPayload = this._toInt(req.body.id_condominio, null);
+
+      if (
+        inviteContext?.idCondominioInvite &&
+        idCondominioPayload &&
+        idCondominioPayload !== inviteContext.idCondominioInvite
+      ) {
+        return res.status(403).json({
+          message: 'invite_token sem permissão para registrar log em outro condomínio.'
+        });
+      }
+
+      const idCondominioFinal = ehAdmin ? idCondominioPayload : (idCondominioToken || idCondominioPayload);
+
+      if (!idCondominioFinal) {
+        return res.status(400).json({
+          message: 'id_condominio é obrigatório para registrar log de envio.'
+        });
+      }
+
+      if (!ehAdmin && idCondominioFinal !== idCondominioToken) {
+        return res.status(403).json({
+          message: 'Sem permissão para registrar log em outro condomínio.'
+        });
+      }
+
+      const idRelatorio = this._toInt(req.body.id_relatorio, null);
+      const status = this._normalizarTextoOuNull(req.body.status);
+      const mensagem = this._normalizarTextoOuNull(req.body.mensagem);
+      const dataEnvio = this._normalizarTextoOuNull(req.body.data_envio);
+
+      const created = await postgres.query(
+        `INSERT INTO "condominio-bh".tb_sgw_rel_envio_log (
+            id_condominio,
+            id_relatorio,
+            data_envio,
+            status,
+            mensagem
+          ) VALUES (
+            :id_condominio,
+            :id_relatorio,
+            COALESCE(:data_envio::timestamp, now()),
+            :status,
+            :mensagem
+          )
+          RETURNING *`,
+        {
+          replacements: {
+            id_condominio: idCondominioFinal,
+            id_relatorio: idRelatorio,
+            data_envio: dataEnvio,
+            status,
+            mensagem
+          }
+        }
+      );
+
+      return res.status(201).json({
+        message: 'Log de envio registrado com sucesso.',
+        data: created[0][0]
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao registrar log de envio de relatório.',
         detail: error.message
       });
     }

@@ -33,10 +33,17 @@ const publicRegistrationKeyGuard = (req, res, next) => {
 };
 
 const authOrInviteToken = (req, res, next) => {
-	const hasAuthorization = Boolean(req.header('Authorization') || req.header('authorization'));
-	const hasInviteToken = Boolean(req.body?.invite_token || req.body?.token);
+	const inviteToken =
+		req.body?.invite_token ||
+		req.body?.token ||
+		req.query?.invite_token ||
+		req.query?.token ||
+		req.header('x-invite-token') ||
+		req.header('X-Invite-Token') ||
+		req.header('invite-token') ||
+		req.header('Invite-Token');
 
-	if (!hasAuthorization && hasInviteToken) {
+	if (inviteToken && String(inviteToken).trim() !== '') {
 		return next();
 	}
 
@@ -1069,6 +1076,180 @@ router.delete(
 	[param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.')],
 	validate,
 	controller.excluirDashboardRegistro.bind(controller)
+);
+
+router.get(
+	'/relatorios/envio-config',
+	authOrInviteToken,
+	[
+		query('id_condominio')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Parâmetro id_condominio deve ser numérico e maior que zero.'),
+		query('ativo')
+			.optional({ nullable: true, checkFalsy: true })
+			.isIn(['true', 'false', '1', '0'])
+			.withMessage('Parâmetro ativo deve ser true, false, 1 ou 0.')
+	],
+	validate,
+	controller.listarRelEnvioConfig.bind(controller)
+);
+
+router.post(
+	'/relatorios/envio-config',
+	authOrInviteToken,
+	[
+		body('id_condominio')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Campo id_condominio deve ser numérico e maior que zero.'),
+		body('dia_envio')
+			.notEmpty()
+			.withMessage('Campo dia_envio é obrigatório.')
+			.bail()
+			.isInt({ min: 1, max: 31 })
+			.withMessage('Campo dia_envio deve ser numérico entre 1 e 31.'),
+		body('horario_envio')
+			.notEmpty()
+			.withMessage('Campo horario_envio é obrigatório.')
+			.bail()
+			.matches(/^([01]\d|2[0-3]):([0-5]\d)(:[0-5]\d)?$/)
+			.withMessage('Campo horario_envio deve estar no formato HH:mm ou HH:mm:ss.'),
+		body('emails_destinatarios')
+			.optional({ nullable: true })
+			.isArray({ min: 1 })
+			.withMessage('Campo emails_destinatarios deve ser um array de e-mails.'),
+		body('emails_destinatarios.*')
+			.optional({ nullable: true, checkFalsy: true })
+			.isEmail()
+			.withMessage('Cada item de emails_destinatarios deve ser um e-mail válido.'),
+		body('relatorio')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 255 })
+			.withMessage('Campo relatorio deve ter no máximo 255 caracteres.'),
+		body('ativo')
+			.optional({ nullable: true })
+			.isBoolean()
+			.withMessage('Campo ativo deve ser booleano.')
+	],
+	validate,
+	controller.criarRelEnvioConfig.bind(controller)
+);
+
+router.patch(
+	'/relatorios/envio-config/:id(\\d+)',
+	authOrInviteToken,
+	[
+		param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.'),
+		body('dia_envio')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1, max: 31 })
+			.withMessage('Campo dia_envio deve ser numérico entre 1 e 31.'),
+		body('horario_envio')
+			.optional({ nullable: true, checkFalsy: true })
+			.matches(/^([01]\d|2[0-3]):([0-5]\d)(:[0-5]\d)?$/)
+			.withMessage('Campo horario_envio deve estar no formato HH:mm ou HH:mm:ss.'),
+		body('emails_destinatarios')
+			.optional({ nullable: true })
+			.isArray()
+			.withMessage('Campo emails_destinatarios deve ser um array de e-mails.'),
+		body('emails_destinatarios.*')
+			.optional({ nullable: true, checkFalsy: true })
+			.isEmail()
+			.withMessage('Cada item de emails_destinatarios deve ser um e-mail válido.'),
+		body('relatorio')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 255 })
+			.withMessage('Campo relatorio deve ter no máximo 255 caracteres.'),
+		body('ativo')
+			.optional({ nullable: true })
+			.isBoolean()
+			.withMessage('Campo ativo deve ser booleano.')
+	],
+	validate,
+	controller.atualizarRelEnvioConfig.bind(controller)
+);
+
+router.delete(
+	'/relatorios/envio-config/:id(\\d+)',
+	authOrInviteToken,
+	[param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.')],
+	validate,
+	controller.excluirRelEnvioConfig.bind(controller)
+);
+
+router.get(
+	'/relatorios/envio-log',
+	authOrInviteToken,
+	[
+		query('id_condominio')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Parâmetro id_condominio deve ser numérico e maior que zero.'),
+		query('id_relatorio')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Parâmetro id_relatorio deve ser numérico e maior que zero.'),
+		query('status')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 20 })
+			.withMessage('Parâmetro status deve ter no máximo 20 caracteres.'),
+		query('data_inicio')
+			.optional({ nullable: true, checkFalsy: true })
+			.isISO8601()
+			.withMessage('Parâmetro data_inicio deve estar em formato de data válido.'),
+		query('data_fim')
+			.optional({ nullable: true, checkFalsy: true })
+			.isISO8601()
+			.withMessage('Parâmetro data_fim deve estar em formato de data válido.'),
+		query('periodo_inicio')
+			.optional({ nullable: true, checkFalsy: true })
+			.isISO8601()
+			.withMessage('Parâmetro periodo_inicio deve estar em formato de data válido.'),
+		query('periodo_fim')
+			.optional({ nullable: true, checkFalsy: true })
+			.isISO8601()
+			.withMessage('Parâmetro periodo_fim deve estar em formato de data válido.'),
+		query('page')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Parâmetro page deve ser numérico e maior que zero.'),
+		query('pageSize')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1, max: 200 })
+			.withMessage('Parâmetro pageSize deve estar entre 1 e 200.')
+	],
+	validate,
+	controller.listarRelEnvioLog.bind(controller)
+);
+
+router.post(
+	'/relatorios/envio-log',
+	authOrInviteToken,
+	[
+		body('id_condominio')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Campo id_condominio deve ser numérico e maior que zero.'),
+		body('id_relatorio')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Campo id_relatorio deve ser numérico e maior que zero.'),
+		body('data_envio')
+			.optional({ nullable: true, checkFalsy: true })
+			.isISO8601()
+			.withMessage('Campo data_envio deve estar em formato de data válido.'),
+		body('status')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 20 })
+			.withMessage('Campo status deve ter no máximo 20 caracteres.'),
+		body('mensagem')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 5000 })
+			.withMessage('Campo mensagem deve ter no máximo 5000 caracteres.')
+	],
+	validate,
+	controller.criarRelEnvioLog.bind(controller)
 );
 
 router.get(
