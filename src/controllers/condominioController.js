@@ -4140,13 +4140,18 @@ class CondominioController {
           throw new Error('Tipo de notificação 8 não encontrado na tb_notificacao_tipo.');
         }
 
-        let idUsuarioPedido = this._toInt(
+        const idUsuarioPedidoInicial = this._toInt(
           registroCriado?.id_usuario ??
           req.body.id_usuario_pedido ??
           req.body.id_usuario_encomenda ??
           req.body.id_usuario_destino,
           null
         );
+
+        const idsUsuariosDestino = new Set();
+        if (idUsuarioPedidoInicial) {
+          idsUsuariosDestino.add(idUsuarioPedidoInicial);
+        }
 
         if (apartamentoFinal) {
           const usuarioPedidoRows = await postgres.query(
@@ -4155,8 +4160,7 @@ class CondominioController {
             WHERE id_condominio = :id_condominio
               AND COALESCE(apartamento, '') = :apartamento
               AND (:bloco IS NULL OR COALESCE(bloco, '') = :bloco)
-            ORDER BY id DESC
-            LIMIT 1`,
+            ORDER BY id DESC`,
             {
               replacements: {
                 id_condominio: idCondominioFinal,
@@ -4168,9 +4172,11 @@ class CondominioController {
             }
           );
 
-          const idUsuarioMorador = this._toInt(usuarioPedidoRows?.[0]?.id, null);
-          if (idUsuarioMorador) {
-            idUsuarioPedido = idUsuarioMorador;
+          for (const row of usuarioPedidoRows || []) {
+            const idUsuarioMorador = this._toInt(row?.id, null);
+            if (idUsuarioMorador) {
+              idsUsuariosDestino.add(idUsuarioMorador);
+            }
           }
         }
 
@@ -4210,34 +4216,40 @@ class CondominioController {
           .filter((item) => item)
           .join(' - ');
 
-        await postgres.query(
-          `INSERT INTO "condominio-bh".tb_notificacao_log (
-            id_notificacao_tipo,
-            id_usuario,
-            mensagem,
-            id_usuario_pedido,
-            id_condominio,
-            id_codigo
-         ) VALUES (
-            :id_notificacao_tipo,
-            :id_usuario,
-            :mensagem,
-            :id_usuario_pedido,
-            :id_condominio,
-            :id_codigo
-         )`,
-          {
-            replacements: {
-              id_notificacao_tipo: idNotificacaoTipo,
-              id_usuario: idUsuarioPedido,
-              mensagem: mensagemNotificacao,
-              id_usuario_pedido: idUsuarioRegistrando,
-              id_condominio: idCondominioFinal,
-              id_codigo: idCodigoRegistro
-            },
-            transaction
-          }
-        );
+        if (idsUsuariosDestino.size === 0) {
+          throw new Error('Nenhum morador destinatário encontrado para salvar notificação.');
+        }
+
+        for (const idUsuarioDestino of idsUsuariosDestino) {
+          await postgres.query(
+            `INSERT INTO "condominio-bh".tb_notificacao_log (
+              id_notificacao_tipo,
+              id_usuario,
+              mensagem,
+              id_usuario_pedido,
+              id_condominio,
+              id_codigo
+           ) VALUES (
+              :id_notificacao_tipo,
+              :id_usuario,
+              :mensagem,
+              :id_usuario_pedido,
+              :id_condominio,
+              :id_codigo
+           )`,
+            {
+              replacements: {
+                id_notificacao_tipo: idNotificacaoTipo,
+                id_usuario: idUsuarioDestino,
+                mensagem: mensagemNotificacao,
+                id_usuario_pedido: idUsuarioRegistrando,
+                id_condominio: idCondominioFinal,
+                id_codigo: idCodigoRegistro
+              },
+              transaction
+            }
+          );
+        }
       }
 
       await transaction.commit();
