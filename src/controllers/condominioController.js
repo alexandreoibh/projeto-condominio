@@ -5298,7 +5298,7 @@ class CondominioController {
           LEFT JOIN "condominio-bh"."tb-condominios" c
             ON c.id = dr.id_condominio
           WHERE ${whereClause}
-          ORDER BY dr.created_at DESC, dr.id DESC
+          ORDER BY dr.id DESC, dr.created_at DESC 
           LIMIT :limit OFFSET :offset`,
         {
           replacements,
