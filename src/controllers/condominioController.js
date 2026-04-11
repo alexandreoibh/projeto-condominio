@@ -4141,7 +4141,10 @@ class CondominioController {
         }
 
         let idUsuarioPedido = this._toInt(
-          req.body.id_usuario_pedido ?? req.body.id_usuario_encomenda ?? req.body.id_usuario_destino,
+          registroCriado?.id_usuario ??
+          req.body.id_usuario_pedido ??
+          req.body.id_usuario_encomenda ??
+          req.body.id_usuario_destino,
           null
         );
 
@@ -4168,9 +4171,9 @@ class CondominioController {
           idUsuarioPedido = this._toInt(usuarioPedidoRows?.[0]?.id, null);
         }
 
-        const idUsuarioRegistrando = this._toInt(idUsuarioToken, null) || this._toInt(idUsuarioFinal, null);
+        const idUsuarioRegistrando = this._toInt(idUsuarioToken, null);
         if (!idUsuarioRegistrando) {
-          throw new Error('Usuário registrante não identificado para salvar notificação.');
+          throw new Error('Usuário do token não identificado para salvar notificação.');
         }
 
         const mensagemNotificacao = [
