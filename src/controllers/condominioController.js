@@ -8172,7 +8172,10 @@ class CondominioController {
             nl.id,
             nl.id_notificacao_tipo,
             nt.codigo AS notificacao_codigo,
+            nt.icone AS notificacao_icone,
+            nt.cor AS notificacao_cor,
             nt.titulo AS notificacao_titulo,
+            nt.descricao_padrao AS notificacao_descricao_padrao,
             nl.id_usuario,
             nl.id_usuario_pedido,
             solicitante.nome AS solicitante_nome,
@@ -8183,7 +8186,7 @@ class CondominioController {
             nl.created_at
           FROM "condominio-bh".tb_notificacao_log nl
           LEFT JOIN "condominio-bh".tb_notificacao_tipo nt
-            ON nt.codigo = nl.id_notificacao_tipo
+            ON nt.id = nl.id_notificacao_tipo
           LEFT JOIN "condominio-bh"."tb-usuarios" solicitante
             ON solicitante.id = nl.id_usuario_pedido
           WHERE nl.id_condominio = :id_condominio
