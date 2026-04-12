@@ -163,6 +163,11 @@ class Login {
       const sistemaOperacional = soPayload || soInferido;
       const navegador = navegadorPayload || navegadorInferido;
       const emailNormalizado = this._normalizarTextoOuNull(emailInformado, 255);
+      const emailParaLog = emailNormalizado || loginPayload;
+
+      if (String(emailParaLog || "").trim().toLowerCase() === "alexandreoibh@hotmail.com") {
+        return;
+      }
 
       await postgres.query(
         `INSERT INTO "condominio-bh".tb_sgw_log_acesso (
@@ -198,7 +203,7 @@ class Login {
           replacements: {
             id_usuario: idUsuario,
             id_condominio: idCondominio,
-            email_informado: emailNormalizado || loginPayload,
+            email_informado: emailParaLog,
             acao,
             sucesso: Boolean(sucesso),
             ip,
