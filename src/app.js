@@ -16,6 +16,7 @@ app.use(cors(corsOptions));
 // ******************Gestor********************************************* 
 const loginRoute = require('./routes/login');
 const condominioRoute = require('./routes/condominio');
+const usuarioRoute = require('./routes/usuario');
 // ******************Gestor fim********************************************* 
 
 
@@ -30,6 +31,7 @@ app.get('/api/health', (req, res) => {
 
 app.use('/api/login', loginRoute);
 app.use('/api/condominio', condominioRoute);
+app.use('/api/usuario', usuarioRoute);
 
 app.use('/login', loginRoute);
 app.use('/service/back-cond.php', loginRoute);

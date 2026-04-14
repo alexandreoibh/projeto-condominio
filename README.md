@@ -82,3 +82,7 @@ Body JSON:
 
 - Login disponível apenas via `POST /api/login`.
 - O bootstrap principal agora conecta no PostgreSQL ao iniciar.
+
+## Documentação
+
+- Regras de push notification: `docs/push-notifications.md`

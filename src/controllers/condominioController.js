@@ -3,6 +3,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const { QueryTypes } = require('sequelize');
+const pushNotificationService = require('../service/pushNotificationService');
 
 const INVITE_TOKEN_SECRET =
   process.env.SERVICE_INVITE_TOKEN_SECRET ||
@@ -4278,6 +4279,25 @@ class CondominioController {
               transaction
             }
           );
+        }
+
+        const resultadoPush = await pushNotificationService.enviarParaUsuarios(
+          Array.from(idsUsuariosDestino),
+          {
+            title: '📦 Nova encomenda!',
+            body: 'Seu pacote chegou na portaria.',
+            sound: 'default',
+            data: {
+              tipo: 'encomenda',
+              id: idCodigoRegistro,
+              rota: '/encomendas'
+            }
+          }
+        );
+
+        if (resultadoPush?.invalid?.length > 0) {
+          // Não interrompe o fluxo principal quando há token inválido.
+          console.warn('[push][encomenda] tokens inválidos:', resultadoPush.invalid);
         }
       }
 
