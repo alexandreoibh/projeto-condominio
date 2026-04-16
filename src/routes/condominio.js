@@ -1171,7 +1171,7 @@ router.patch(
 		body('ativo')
 			.optional({ nullable: true })
 			.isBoolean()
-			.withMessage('Campo ativo deve ser booleano.')
+			.withMessage('Campo ativo deve ser booleano .')
 	],
 	validate,
 	controller.atualizarRelEnvioConfig.bind(controller)

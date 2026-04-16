@@ -7591,8 +7591,12 @@ class CondominioController {
         process.env.EMORADOR_READ_WRITE_TOKEN
       );
 
+      const blobAccess =
+        this._normalizarTextoOuNull(process.env.BLOB_ACCESS || process.env.VERCEL_BLOB_ACCESS) ||
+        'private';
+
       const uploadResult = await put(blobPath, arquivoRecebido.buffer, {
-        access: 'public',
+        access: blobAccess,
         addRandomSuffix: false,
         contentType: arquivoRecebido.mimetype || undefined,
         token: token || undefined
