@@ -7520,7 +7520,10 @@ class CondominioController {
         });
       }
 
-      const idUsuario = this._toInt(req.body.id_usuario ?? req.body.usuario_id, null);
+      const idUsuario = this._toInt(
+        req.body.id_usuario ?? req.body.usuario_id ?? req.query.id_usuario ?? req.query.usuario_id,
+        null
+      );
       if (!idUsuario) {
         return res.status(400).json({
           success: false,
@@ -7529,7 +7532,11 @@ class CondominioController {
       }
 
       const idCondominio = this._toInt(
-        req.id_condominio ?? req.body.id_condominio ?? req.body.condominio_id,
+        req.id_condominio ??
+        req.body.id_condominio ??
+        req.body.condominio_id ??
+        req.query.id_condominio ??
+        req.query.condominio_id,
         null
       );
 
@@ -7599,16 +7606,7 @@ class CondominioController {
         });
       }
 
-      const blobStorageUrl = this._normalizarTextoOuNull(
-        process.env.BLOB_STORAGE_URL || process.env.VERCEL_BLOB_STORE_URL
-      );
-      const envBlobAccess = this._normalizarTextoOuNull(
-        process.env.BLOB_ACCESS || process.env.VERCEL_BLOB_ACCESS
-      );
-      const isPrivateStoreByUrl = Boolean(blobStorageUrl && /\.private\./i.test(blobStorageUrl));
-      const isPrivateStoreByEnv = String(envBlobAccess || '').toLowerCase() === 'private';
-      const isPrivateStore = isPrivateStoreByUrl || isPrivateStoreByEnv;
-      const blobAccess = isPrivateStore ? 'private' : envBlobAccess || 'public';
+      const blobAccess = 'private';
 
       const uploadOptionsBase = {
         addRandomSuffix: false,
@@ -7625,21 +7623,14 @@ class CondominioController {
       } catch (blobError) {
         const mensagemBlob = String(blobError?.message || '');
         const exigePublico = /access must be "public"/i.test(mensagemBlob);
-        const exigePrivado = /cannot use public access on a private store/i.test(mensagemBlob);
 
-        if (exigePublico && !isPrivateStore && blobAccess !== 'public') {
-          uploadResult = await put(blobPath, arquivoRecebido.buffer, {
-            ...uploadOptionsBase,
-            access: 'public'
-          });
-        } else if (exigePrivado && blobAccess !== 'private') {
-          uploadResult = await put(blobPath, arquivoRecebido.buffer, {
-            ...uploadOptionsBase,
-            access: 'private'
-          });
-        } else {
-          throw blobError;
+        if (exigePublico) {
+          throw new Error(
+            'Store do token exige acesso public, mas o endpoint de avatar está configurado para private. Confira se o token pertence ao mesmo store private.'
+          );
         }
+
+        throw blobError;
       }
 
       const pathAvatarFinal = uploadResult?.url || uploadResult?.pathname || blobPath;
