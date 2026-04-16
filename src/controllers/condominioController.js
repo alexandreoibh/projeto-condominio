@@ -7592,21 +7592,39 @@ class CondominioController {
       const versao = `v${proximaVersaoNumero}`;
       const blobPath = `${ambiente}/condominios/${idCondominio}/usuarios/${idUsuario}/avatar/${versao}.${extensao}`;
 
-      const token = this._normalizarTextoOuNull(
-        process.env.BLOB_READ_WRITE_TOKEN ||
-        process.env.VERCEL_BLOB_READ_WRITE_TOKEN ||
-        process.env.EMORADOR_READ_WRITE_TOKEN
-      );
+      const blobAccess = 'private';
+
+      const tokenSources = [
+        {
+          name: 'BLOB_PRIVATE_READ_WRITE_TOKEN',
+          value: this._normalizarTextoOuNull(process.env.BLOB_PRIVATE_READ_WRITE_TOKEN)
+        },
+        {
+          name: 'EMORADOR_READ_WRITE_TOKEN',
+          value: this._normalizarTextoOuNull(process.env.EMORADOR_READ_WRITE_TOKEN)
+        },
+        {
+          name: 'BLOB_READ_WRITE_TOKEN',
+          value: this._normalizarTextoOuNull(process.env.BLOB_READ_WRITE_TOKEN)
+        },
+        {
+          name: 'VERCEL_BLOB_READ_WRITE_TOKEN',
+          value: this._normalizarTextoOuNull(process.env.VERCEL_BLOB_READ_WRITE_TOKEN)
+        }
+      ];
+
+      const selectedTokenEntry = tokenSources.find((item) => item.value);
+      const token = selectedTokenEntry?.value || null;
+      const tokenSourceName = selectedTokenEntry?.name || 'nenhuma';
 
       if (!token) {
         return res.status(500).json({
           success: false,
           message: 'Falha ao fazer upload do avatar.',
-          detail: 'Token do Vercel Blob não configurado (BLOB_READ_WRITE_TOKEN).'
+          detail:
+            'Token do Vercel Blob não configurado. Defina BLOB_PRIVATE_READ_WRITE_TOKEN (preferencial) ou EMORADOR_READ_WRITE_TOKEN.'
         });
       }
-
-      const blobAccess = 'private';
 
       const uploadOptionsBase = {
         addRandomSuffix: false,
@@ -7626,7 +7644,7 @@ class CondominioController {
 
         if (exigePublico) {
           throw new Error(
-            'Store do token exige acesso public, mas o endpoint de avatar está configurado para private. Confira se o token pertence ao mesmo store private.'
+            `Store do token exige acesso public, mas o endpoint de avatar está configurado para private. Token selecionado via ${tokenSourceName}. Confira se esse token pertence ao mesmo store private.`
           );
         }
 
