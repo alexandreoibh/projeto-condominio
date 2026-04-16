@@ -7586,7 +7586,9 @@ class CondominioController {
       const blobPath = `${ambiente}/condominios/${idCondominio}/usuarios/${idUsuario}/avatar/${versao}.${extensao}`;
 
       const token = this._normalizarTextoOuNull(
-        process.env.BLOB_READ_WRITE_TOKEN || process.env.VERCEL_BLOB_READ_WRITE_TOKEN
+        process.env.BLOB_READ_WRITE_TOKEN ||
+        process.env.VERCEL_BLOB_READ_WRITE_TOKEN ||
+        process.env.EMORADOR_READ_WRITE_TOKEN
       );
 
       const uploadResult = await put(blobPath, arquivoRecebido.buffer, {
