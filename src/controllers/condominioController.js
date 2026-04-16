@@ -7595,12 +7595,37 @@ class CondominioController {
         this._normalizarTextoOuNull(process.env.BLOB_ACCESS || process.env.VERCEL_BLOB_ACCESS) ||
         'private';
 
-      const uploadResult = await put(blobPath, arquivoRecebido.buffer, {
-        access: blobAccess,
+      const uploadOptionsBase = {
         addRandomSuffix: false,
         contentType: arquivoRecebido.mimetype || undefined,
         token: token || undefined
-      });
+      };
+
+      let uploadResult;
+      try {
+        uploadResult = await put(blobPath, arquivoRecebido.buffer, {
+          ...uploadOptionsBase,
+          access: blobAccess
+        });
+      } catch (blobError) {
+        const mensagemBlob = String(blobError?.message || '');
+        const exigePublico = /access must be "public"/i.test(mensagemBlob);
+        const exigePrivado = /cannot use public access on a private store/i.test(mensagemBlob);
+
+        if (exigePublico && blobAccess !== 'public') {
+          uploadResult = await put(blobPath, arquivoRecebido.buffer, {
+            ...uploadOptionsBase,
+            access: 'public'
+          });
+        } else if (exigePrivado && blobAccess !== 'private') {
+          uploadResult = await put(blobPath, arquivoRecebido.buffer, {
+            ...uploadOptionsBase,
+            access: 'private'
+          });
+        } else {
+          throw blobError;
+        }
+      }
 
       const pathAvatarFinal = uploadResult?.url || uploadResult?.pathname || blobPath;
 
