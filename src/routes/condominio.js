@@ -1,5 +1,6 @@
 const express = require('express');
 const crypto = require('crypto');
+const multer = require('multer');
 const router = express.Router();
 const { body, param, query } = require('express-validator');
 const CondominioController = require('../controllers/condominioController');
@@ -7,6 +8,12 @@ const auth = require('../helpers/auth');
 const validate = require('../helpers/validate');
 
 const controller = new CondominioController();
+const uploadAvatar = multer({
+	storage: multer.memoryStorage(),
+	limits: {
+		fileSize: 10 * 1024 * 1024
+	}
+});
 
 const publicRegistrationKeyGuard = (req, res, next) => {
 	const expectedKey = process.env.PUBLIC_REGISTRATION_KEY;
@@ -1793,6 +1800,36 @@ router.get(
 	],
 	validate,
 	controller.consultarUsuariosBase.bind(controller)
+);
+
+router.post(
+	'/usuarios/upload-avatar',
+	auth,
+	uploadAvatar.fields([
+		{ name: 'path_avatar', maxCount: 1 },
+		{ name: 'foto', maxCount: 1 },
+		{ name: 'arquivo', maxCount: 1 }
+	]),
+	[
+		body('id_usuario')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Campo id_usuario deve ser numérico e maior que zero.'),
+		body('usuario_id')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Campo usuario_id deve ser numérico e maior que zero.'),
+		body('id_condominio')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Campo id_condominio deve ser numérico e maior que zero.'),
+		body('condominio_id')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Campo condominio_id deve ser numérico e maior que zero.')
+	],
+	validate,
+	controller.uploadAvatarUsuario.bind(controller)
 );
 
 router.get(

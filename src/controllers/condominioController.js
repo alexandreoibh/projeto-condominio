@@ -2,6 +2,8 @@ const postgres = require('../database/postgres');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
+const path = require('path');
+const { put } = require('@vercel/blob');
 const { QueryTypes } = require('sequelize');
 const pushNotificationService = require('../service/pushNotificationService');
 
@@ -7497,6 +7499,130 @@ class CondominioController {
     } catch (error) {
       return res.status(500).json({
         message: 'Falha ao buscar usuário.',
+        detail: error.message
+      });
+    }
+  }
+
+  async uploadAvatarUsuario(req, res) {
+    try {
+      const arquivoRecebido =
+        req.files?.path_avatar?.[0] ||
+        req.files?.foto?.[0] ||
+        req.files?.arquivo?.[0] ||
+        req.file ||
+        null;
+
+      if (!arquivoRecebido || !arquivoRecebido.buffer) {
+        return res.status(400).json({
+          success: false,
+          message: 'Arquivo de avatar não enviado. Use path_avatar, foto ou arquivo.'
+        });
+      }
+
+      const idUsuario = this._toInt(req.body.id_usuario ?? req.body.usuario_id, null);
+      if (!idUsuario) {
+        return res.status(400).json({
+          success: false,
+          message: 'Campo id_usuario (ou usuario_id) é obrigatório.'
+        });
+      }
+
+      const idCondominio = this._toInt(
+        req.id_condominio ?? req.body.id_condominio ?? req.body.condominio_id,
+        null
+      );
+
+      if (!idCondominio) {
+        return res.status(400).json({
+          success: false,
+          message: 'Campo id_condominio (ou condominio_id) é obrigatório.'
+        });
+      }
+
+      const usuarioRows = await postgres.query(
+        `SELECT id, path_avatar
+           FROM "condominio-bh"."tb-usuarios"
+          WHERE id = :id
+            AND id_condominio = :id_condominio
+          LIMIT 1`,
+        {
+          replacements: {
+            id: idUsuario,
+            id_condominio: idCondominio
+          },
+          type: QueryTypes.SELECT
+        }
+      );
+
+      if (!usuarioRows || usuarioRows.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: 'Usuário não encontrado para este condomínio.'
+        });
+      }
+
+      const usuarioAtual = usuarioRows[0];
+
+      const extByOriginalName = path.extname(String(arquivoRecebido.originalname || '')).replace('.', '').toLowerCase();
+      const extByMime = String(arquivoRecebido.mimetype || '')
+        .split('/')
+        .pop()
+        .split(';')[0]
+        .trim()
+        .toLowerCase();
+      const extensao = extByOriginalName || extByMime || 'jpg';
+
+      const ambiente =
+        this._normalizarTextoOuNull(
+          process.env.BLOB_UPLOAD_ENV || process.env.BLOB_ENVIRONMENT || process.env.VERCEL_ENV || process.env.NODE_ENV
+        ) || 'dev';
+
+      const avatarPathAtual = String(usuarioAtual.path_avatar || '');
+      const versaoAtualMatch = avatarPathAtual.match(/\/avatar\/v(\d+)\.[^\/?#]+(?:[?#].*)?$/i);
+      const versaoAtualNumero = versaoAtualMatch ? this._toInt(versaoAtualMatch[1], 0) : 0;
+      const proximaVersaoNumero = (Number.isFinite(versaoAtualNumero) ? versaoAtualNumero : 0) + 1;
+      const versao = `v${proximaVersaoNumero}`;
+      const blobPath = `${ambiente}/condominios/${idCondominio}/usuarios/${idUsuario}/avatar/${versao}.${extensao}`;
+
+      const token = this._normalizarTextoOuNull(
+        process.env.BLOB_READ_WRITE_TOKEN || process.env.VERCEL_BLOB_READ_WRITE_TOKEN
+      );
+
+      const uploadResult = await put(blobPath, arquivoRecebido.buffer, {
+        access: 'public',
+        addRandomSuffix: false,
+        contentType: arquivoRecebido.mimetype || undefined,
+        token: token || undefined
+      });
+
+      const pathAvatarFinal = uploadResult?.url || uploadResult?.pathname || blobPath;
+
+      await postgres.query(
+        `UPDATE "condominio-bh"."tb-usuarios"
+            SET path_avatar = :path_avatar,
+                updated_at = now()
+          WHERE id = :id
+            AND id_condominio = :id_condominio`,
+        {
+          replacements: {
+            id: idUsuario,
+            id_condominio: idCondominio,
+            path_avatar: pathAvatarFinal
+          },
+          type: QueryTypes.UPDATE
+        }
+      );
+
+      return res.status(200).json({
+        success: true,
+        path_avatar: pathAvatarFinal,
+        message: 'Foto atualizada com sucesso'
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        message: 'Falha ao fazer upload do avatar.',
         detail: error.message
       });
     }
