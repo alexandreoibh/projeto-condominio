@@ -7591,9 +7591,24 @@ class CondominioController {
         process.env.EMORADOR_READ_WRITE_TOKEN
       );
 
-      const blobAccess =
-        this._normalizarTextoOuNull(process.env.BLOB_ACCESS || process.env.VERCEL_BLOB_ACCESS) ||
-        'private';
+      if (!token) {
+        return res.status(500).json({
+          success: false,
+          message: 'Falha ao fazer upload do avatar.',
+          detail: 'Token do Vercel Blob não configurado (BLOB_READ_WRITE_TOKEN).'
+        });
+      }
+
+      const blobStorageUrl = this._normalizarTextoOuNull(
+        process.env.BLOB_STORAGE_URL || process.env.VERCEL_BLOB_STORE_URL
+      );
+      const envBlobAccess = this._normalizarTextoOuNull(
+        process.env.BLOB_ACCESS || process.env.VERCEL_BLOB_ACCESS
+      );
+      const isPrivateStoreByUrl = Boolean(blobStorageUrl && /\.private\./i.test(blobStorageUrl));
+      const isPrivateStoreByEnv = String(envBlobAccess || '').toLowerCase() === 'private';
+      const isPrivateStore = isPrivateStoreByUrl || isPrivateStoreByEnv;
+      const blobAccess = isPrivateStore ? 'private' : envBlobAccess || 'public';
 
       const uploadOptionsBase = {
         addRandomSuffix: false,
@@ -7612,7 +7627,7 @@ class CondominioController {
         const exigePublico = /access must be "public"/i.test(mensagemBlob);
         const exigePrivado = /cannot use public access on a private store/i.test(mensagemBlob);
 
-        if (exigePublico && blobAccess !== 'public') {
+        if (exigePublico && !isPrivateStore && blobAccess !== 'public') {
           uploadResult = await put(blobPath, arquivoRecebido.buffer, {
             ...uploadOptionsBase,
             access: 'public'
