@@ -4,6 +4,7 @@ const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const { QueryTypes } = require("sequelize");
 const postgres = require("../database/postgres");
+const { buildAvatarProxyUrl } = require("../helpers/avatarProxy");
 
 const JWT_SECRET = process.env.JWT_SECRET || "dev_jwt_secret_change_me";
 
@@ -401,6 +402,7 @@ class Login {
       );
 
       const nomeCompleto = `${result.nome || ""} ${result.sobrenome || ""}`.trim();
+      const avatarUrl = buildAvatarProxyUrl(req, result.id, result.path_avatar);
 
       return res.send({
         id: result.id,
@@ -418,6 +420,7 @@ class Login {
         id_empresa: result.id_condominio,
         check: true,
         role: result.tipo,
+        avatar_url: avatarUrl,
         img: null,
         imgb: null,
         nome_empresa: result.nome_condominio || "Condomínio",
@@ -437,7 +440,8 @@ class Login {
           tipo_morador: result.tipo_morador || null,
           apartamento: result.apartamento || null,
           bloco: result.bloco || null,
-          path_avatar: result.path_avatar || null
+          path_avatar: result.path_avatar || null,
+          avatar_url: avatarUrl
         },
         perfil: {
           id: result.tipo_perfil_id || null,

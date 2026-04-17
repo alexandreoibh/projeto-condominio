@@ -1833,6 +1833,14 @@ router.post(
 );
 
 router.get(
+	'/usuarios/:id(\\d+)/avatar',
+	auth,
+	[param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.')],
+	validate,
+	controller.baixarAvatarUsuario.bind(controller)
+);
+
+router.get(
 	'/usuarios/:id(\\d+)',
 	auth,
 	[param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.')],

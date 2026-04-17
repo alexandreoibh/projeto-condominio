@@ -4,8 +4,10 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const path = require('path');
 const { put } = require('@vercel/blob');
+const fetch = require('node-fetch');
 const { QueryTypes } = require('sequelize');
 const pushNotificationService = require('../service/pushNotificationService');
+const { buildAvatarProxyUrl, getBlobReadToken, resolveBlobUrl } = require('../helpers/avatarProxy');
 
 const INVITE_TOKEN_SECRET =
   process.env.SERVICE_INVITE_TOKEN_SECRET ||
@@ -7493,12 +7495,111 @@ class CondominioController {
         });
       }
 
+      const usuarioData = usuario[0];
+      const avatarUrl = buildAvatarProxyUrl(req, usuarioData.id, usuarioData.path_avatar);
+
       return res.status(200).json({
-        data: usuario[0]
+        data: {
+          ...usuarioData,
+          avatar_url: avatarUrl
+        }
       });
     } catch (error) {
       return res.status(500).json({
         message: 'Falha ao buscar usuário.',
+        detail: error.message
+      });
+    }
+  }
+
+  async baixarAvatarUsuario(req, res) {
+    try {
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      if (!idCondominioToken) {
+        return res.status(403).json({
+          message: 'Token sem id_condominio para buscar avatar.'
+        });
+      }
+
+      const idUsuario = this._toInt(req.params.id, null);
+      if (!idUsuario) {
+        return res.status(400).json({ message: 'Id do usuário inválido.' });
+      }
+
+      const usuarioRows = await postgres.query(
+        `SELECT id, path_avatar
+           FROM "condominio-bh"."tb-usuarios"
+          WHERE id = :id
+            AND id_condominio = :id_condominio
+          LIMIT 1`,
+        {
+          replacements: {
+            id: idUsuario,
+            id_condominio: idCondominioToken
+          },
+          type: QueryTypes.SELECT
+        }
+      );
+
+      if (!usuarioRows || usuarioRows.length === 0) {
+        return res.status(404).json({
+          message: 'Usuário não encontrado para este condomínio.'
+        });
+      }
+
+      const pathAvatar = this._normalizarTextoOuNull(usuarioRows[0].path_avatar);
+      if (!pathAvatar) {
+        return res.status(404).json({
+          message: 'Usuário não possui avatar cadastrado.'
+        });
+      }
+
+      const blobUrl = resolveBlobUrl(pathAvatar);
+      if (!blobUrl) {
+        return res.status(500).json({
+          message: 'Falha ao resolver URL do avatar no blob privado.'
+        });
+      }
+
+      const blobToken = getBlobReadToken();
+      if (!blobToken) {
+        return res.status(500).json({
+          message: 'Token do Vercel Blob não configurado no backend para leitura de avatar.'
+        });
+      }
+
+      const blobResponse = await fetch(blobUrl, {
+        headers: {
+          Authorization: `Bearer ${blobToken}`
+        }
+      });
+
+      if (!blobResponse.ok) {
+        if (blobResponse.status === 404) {
+          return res.status(404).json({ message: 'Avatar não encontrado no blob.' });
+        }
+
+        return res.status(502).json({
+          message: 'Falha ao ler avatar no blob privado.',
+          detail: `Blob retornou status ${blobResponse.status}.`
+        });
+      }
+
+      const payload = await blobResponse.buffer();
+      const contentType = blobResponse.headers.get('content-type') || 'application/octet-stream';
+      const cacheControl = blobResponse.headers.get('cache-control') || 'private, max-age=300';
+      const etag = blobResponse.headers.get('etag');
+
+      res.set('Content-Type', contentType);
+      res.set('Cache-Control', cacheControl);
+      if (etag) {
+        res.set('ETag', etag);
+      }
+
+      return res.status(200).send(payload);
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao buscar avatar do usuário.',
         detail: error.message
       });
     }
