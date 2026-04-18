@@ -333,6 +333,11 @@ router.get(
 router.post(
 	'/consumo/registros',
 	auth,
+	uploadAvatar.fields([
+		{ name: 'imagem', maxCount: 1 },
+		{ name: 'foto', maxCount: 1 },
+		{ name: 'arquivo', maxCount: 1 }
+	]),
 	[
 		body('id_tipo_consumo')
 			.notEmpty()
@@ -393,6 +398,11 @@ router.post(
 router.put(
 	'/consumo/registros/:id(\\d+)',
 	auth,
+	uploadAvatar.fields([
+		{ name: 'imagem', maxCount: 1 },
+		{ name: 'foto', maxCount: 1 },
+		{ name: 'arquivo', maxCount: 1 }
+	]),
 	[
 		param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.'),
 		body('id_tipo_consumo')

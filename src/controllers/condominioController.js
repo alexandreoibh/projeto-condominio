@@ -75,6 +75,49 @@ class CondominioController {
       .toLowerCase();
   }
 
+  async _uploadImagemBlob(arquivo, idCondominio, idRegistro, origemImagemAtual = null) {
+    const { put } = require('@vercel/blob');
+    const path = require('path');
+
+    const extByOriginalName = path.extname(String(arquivo.originalname || '')).replace('.', '').toLowerCase();
+    const extByMime = String(arquivo.mimetype || '').split('/').pop().split(';')[0].trim().toLowerCase();
+    const extensao = extByOriginalName || extByMime || 'jpg';
+
+    const ambiente =
+      this._normalizarTextoOuNull(
+        process.env.BLOB_UPLOAD_ENV || process.env.BLOB_ENVIRONMENT || process.env.VERCEL_ENV || process.env.NODE_ENV
+      ) || 'dev';
+
+    const versaoAtualMatch = origemImagemAtual
+      ? String(origemImagemAtual).match(/\/imagem\/v(\d+)\.[^\/?#]+(?:[?#].*)?$/i)
+      : null;
+    const versaoAtualNumero = versaoAtualMatch ? this._toInt(versaoAtualMatch[1], 0) : 0;
+    const versao = `v${(Number.isFinite(versaoAtualNumero) ? versaoAtualNumero : 0) + 1}`;
+
+    const blobPath = `${ambiente}/condominios/${idCondominio}/consumo/registros/${idRegistro}/imagem/${versao}.${extensao}`;
+
+    const tokenSources = [
+      { name: 'BLOB_PRIVATE_READ_WRITE_TOKEN', value: this._normalizarTextoOuNull(process.env.BLOB_PRIVATE_READ_WRITE_TOKEN) },
+      { name: 'EMORADOR_READ_WRITE_TOKEN', value: this._normalizarTextoOuNull(process.env.EMORADOR_READ_WRITE_TOKEN) },
+      { name: 'BLOB_READ_WRITE_TOKEN', value: this._normalizarTextoOuNull(process.env.BLOB_READ_WRITE_TOKEN) },
+      { name: 'VERCEL_BLOB_READ_WRITE_TOKEN', value: this._normalizarTextoOuNull(process.env.VERCEL_BLOB_READ_WRITE_TOKEN) }
+    ];
+
+    const token = tokenSources.find((t) => t.value)?.value || null;
+    if (!token) {
+      throw new Error('Token do Vercel Blob não configurado. Defina BLOB_PRIVATE_READ_WRITE_TOKEN.');
+    }
+
+    const uploadResult = await put(blobPath, arquivo.buffer, {
+      access: 'private',
+      addRandomSuffix: false,
+      contentType: arquivo.mimetype || undefined,
+      token
+    });
+
+    return uploadResult?.url || uploadResult?.pathname || blobPath;
+  }
+
   _cleanupPublicRegistrationAttempts(now = Date.now()) {
     for (const [key, bucket] of publicRegistrationAttempts.entries()) {
       if (!bucket || now - bucket.windowStart > PUBLIC_REGISTER_RATE_WINDOW_MS) {
@@ -178,6 +221,29 @@ class CondominioController {
 
     const text = String(value).trim();
     return text === '' ? null : text;
+  }
+
+  _anexarAvatarUrlUsuario(req, usuario) {
+    if (!usuario || typeof usuario !== 'object') {
+      return usuario;
+    }
+
+    if (!Object.prototype.hasOwnProperty.call(usuario, 'path_avatar')) {
+      return usuario;
+    }
+
+    return {
+      ...usuario,
+      avatar_url: buildAvatarProxyUrl(req, usuario.id, usuario.path_avatar)
+    };
+  }
+
+  _anexarAvatarUrlUsuarios(req, usuarios) {
+    if (!Array.isArray(usuarios)) {
+      return usuarios;
+    }
+
+    return usuarios.map((usuario) => this._anexarAvatarUrlUsuario(req, usuario));
   }
 
   _getIdTipoConsumoQuery(query = {}) {
@@ -2122,9 +2188,48 @@ class CondominioController {
         }
       );
 
+      const registro = created[0][0];
+
+      const arquivoImagem =
+        req.files?.imagem?.[0] ||
+        req.files?.foto?.[0] ||
+        req.files?.arquivo?.[0] ||
+        req.file ||
+        null;
+
+      if (arquivoImagem?.buffer) {
+        try {
+          const urlImagem = await this._uploadImagemBlob(arquivoImagem, idCondominioToken, registro.id, null);
+
+          await postgres.query(
+            `UPDATE "condominio-bh".tb_consumo_registros
+                SET origem_imagem = :origem_imagem,
+                    updated_at = now()
+              WHERE id = :id
+                AND id_condominio = :id_condominio`,
+            {
+              replacements: {
+                id: registro.id,
+                id_condominio: idCondominioToken,
+                origem_imagem: urlImagem
+              },
+              type: QueryTypes.UPDATE
+            }
+          );
+
+          registro.origem_imagem = urlImagem;
+        } catch (uploadError) {
+          return res.status(500).json({
+            message: 'Registro criado, mas falha ao salvar imagem.',
+            detail: uploadError.message,
+            data: registro
+          });
+        }
+      }
+
       return res.status(201).json({
         message: 'Registro de consumo criado com sucesso.',
-        data: created[0][0]
+        data: registro
       });
     } catch (error) {
       return res.status(500).json({
@@ -2288,9 +2393,53 @@ class CondominioController {
         });
       }
 
+      const registroAtualizado = updated[0][0];
+
+      const arquivoImagem =
+        req.files?.imagem?.[0] ||
+        req.files?.foto?.[0] ||
+        req.files?.arquivo?.[0] ||
+        req.file ||
+        null;
+
+      if (arquivoImagem?.buffer) {
+        try {
+          const urlImagem = await this._uploadImagemBlob(
+            arquivoImagem,
+            idCondominioToken,
+            id,
+            registroAtualizado.origem_imagem
+          );
+
+          await postgres.query(
+            `UPDATE "condominio-bh".tb_consumo_registros
+                SET origem_imagem = :origem_imagem,
+                    updated_at = now()
+              WHERE id = :id
+                AND id_condominio = :id_condominio`,
+            {
+              replacements: {
+                id,
+                id_condominio: idCondominioToken,
+                origem_imagem: urlImagem
+              },
+              type: QueryTypes.UPDATE
+            }
+          );
+
+          registroAtualizado.origem_imagem = urlImagem;
+        } catch (uploadError) {
+          return res.status(500).json({
+            message: 'Registro atualizado, mas falha ao salvar imagem.',
+            detail: uploadError.message,
+            data: registroAtualizado
+          });
+        }
+      }
+
       return res.status(200).json({
         message: 'Registro de consumo atualizado com sucesso.',
-        data: updated[0][0]
+        data: registroAtualizado
       });
     } catch (error) {
       return res.status(500).json({
@@ -5630,7 +5779,7 @@ class CondominioController {
         pageSize,
         total,
         totalPages,
-        data: rows
+        data: this._anexarAvatarUrlUsuarios(req, rows)
       });
     } catch (error) {
       return res.status(500).json({
@@ -5739,7 +5888,7 @@ class CondominioController {
           bloco: blocoFiltro,
           apartamento: apartamentoFiltro
         },
-        data: usuarios
+        data: this._anexarAvatarUrlUsuarios(req, usuarios)
       });
     } catch (error) {
       return res.status(500).json({
@@ -6509,7 +6658,7 @@ class CondominioController {
           perfil_ids: perfilIdsUnicos
         },
         usuario_logado: usuarioLogado,
-        data
+        data: this._anexarAvatarUrlUsuarios(req, data)
       });
     } catch (error) {
       return res.status(500).json({
@@ -6613,7 +6762,7 @@ class CondominioController {
         total,
         totalPages,
         id_condominio: idCondominioParam,
-        data: rows
+        data: this._anexarAvatarUrlUsuarios(req, rows)
       });
     } catch (error) {
       return res.status(500).json({
@@ -6807,7 +6956,7 @@ class CondominioController {
 
       return res.status(201).json({
         message: 'Usuário criado com sucesso.',
-        data: insert[0][0]
+        data: this._anexarAvatarUrlUsuario(req, insert[0][0])
       });
     } catch (error) {
       return res.status(500).json({
@@ -7087,7 +7236,7 @@ class CondominioController {
 
       return res.status(201).json({
         message: 'Usuário criado com sucesso por convite.',
-        data: insert[0][0]
+        data: this._anexarAvatarUrlUsuario(req, insert[0][0])
       });
     } catch (error) {
       return res.status(500).json({
@@ -7417,7 +7566,7 @@ class CondominioController {
 
       return res.status(200).json({
         message: 'Usuário atualizado com sucesso.',
-        data: update[0][0]
+        data: this._anexarAvatarUrlUsuario(req, update[0][0])
       });
     } catch (error) {
       return res.status(500).json({
@@ -7773,6 +7922,7 @@ class CondominioController {
       return res.status(200).json({
         success: true,
         path_avatar: pathAvatarFinal,
+        avatar_url: buildAvatarProxyUrl(req, idUsuario, pathAvatarFinal),
         message: 'Foto atualizada com sucesso'
       });
     } catch (error) {
