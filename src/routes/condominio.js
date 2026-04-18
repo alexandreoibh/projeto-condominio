@@ -966,6 +966,11 @@ router.get(
 router.post(
 	'/dashboard/registros',
 	auth,
+	uploadAvatar.fields([
+		{ name: 'imagem', maxCount: 1 },
+		{ name: 'foto', maxCount: 1 },
+		{ name: 'arquivo', maxCount: 1 }
+	]),
 	[
 		body('tipo')
 			.optional({ nullable: true, checkFalsy: true })
@@ -1029,9 +1034,21 @@ router.post(
 	validate,
 	controller.criarDashboardRegistro.bind(controller)
 );
+router.get(
+	'/dashboard/registros/:id(\\d+)/imagem',
+	auth,
+	[param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.')],
+	validate,
+	controller.buscarImagemDashboardRegistro.bind(controller)
+);
 router.put(
 	'/dashboard/registros/:id(\\d+)',
 	auth,
+	uploadAvatar.fields([
+		{ name: 'imagem', maxCount: 1 },
+		{ name: 'foto', maxCount: 1 },
+		{ name: 'arquivo', maxCount: 1 }
+	]),
 	[
 		param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.'),
 		body('tipo')

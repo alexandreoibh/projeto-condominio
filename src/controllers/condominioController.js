@@ -7,7 +7,7 @@ const { put } = require('@vercel/blob');
 const fetch = require('node-fetch');
 const { QueryTypes } = require('sequelize');
 const pushNotificationService = require('../service/pushNotificationService');
-const { buildAvatarProxyUrl, buildConsumoImagemProxyUrl, getBlobReadToken, resolveBlobUrl } = require('../helpers/avatarProxy');
+const { buildAvatarProxyUrl, buildConsumoImagemProxyUrl, buildDashboardImagemProxyUrl, getBlobReadToken, resolveBlobUrl } = require('../helpers/avatarProxy');
 
 const INVITE_TOKEN_SECRET =
   process.env.SERVICE_INVITE_TOKEN_SECRET ||
@@ -75,7 +75,7 @@ class CondominioController {
       .toLowerCase();
   }
 
-  async _uploadImagemBlob(arquivo, idCondominio, idRegistro, origemImagemAtual = null) {
+  async _uploadImagemBlob(arquivo, idCondominio, subPath, origemImagemAtual = null) {
     const { put } = require('@vercel/blob');
     const path = require('path');
 
@@ -94,7 +94,7 @@ class CondominioController {
     const versaoAtualNumero = versaoAtualMatch ? this._toInt(versaoAtualMatch[1], 0) : 0;
     const versao = `v${(Number.isFinite(versaoAtualNumero) ? versaoAtualNumero : 0) + 1}`;
 
-    const blobPath = `${ambiente}/condominios/${idCondominio}/consumo/registros/${idRegistro}/imagem/${versao}.${extensao}`;
+    const blobPath = `${ambiente}/condominios/${idCondominio}/${subPath}/imagem/${versao}.${extensao}`;
 
     const tokenSources = [
       { name: 'BLOB_PRIVATE_READ_WRITE_TOKEN', value: this._normalizarTextoOuNull(process.env.BLOB_PRIVATE_READ_WRITE_TOKEN) },
@@ -2214,7 +2214,7 @@ class CondominioController {
 
       if (arquivoImagem?.buffer) {
         try {
-          const urlImagem = await this._uploadImagemBlob(arquivoImagem, idCondominioToken, registro.id, null);
+          const urlImagem = await this._uploadImagemBlob(arquivoImagem, idCondominioToken, `consumo/registros/${registro.id}`, null);
 
           await postgres.query(
             `UPDATE "condominio-bh".tb_consumo_registros
@@ -2422,7 +2422,7 @@ class CondominioController {
           const urlImagem = await this._uploadImagemBlob(
             arquivoImagem,
             idCondominioToken,
-            id,
+            `consumo/registros/${id}`,
             registroAtualizado.origem_imagem
           );
 
@@ -4124,6 +4124,7 @@ class CondominioController {
             c.qtde_ap_bloco,
             c.modelo_fatura,
             c.qtde_blocos,
+            dr.origem,
             dr.created_at,
             dr.updated_at
           FROM "condominio-bh".tb_dashboard_registro dr
@@ -4154,12 +4155,17 @@ class CondominioController {
       const total = totalRows[0]?.total || 0;
       const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize);
 
+      const dataComImagem = data.map((item) => ({
+        ...item,
+        imagem_url: buildDashboardImagemProxyUrl(req, item.id, item.origem)
+      }));
+
       return res.status(200).json({
         page,
         pageSize,
         total,
         totalPages,
-        data
+        data: dataComImagem
       });
     } catch (error) {
       return res.status(500).json({
@@ -4237,6 +4243,7 @@ class CondominioController {
             c.qtde_ap_bloco,
             c.modelo_fatura,
             c.qtde_blocos,
+            dr.origem,
             dr.created_at,
             dr.updated_at
           FROM "condominio-bh".tb_dashboard_registro dr
@@ -4263,7 +4270,12 @@ class CondominioController {
         return res.status(404).json({ message: 'Registro de dashboard não encontrado.' });
       }
 
-      return res.status(200).json({ data: registro[0] });
+      return res.status(200).json({
+        data: {
+          ...registro[0],
+          imagem_url: buildDashboardImagemProxyUrl(req, registro[0].id, registro[0].origem)
+        }
+      });
     } catch (error) {
       return res.status(500).json({
         message: 'Falha ao buscar registro do dashboard.',
@@ -4550,6 +4562,43 @@ class CondominioController {
 
       await transaction.commit();
 
+      const arquivoImagem =
+        req.files?.imagem?.[0] ||
+        req.files?.foto?.[0] ||
+        req.files?.arquivo?.[0] ||
+        req.file ||
+        null;
+
+      if (arquivoImagem?.buffer && idCodigoRegistro) {
+        try {
+          const urlImagem = await this._uploadImagemBlob(
+            arquivoImagem,
+            idCondominioFinal,
+            `dashboard/registros/tipo${tipoRegistro}/${idCodigoRegistro}`,
+            null
+          );
+
+          await postgres.query(
+            `UPDATE "condominio-bh".tb_dashboard_registro
+                SET origem = :origem,
+                    updated_at = now()
+              WHERE id = :id`,
+            {
+              replacements: { id: idCodigoRegistro, origem: urlImagem },
+              type: QueryTypes.UPDATE
+            }
+          );
+
+          registroCriado.origem = urlImagem;
+        } catch (uploadError) {
+          return res.status(500).json({
+            message: 'Registro criado, mas falha ao salvar imagem.',
+            detail: uploadError.message,
+            data: registroCriado
+          });
+        }
+      }
+
       return res.status(201).json({
         message: 'Registro de dashboard criado com sucesso.',
         data: registroCriado
@@ -4681,13 +4730,135 @@ class CondominioController {
         }
       );
 
+      const registroAtualizado = update[0][0];
+      const idCondominioFinal = this._toInt(registroAtualizado?.id_condominio, null);
+      const tipoFinal = this._toInt(registroAtualizado?.tipo ?? atual.tipo, 0);
+
+      const arquivoImagem =
+        req.files?.imagem?.[0] ||
+        req.files?.foto?.[0] ||
+        req.files?.arquivo?.[0] ||
+        req.file ||
+        null;
+
+      if (arquivoImagem?.buffer && idCondominioFinal) {
+        try {
+          const urlImagem = await this._uploadImagemBlob(
+            arquivoImagem,
+            idCondominioFinal,
+            `dashboard/registros/tipo${tipoFinal}/${id}`,
+            atual.origem
+          );
+
+          await postgres.query(
+            `UPDATE "condominio-bh".tb_dashboard_registro
+                SET origem = :origem,
+                    updated_at = now()
+              WHERE id = :id`,
+            {
+              replacements: { id, origem: urlImagem },
+              type: QueryTypes.UPDATE
+            }
+          );
+
+          registroAtualizado.origem = urlImagem;
+        } catch (uploadError) {
+          return res.status(500).json({
+            message: 'Registro atualizado, mas falha ao salvar imagem.',
+            detail: uploadError.message,
+            data: registroAtualizado
+          });
+        }
+      }
+
       return res.status(200).json({
         message: 'Registro de dashboard atualizado com sucesso.',
-        data: update[0][0]
+        data: registroAtualizado
       });
     } catch (error) {
       return res.status(500).json({
         message: 'Falha ao editar registro do dashboard.',
+        detail: error.message
+      });
+    }
+  }
+
+  async buscarImagemDashboardRegistro(req, res) {
+    try {
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      const idPerfilToken = this._toInt(req.IdPerfil, null);
+      const ehAdmin = idPerfilToken === 1;
+
+      const id = this._toInt(req.params.id, null);
+      if (!id) {
+        return res.status(400).json({ message: 'Parâmetro id inválido.' });
+      }
+
+      const whereParts = ['id = :id'];
+      const replacements = { id };
+
+      if (!ehAdmin) {
+        if (!idCondominioToken) {
+          return res.status(403).json({ message: 'Token sem id_condominio.' });
+        }
+        whereParts.push('id_condominio = :id_condominio');
+        replacements.id_condominio = idCondominioToken;
+      }
+
+      const rows = await postgres.query(
+        `SELECT origem
+           FROM "condominio-bh".tb_dashboard_registro
+          WHERE ${whereParts.join(' AND ')}
+          LIMIT 1`,
+        { replacements, type: QueryTypes.SELECT }
+      );
+
+      if (!rows || rows.length === 0) {
+        return res.status(404).json({ message: 'Registro de dashboard não encontrado.' });
+      }
+
+      const origemImagem = this._normalizarTextoOuNull(rows[0].origem);
+      if (!origemImagem) {
+        return res.status(404).json({ message: 'Registro não possui imagem anexada.' });
+      }
+
+      const blobUrl = resolveBlobUrl(origemImagem);
+      if (!blobUrl) {
+        return res.status(500).json({ message: 'Falha ao resolver URL da imagem no blob.' });
+      }
+
+      const blobToken = getBlobReadToken();
+      if (!blobToken) {
+        return res.status(500).json({ message: 'Token do Vercel Blob não configurado para leitura.' });
+      }
+
+      const blobResponse = await fetch(blobUrl, {
+        headers: { Authorization: `Bearer ${blobToken}` }
+      });
+
+      if (!blobResponse.ok) {
+        if (blobResponse.status === 404) {
+          return res.status(404).json({ message: 'Imagem não encontrada no blob.' });
+        }
+        return res.status(502).json({
+          message: 'Falha ao ler imagem no blob.',
+          detail: `Blob retornou status ${blobResponse.status}.`
+        });
+      }
+
+      const payload = await blobResponse.buffer();
+      const contentType = blobResponse.headers.get('content-type') || 'application/octet-stream';
+      const cacheControl = blobResponse.headers.get('cache-control') || 'private, max-age=300';
+      const etag = blobResponse.headers.get('etag');
+
+      res.set('Content-Type', contentType);
+      res.set('Cache-Control', cacheControl);
+      if (etag) res.set('ETag', etag);
+
+      return res.status(200).send(payload);
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao buscar imagem do registro de dashboard.',
         detail: error.message
       });
     }
