@@ -324,6 +324,13 @@ router.get(
 	controller.listarLancamentosConsumoPorUnidade.bind(controller)
 );
 router.get(
+	'/consumo/registros/:id(\\d+)/imagem',
+	auth,
+	[param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.')],
+	validate,
+	controller.buscarImagemConsumoRegistro.bind(controller)
+);
+router.get(
 	'/consumo/registros/:id(\\d+)',
 	auth,
 	[param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.')],

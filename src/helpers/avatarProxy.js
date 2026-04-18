@@ -81,8 +81,33 @@ const buildAvatarProxyUrl = (req, idUsuario, pathAvatar) => {
   return `${protocol}://${host}${relativePath}`;
 };
 
+const buildConsumoImagemProxyUrl = (req, idRegistro, origemImagem) => {
+  if (!normalizeText(origemImagem)) {
+    return null;
+  }
+
+  const id = Number.parseInt(idRegistro, 10);
+  if (!Number.isInteger(id) || id <= 0) {
+    return null;
+  }
+
+  const relativePath = `/api/condominio/consumo/registros/${id}/imagem`;
+  const forwardedHost = normalizeText(req?.headers?.['x-forwarded-host']);
+  const host = forwardedHost || normalizeText(req?.get?.('host'));
+  const forwardedProtoRaw = normalizeText(req?.headers?.['x-forwarded-proto']);
+  const forwardedProto = forwardedProtoRaw ? forwardedProtoRaw.split(',')[0].trim() : null;
+  const protocol = forwardedProto || normalizeText(req?.protocol) || 'https';
+
+  if (!host) {
+    return relativePath;
+  }
+
+  return `${protocol}://${host}${relativePath}`;
+};
+
 module.exports = {
   buildAvatarProxyUrl,
+  buildConsumoImagemProxyUrl,
   getBlobReadToken,
   resolveBlobUrl
 };

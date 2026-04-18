@@ -7,7 +7,7 @@ const { put } = require('@vercel/blob');
 const fetch = require('node-fetch');
 const { QueryTypes } = require('sequelize');
 const pushNotificationService = require('../service/pushNotificationService');
-const { buildAvatarProxyUrl, getBlobReadToken, resolveBlobUrl } = require('../helpers/avatarProxy');
+const { buildAvatarProxyUrl, buildConsumoImagemProxyUrl, getBlobReadToken, resolveBlobUrl } = require('../helpers/avatarProxy');
 
 const INVITE_TOKEN_SECRET =
   process.env.SERVICE_INVITE_TOKEN_SECRET ||
@@ -1335,11 +1335,16 @@ class CondominioController {
         }
       );
 
+      const dataComImagem = data.map((item) => ({
+        ...item,
+        imagem_url: buildConsumoImagemProxyUrl(req, item.id, item.origem_imagem)
+      }));
+
       return res.status(200).json({
         page,
         pageSize,
         total: totalResult[0]?.total || 0,
-        data
+        data: dataComImagem
       });
     } catch (error) {
       return res.status(500).json({
@@ -1963,6 +1968,11 @@ class CondominioController {
       const total = totalRows[0]?.total || 0;
       const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize);
 
+      const dataComImagem = data.map((item) => ({
+        ...item,
+        imagem_url: buildConsumoImagemProxyUrl(req, item.id, item.origem_imagem)
+      }));
+
       return res.status(200).json({
         page,
         pageSize,
@@ -1975,7 +1985,7 @@ class CondominioController {
           id_tipo_consumo: idTipoConsumoFiltro
         },
         unidade: unidadeInfo[0],
-        data
+        data: dataComImagem
       });
     } catch (error) {
       return res.status(500).json({
@@ -2046,8 +2056,13 @@ class CondominioController {
         });
       }
 
+      const registro = {
+        ...data[0],
+        imagem_url: buildConsumoImagemProxyUrl(req, data[0].id, data[0].origem_imagem)
+      };
+
       return res.status(200).json({
-        data: data[0]
+        data: registro
       });
     } catch (error) {
       return res.status(500).json({
@@ -2444,6 +2459,83 @@ class CondominioController {
     } catch (error) {
       return res.status(500).json({
         message: 'Falha ao atualizar registro de consumo.',
+        detail: error.message
+      });
+    }
+  }
+
+  async buscarImagemConsumoRegistro(req, res) {
+    try {
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      if (!idCondominioToken) {
+        return res.status(403).json({ message: 'Token sem id_condominio.' });
+      }
+
+      const id = this._toInt(req.params.id, null);
+      if (!id) {
+        return res.status(400).json({ message: 'Parâmetro id inválido.' });
+      }
+
+      const rows = await postgres.query(
+        `SELECT origem_imagem
+           FROM "condominio-bh".tb_consumo_registros
+          WHERE id = :id
+            AND id_condominio = :id_condominio
+          LIMIT 1`,
+        {
+          replacements: { id, id_condominio: idCondominioToken },
+          type: QueryTypes.SELECT
+        }
+      );
+
+      if (!rows || rows.length === 0) {
+        return res.status(404).json({ message: 'Registro de consumo não encontrado.' });
+      }
+
+      const origemImagem = this._normalizarTextoOuNull(rows[0].origem_imagem);
+      if (!origemImagem) {
+        return res.status(404).json({ message: 'Registro não possui imagem anexada.' });
+      }
+
+      const blobUrl = resolveBlobUrl(origemImagem);
+      if (!blobUrl) {
+        return res.status(500).json({ message: 'Falha ao resolver URL da imagem no blob.' });
+      }
+
+      const blobToken = getBlobReadToken();
+      if (!blobToken) {
+        return res.status(500).json({ message: 'Token do Vercel Blob não configurado para leitura.' });
+      }
+
+      const blobResponse = await fetch(blobUrl, {
+        headers: { Authorization: `Bearer ${blobToken}` }
+      });
+
+      if (!blobResponse.ok) {
+        if (blobResponse.status === 404) {
+          return res.status(404).json({ message: 'Imagem não encontrada no blob.' });
+        }
+        return res.status(502).json({
+          message: 'Falha ao ler imagem no blob.',
+          detail: `Blob retornou status ${blobResponse.status}.`
+        });
+      }
+
+      const payload = await blobResponse.buffer();
+      const contentType = blobResponse.headers.get('content-type') || 'application/octet-stream';
+      const cacheControl = blobResponse.headers.get('cache-control') || 'private, max-age=300';
+      const etag = blobResponse.headers.get('etag');
+
+      res.set('Content-Type', contentType);
+      res.set('Cache-Control', cacheControl);
+      if (etag) {
+        res.set('ETag', etag);
+      }
+
+      return res.status(200).send(payload);
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao buscar imagem do registro de consumo.',
         detail: error.message
       });
     }
