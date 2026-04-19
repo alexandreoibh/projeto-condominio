@@ -8226,7 +8226,9 @@ class CondominioController {
         sabado,
         domingo,
         periodo_modo,
-        taxa_reserva
+        taxa_reserva,
+        max_res_unid_ano,
+        max_dias_permite_agendar
       } = req.body;
 
       const insert = await postgres.query(
@@ -8252,6 +8254,8 @@ class CondominioController {
           domingo,
           periodo_modo,
           taxa_reserva,
+          max_res_unid_ano,
+          max_dias_permite_agendar,
           created_at,
           updated_at
         ) VALUES (
@@ -8276,6 +8280,8 @@ class CondominioController {
           :domingo,
           :periodo_modo,
           :taxa_reserva,
+          :max_res_unid_ano,
+          :max_dias_permite_agendar,
           now(),
           now()
         )
@@ -8302,7 +8308,9 @@ class CondominioController {
             sabado: sabado ?? 0,
             domingo: domingo ?? 0,
             periodo_modo: periodo_modo || null,
-            taxa_reserva: taxa_reserva || null
+            taxa_reserva: taxa_reserva || null,
+            max_res_unid_ano: max_res_unid_ano ?? null,
+            max_dias_permite_agendar: max_dias_permite_agendar ?? null
           }
         }
       );
@@ -8353,7 +8361,9 @@ class CondominioController {
         sabado,
         domingo,
         periodo_modo,
-        taxa_reserva
+        taxa_reserva,
+        max_res_unid_ano,
+        max_dias_permite_agendar
       } = req.body;
 
       const update = await postgres.query(
@@ -8378,6 +8388,8 @@ class CondominioController {
                 domingo = :domingo,
                 periodo_modo = :periodo_modo,
                 taxa_reserva = :taxa_reserva,
+                max_res_unid_ano = :max_res_unid_ano,
+                max_dias_permite_agendar = :max_dias_permite_agendar,
                 updated_at = now()
           WHERE id = :id
             AND id_condominio = :id_condominio
@@ -8405,7 +8417,9 @@ class CondominioController {
             sabado: sabado ?? 0,
             domingo: domingo ?? 0,
             periodo_modo: periodo_modo || null,
-            taxa_reserva: taxa_reserva || null
+            taxa_reserva: taxa_reserva || null,
+            max_res_unid_ano: max_res_unid_ano ?? null,
+            max_dias_permite_agendar: max_dias_permite_agendar ?? null
           }
         }
       );

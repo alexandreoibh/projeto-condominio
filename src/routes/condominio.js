@@ -2276,7 +2276,15 @@ router.post(
 		body('taxa_reserva')
 			.optional({ nullable: true, checkFalsy: true })
 			.isFloat({ min: 0 })
-			.withMessage('Campo taxa_reserva deve ser numérico.')
+			.withMessage('Campo taxa_reserva deve ser numérico.'),
+		body('max_res_unid_ano')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 0 })
+			.withMessage('Campo max_res_unid_ano deve ser numérico inteiro.'),
+		body('max_dias_permite_agendar')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 0 })
+			.withMessage('Campo max_dias_permite_agendar deve ser numérico inteiro.')
 	],
 	validate,
 	controller.criarEspaco.bind(controller)
@@ -2348,7 +2356,15 @@ router.put(
 		body('taxa_reserva')
 			.optional({ nullable: true, checkFalsy: true })
 			.isFloat({ min: 0 })
-			.withMessage('Campo taxa_reserva deve ser numérico.')
+			.withMessage('Campo taxa_reserva deve ser numérico.'),
+		body('max_res_unid_ano')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 0 })
+			.withMessage('Campo max_res_unid_ano deve ser numérico inteiro.'),
+		body('max_dias_permite_agendar')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 0 })
+			.withMessage('Campo max_dias_permite_agendar deve ser numérico inteiro.')
 	],
 	validate,
 	controller.editarEspaco.bind(controller)
