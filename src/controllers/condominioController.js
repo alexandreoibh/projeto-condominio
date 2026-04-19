@@ -9158,7 +9158,7 @@ class CondominioController {
       }
 
       const espaco = await postgres.query(
-        `SELECT id, nome, periodo_modo, taxa_reserva
+        `SELECT id, nome, periodo_modo, taxa_reserva, max_res_unid_ano, max_dias_permite_agendar
            FROM "condominio-bh".tb_espaco
           WHERE id = :idEspaco
             AND id_condominio = :idCondominio
@@ -9254,6 +9254,50 @@ class CondominioController {
       const inicioDiaUtc = new Date(`${dataAgendamentoIso}T00:00:00.000Z`);
       const fimDiaUtc = new Date(`${dataAgendamentoIso}T00:00:00.000Z`);
       fimDiaUtc.setUTCDate(fimDiaUtc.getUTCDate() + 1);
+
+      // Regra: max_dias_permite_agendar — data da reserva não pode ultrapassar hoje + N dias
+      const maxDiasAgendar = this._toInt(espaco[0].max_dias_permite_agendar, null);
+      if (maxDiasAgendar !== null && maxDiasAgendar >= 0) {
+        const hoje = new Date();
+        hoje.setUTCHours(0, 0, 0, 0);
+        const dataLimite = new Date(hoje);
+        dataLimite.setUTCDate(dataLimite.getUTCDate() + maxDiasAgendar);
+        if (inicioDiaUtc > dataLimite) {
+          return res.status(400).json({
+            message: `Reserva permitida com no máximo ${maxDiasAgendar} dia(s) de antecedência.`
+          });
+        }
+      }
+
+      // Regra: max_res_unid_ano — limite de reservas ativas por usuário/ano neste espaço
+      // Conta status 1 (Em andamento), 2 (Em Reserva) e 3 (Reservado)
+      const maxResUnidAno = this._toInt(espaco[0].max_res_unid_ano, null);
+      if (maxResUnidAno !== null && maxResUnidAno >= 0) {
+        const anoAtual = new Date().getUTCFullYear();
+        const [{ total }] = await postgres.query(
+          `SELECT COUNT(*) AS total
+             FROM "condominio-bh".tb_espaco_agenda
+            WHERE id_espaco    = :id_espaco
+              AND id_usuario   = :id_usuario
+              AND id_condominio = :id_condominio
+              AND status IN (1, 2, 3)
+              AND EXTRACT(YEAR FROM data_agendamento AT TIME ZONE 'UTC') = :ano`,
+          {
+            replacements: {
+              id_espaco: idEspaco,
+              id_usuario: idUsuarioReserva,
+              id_condominio: idCondominioToken,
+              ano: anoAtual
+            },
+            type: QueryTypes.SELECT
+          }
+        );
+        if (Number(total) >= maxResUnidAno) {
+          return res.status(409).json({
+            message: `Limite de ${maxResUnidAno} reserva(s) por ano para este espaço atingido.`
+          });
+        }
+      }
 
       const reservasMesmoDia = await postgres.query(
         `SELECT id, status, periodo_manha, periodo_tarde, periodo_noite, modo_sala
