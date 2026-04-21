@@ -7,6 +7,7 @@ const { put } = require('@vercel/blob');
 const fetch = require('node-fetch');
 const { QueryTypes } = require('sequelize');
 const pushNotificationService = require('../service/pushNotificationService');
+const { despacharEmailReserva } = require('../service/emailDispatchService');
 const { buildAvatarProxyUrl, buildConsumoImagemProxyUrl, buildDashboardImagemProxyUrl, getBlobReadToken, resolveBlobUrl } = require('../helpers/avatarProxy');
 
 const INVITE_TOKEN_SECRET =
@@ -9132,7 +9133,7 @@ class CondominioController {
       }
 
       const usuarioReservaRows = await postgres.query(
-        `SELECT id
+        `SELECT id, nome, email, apartamento, bloco
            FROM "condominio-bh"."tb-usuarios"
           WHERE id = :id_usuario
             AND id_condominio = :id_condominio
@@ -9570,6 +9571,61 @@ class CondominioController {
         await transaction.rollback();
         throw transactionError;
       }
+
+      // Disparo assíncrono de email — não bloqueia a resposta
+      setImmediate(async () => {
+        try {
+          const [condominioRow] = await postgres.query(
+            `SELECT nome FROM "condominio-bh"."tb-condominios" WHERE id = :id LIMIT 1`,
+            { replacements: { id: idCondominioToken }, type: QueryTypes.SELECT }
+          );
+
+          const gestoresRows = await postgres.query(
+            `SELECT email FROM "condominio-bh"."tb-usuarios"
+              WHERE id_condominio = :id_condominio
+                AND COALESCE(tipo_perfil_id::text, '0') IN ('3', '4')
+                AND COALESCE(status, '') IN ('ativo', 'Ativo')
+                AND email IS NOT NULL AND email <> ''`,
+            { replacements: { id_condominio: idCondominioToken }, type: QueryTypes.SELECT }
+          );
+
+          const solicitante = usuarioReservaRows[0];
+          const emailsGestores = [...new Set(gestoresRows.map((r) => r.email).filter(Boolean))];
+
+          const periodos = [];
+          if (periodo_manha) periodos.push('Manhã');
+          if (periodo_tarde) periodos.push('Tarde');
+          if (periodo_noite) periodos.push('Noite');
+          const periodoTexto =
+            modoSalaSolicitado === 'dia_inteiro' ? 'Dia Inteiro' : periodos.join(', ') || '-';
+
+          const dataFormatada = dataAgendamentoIso
+            ? dataAgendamentoIso.split('-').reverse().join('/')
+            : '';
+
+          await despacharEmailReserva({
+            _id_agenda: agendaCriada.id,
+            template: 'reserva_solicitacao',
+            emails: emailsGestores,
+            email_copia: solicitante?.email || null,
+            solicitante: {
+              nome: solicitante?.nome || '',
+              email: solicitante?.email || '',
+              apartamento: solicitante?.apartamento || '',
+              bloco: solicitante?.bloco || ''
+            },
+            reserva: {
+              sala_nome: espaco[0]?.nome || '',
+              data: dataFormatada,
+              periodo: periodoTexto,
+              observacao: observacoes || '',
+              condominio_nome: condominioRow?.nome || ''
+            }
+          });
+        } catch (emailErr) {
+          console.error('[emailDispatch] Erro ao montar payload:', emailErr?.message);
+        }
+      });
 
       return res.status(201).json({
         message: 'Sala agendada com sucesso.',
