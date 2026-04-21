@@ -1911,6 +1911,31 @@ router.post(
 );
 
 router.post(
+	'/moradores/convites',
+	auth,
+	[
+		body('email')
+			.notEmpty().withMessage('Campo email é obrigatório.')
+			.isEmail().withMessage('Campo email inválido.')
+			.normalizeEmail(),
+		body('apartamento')
+			.notEmpty().withMessage('Campo apartamento é obrigatório.')
+			.isLength({ max: 20 }).withMessage('Campo apartamento deve ter no máximo 20 caracteres.'),
+		body('bloco')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 20 }).withMessage('Campo bloco deve ter no máximo 20 caracteres.'),
+		body('mensagem')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 500 }).withMessage('Campo mensagem deve ter no máximo 500 caracteres.'),
+		body('base_url')
+			.optional({ nullable: true, checkFalsy: true })
+			.isURL({ require_tld: false }).withMessage('Campo base_url inválido.')
+	],
+	validate,
+	controller.gerarConviteMorador.bind(controller)
+);
+
+router.post(
 	'/usuarios/cadastro-por-convite',
 	publicRegistrationKeyGuard,
 	[

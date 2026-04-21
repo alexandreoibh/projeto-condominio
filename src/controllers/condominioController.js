@@ -4563,6 +4563,50 @@ class CondominioController {
 
       await transaction.commit();
 
+      // Email aos moradores do apartamento quando encomenda é registrada
+      if (tipoRegistro === 3 && apartamentoFinal) {
+        setImmediate(async () => {
+          try {
+            const moradores = await postgres.query(
+              `SELECT tu.email
+                 FROM "condominio-bh"."tb-usuarios" tu
+                WHERE tu.id_condominio = :id_condominio
+                  AND COALESCE(tu.apartamento, '') = :apartamento
+                  AND (:bloco IS NULL OR COALESCE(tu.bloco, '') = :bloco)
+                  AND tu.email IS NOT NULL AND tu.email <> ''
+                  AND COALESCE(tu.status, '') IN ('ativo', 'Ativo')`,
+              {
+                replacements: { id_condominio: idCondominioFinal, apartamento: apartamentoFinal, bloco: blocoFinal },
+                type: QueryTypes.SELECT
+              }
+            );
+
+            const emailsMoradores = [...new Set(moradores.map((r) => r.email).filter(Boolean))];
+            if (emailsMoradores.length === 0) return;
+
+            const [condominioRow] = await postgres.query(
+              `SELECT nome FROM "condominio-bh"."tb-condominios" WHERE id = :id LIMIT 1`,
+              { replacements: { id: idCondominioFinal }, type: QueryTypes.SELECT }
+            );
+
+            await despacharEmailReserva({
+              _id_agenda: registroCriado?.id,
+              template: 'encomenda_notificacao',
+              emails: emailsMoradores,
+              encomenda: {
+                apartamento: apartamentoFinal || '',
+                bloco: blocoFinal || '',
+                empresa_entrega: empresaEntregaFinal || '',
+                titulo: String(registroCriado?.titulo || ''),
+                condominio_nome: condominioRow?.nome || ''
+              }
+            });
+          } catch (emailErr) {
+            console.error('[emailDispatch] Erro encomenda:', emailErr?.message);
+          }
+        });
+      }
+
       const arquivoImagem =
         req.files?.imagem?.[0] ||
         req.files?.foto?.[0] ||
@@ -7230,6 +7274,88 @@ class CondominioController {
     }
   }
 
+  async gerarConviteMorador(req, res) {
+    try {
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      if (!idCondominioToken) {
+        return res.status(403).json({ message: 'Token sem id_condominio para gerar convite.' });
+      }
+
+      const idPerfilToken = this._toInt(req.IdPerfil, null);
+      if (![1, 3, 4].includes(idPerfilToken)) {
+        return res.status(403).json({ message: 'Apenas administradores e síndicos podem gerar convites.' });
+      }
+
+      const emailConvidado = this._normalizarEmailOuNull(req.body.email);
+      if (!emailConvidado) {
+        return res.status(400).json({ message: 'Campo email é obrigatório para gerar convite.' });
+      }
+
+      const apartamento = req.body.apartamento ? String(req.body.apartamento).trim() : null;
+      const bloco = req.body.bloco ? String(req.body.bloco).trim() : null;
+      const mensagem = req.body.mensagem ? String(req.body.mensagem).trim() : null;
+      const baseUrl = req.body.base_url
+        ? String(req.body.base_url).trim()
+        : process.env.APP_URL || process.env.BASE_URL || '';
+
+      const condominioRows = await postgres.query(
+        `SELECT id, nome FROM "condominio-bh"."tb-condominios" WHERE id = :id LIMIT 1`,
+        { replacements: { id: idCondominioToken }, type: QueryTypes.SELECT }
+      );
+
+      if (!condominioRows || condominioRows.length === 0) {
+        return res.status(404).json({ message: 'Condomínio não encontrado.' });
+      }
+
+      const condominio = condominioRows[0];
+
+      const inviteToken = jwt.sign(
+        {
+          id_condominio: idCondominioToken,
+          email: emailConvidado,
+          apartamento: apartamento || null,
+          bloco: bloco || null,
+          flow: 'morador_invite'
+        },
+        INVITE_TOKEN_SECRET,
+        { expiresIn: '7d' }
+      );
+
+      setImmediate(async () => {
+        try {
+          await despacharEmailReserva({
+            _ref: `convite_${idCondominioToken}_${Date.now()}`,
+            template: 'morador_convite',
+            emails: [emailConvidado],
+            condominio_id: idCondominioToken,
+            condominio_nome: condominio.nome || '',
+            base_url: baseUrl,
+            token: inviteToken,
+            ...(mensagem ? { mensagem } : {})
+          });
+        } catch (emailErr) {
+          console.error('[emailDispatch] Erro convite morador:', emailErr?.message);
+        }
+      });
+
+      return res.status(201).json({
+        message: 'Convite gerado e e-mail de convite enviado.',
+        data: {
+          email: emailConvidado,
+          apartamento,
+          bloco,
+          invite_token: inviteToken,
+          expires_in: '7d'
+        }
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao gerar convite de morador.',
+        detail: error.message
+      });
+    }
+  }
+
   async cadastrarUsuarioPorConvite(req, res) {
     try {
       const inviteToken = this._normalizarTextoOuNull(req.body.invite_token ?? req.body.token);
@@ -7579,15 +7705,33 @@ class CondominioController {
         { expiresIn: '24h' }
       );
 
+      const nomeCompleto = this._normalizarNomeCapitalizado(`${usuario.nome || ''} ${usuario.sobrenome || ''}`.trim()) || null;
+      const emailUsuario = this._normalizarEmailOuNull(usuario.email);
+      const nomeCondominio = this._normalizarTextoOuNull(usuario.nome_condominio);
+
+      setImmediate(async () => {
+        try {
+          await despacharEmailReserva({
+            _ref: `recovery_${usuario.id}`,
+            template: 'auth_recovery_token',
+            email: emailUsuario || '',
+            nome: nomeCompleto || '',
+            token: inviteToken
+          });
+        } catch (emailErr) {
+          console.error('[emailDispatch] Erro recovery senha:', emailErr?.message);
+        }
+      });
+
       return res.status(200).json({
         success: true,
         message: 'Dados validos.',
         data: {
           id_usuario: this._toInt(usuario.id, null),
           id_condominio: this._toInt(usuario.id_condominio, null),
-          nome: this._normalizarNomeCapitalizado(`${usuario.nome || ''} ${usuario.sobrenome || ''}`.trim()) || null,
-          email: this._normalizarEmailOuNull(usuario.email),
-          nome_condominio: this._normalizarTextoOuNull(usuario.nome_condominio)
+          nome: nomeCompleto,
+          email: emailUsuario,
+          nome_condominio: nomeCondominio
         },
         invite_token: inviteToken,
         token: inviteToken,
@@ -9921,6 +10065,53 @@ class CondominioController {
       } catch (transactionError) {
         await transaction.rollback();
         throw transactionError;
+      }
+
+      // Email ao morador somente para aprovação (3), reprovação (4) ou cancelamento (5)
+      if ([3, 4, 5].includes(idStatus)) {
+        setImmediate(async () => {
+          try {
+            const [moradorReserva] = await postgres.query(
+              `SELECT tu.nome, tu.email, tu.apartamento, tu.bloco,
+                      te.nome AS espaco_nome,
+                      tc.nome AS condominio_nome,
+                      ea.data_agendamento, ea.tratamento_observacao
+                 FROM "condominio-bh".tb_espaco_agenda ea
+                 JOIN "condominio-bh"."tb-usuarios" tu ON tu.id = ea.id_usuario
+                 JOIN "condominio-bh".tb_espaco te ON te.id = ea.id_espaco
+                 JOIN "condominio-bh"."tb-condominios" tc ON tc.id::text = ea.id_condominio::text
+                WHERE ea.id = :id_agenda LIMIT 1`,
+              { replacements: { id_agenda: idAgenda }, type: QueryTypes.SELECT }
+            );
+            if (!moradorReserva?.email) return;
+
+            const statusTexto = idStatus === 3 ? 'aprovado' : idStatus === 4 ? 'reprovado' : 'cancelado';
+            const dataFormatada = moradorReserva.data_agendamento
+              ? new Date(moradorReserva.data_agendamento).toISOString().slice(0, 10).split('-').reverse().join('/')
+              : '';
+
+            await despacharEmailReserva({
+              _id_agenda: idAgenda,
+              template: 'reserva_status',
+              emails: [moradorReserva.email],
+              solicitante: {
+                nome: moradorReserva.nome || '',
+                email: moradorReserva.email || '',
+                apartamento: moradorReserva.apartamento || '',
+                bloco: moradorReserva.bloco || ''
+              },
+              reserva: {
+                sala_nome: moradorReserva.espaco_nome || '',
+                data: dataFormatada,
+                status: statusTexto,
+                justificativa: moradorReserva.tratamento_observacao || observacao || '',
+                condominio_nome: moradorReserva.condominio_nome || ''
+              }
+            });
+          } catch (emailErr) {
+            console.error('[emailDispatch] Erro status reserva:', emailErr?.message);
+          }
+        });
       }
 
       const agendaAtualizada = await postgres.query(

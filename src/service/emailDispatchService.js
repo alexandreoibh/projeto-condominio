@@ -10,6 +10,7 @@ async function _post(payload) {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
+      'Authorization': `Bearer ${DISPATCH_KEY}`,
       'X-Public-Email-Key': DISPATCH_KEY
     },
     body: JSON.stringify(payload),
@@ -17,11 +18,14 @@ async function _post(payload) {
   });
 }
 
-async function despacharEmailReserva(payload) {
+async function despacharEmail(payload) {
   if (!DISPATCH_URL || !DISPATCH_KEY) {
-    console.warn('[emailDispatch] EMAIL_DISPATCH_URL ou PUBLIC_EMAIL_DISPATCH_KEY não configurados — email não enviado.');
+    console.warn('[emailDispatch] EMAIL_DISPATCH_URL ou PUBLIC_EMAIL_DISPATCH_KEY não configurados.');
     return;
   }
+
+  const ref = payload._id_agenda ?? payload._ref ?? '?';
+  const template = payload.template ?? '?';
 
   let lastError;
 
@@ -33,13 +37,13 @@ async function despacharEmailReserva(payload) {
       try { data = JSON.parse(texto); } catch {}
 
       if (resp.ok && data?.success) {
-        console.log(`[emailDispatch] Enviado id_agenda=${payload._id_agenda} status=${resp.status}`);
+        console.log(`[emailDispatch] OK template=${template} ref=${ref} status=${resp.status} recipients=${data?.recipient_count ?? '?'}`);
         return;
       }
 
       // Erro 4xx: não faz retry
       if (resp.status >= 400 && resp.status < 500) {
-        console.error(`[emailDispatch] Falha permanente id_agenda=${payload._id_agenda} status=${resp.status} msg=${data?.message}`);
+        console.error(`[emailDispatch] Falha permanente template=${template} ref=${ref} status=${resp.status} msg=${data?.message}`);
         return;
       }
 
@@ -50,7 +54,10 @@ async function despacharEmailReserva(payload) {
     }
   }
 
-  console.error(`[emailDispatch] Falha após ${MAX_RETRIES} tentativas id_agenda=${payload._id_agenda}:`, lastError?.message);
+  console.error(`[emailDispatch] Falha após ${MAX_RETRIES} tentativas template=${template} ref=${ref}:`, lastError?.message);
 }
 
-module.exports = { despacharEmailReserva };
+// Alias mantido por compatibilidade com chamadas existentes
+const despacharEmailReserva = despacharEmail;
+
+module.exports = { despacharEmail, despacharEmailReserva };
