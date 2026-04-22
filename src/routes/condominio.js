@@ -1911,6 +1911,19 @@ router.post(
 );
 
 router.post(
+	'/auth-recovery-verify-code',
+	[
+		body('email').notEmpty().isEmail().withMessage('Campo email inválido.').normalizeEmail(),
+		body('code')
+			.notEmpty().withMessage('Campo code é obrigatório.')
+			.isLength({ min: 6, max: 6 }).withMessage('Campo code deve ter exatamente 6 dígitos.')
+			.isNumeric().withMessage('Campo code deve ser numérico.')
+	],
+	validate,
+	controller.authRecoveryVerifyOtp.bind(controller)
+);
+
+router.post(
 	'/moradores/convites',
 	auth,
 	[

@@ -22,6 +22,8 @@ const INVITE_TOKEN_MAX_USES = 100;
 
 const publicRegistrationAttempts = new Map();
 const usedInviteTokens = new Map();
+const recoveryOtpStore = new Map(); // key: email, value: { code, expiresAt }
+const RECOVERY_OTP_TTL_MS = 10 * 60 * 1000; // 10 minutos
 
 class CondominioController {
   _toInt(value, fallback) {
@@ -7705,8 +7707,24 @@ class CondominioController {
         { expiresIn: '24h' }
       );
 
-      const nomeCompleto = this._normalizarNomeCapitalizado(`${usuario.nome || ''} ${usuario.sobrenome || ''}`.trim()) || null;
+      // Código de 6 dígitos para exibição no e-mail — válido por 10 minutos
+      const otpCode = String(Math.floor(100000 + Math.random() * 900000));
       const emailUsuario = this._normalizarEmailOuNull(usuario.email);
+      if (emailUsuario) {
+        // Limpa OTPs expirados deste email antes de gravar o novo
+        const existing = recoveryOtpStore.get(emailUsuario);
+        if (!existing || Date.now() > existing.expiresAt) {
+          recoveryOtpStore.delete(emailUsuario);
+        }
+        recoveryOtpStore.set(emailUsuario, {
+          code: otpCode,
+          id_usuario: this._toInt(usuario.id, null),
+          invite_token: inviteToken,
+          expiresAt: Date.now() + RECOVERY_OTP_TTL_MS
+        });
+      }
+
+      const nomeCompleto = this._normalizarNomeCapitalizado(`${usuario.nome || ''} ${usuario.sobrenome || ''}`.trim()) || null;
       const nomeCondominio = this._normalizarTextoOuNull(usuario.nome_condominio);
 
       setImmediate(async () => {
@@ -7716,7 +7734,7 @@ class CondominioController {
             template: 'auth_recovery_token',
             email: emailUsuario || '',
             nome: nomeCompleto || '',
-            token: inviteToken
+            token: otpCode
           });
         } catch (emailErr) {
           console.error('[emailDispatch] Erro recovery senha:', emailErr?.message);
@@ -7744,6 +7762,45 @@ class CondominioController {
         message: 'Falha ao validar dados para recuperacao de senha.',
         detail: error.message
       });
+    }
+  }
+
+  async authRecoveryVerifyOtp(req, res) {
+    try {
+      const email = this._normalizarEmailOuNull(req.body?.email);
+      const code = req.body?.code !== undefined ? String(req.body.code).trim() : null;
+
+      if (!email || !code) {
+        return res.status(400).json({ success: false, message: 'Campos email e code são obrigatórios.' });
+      }
+
+      const entry = recoveryOtpStore.get(email);
+
+      if (!entry) {
+        return res.status(422).json({ success: false, message: 'Código inválido ou expirado.' });
+      }
+
+      if (Date.now() > entry.expiresAt) {
+        recoveryOtpStore.delete(email);
+        return res.status(422).json({ success: false, message: 'Código expirado. Solicite um novo.' });
+      }
+
+      if (entry.code !== code) {
+        return res.status(422).json({ success: false, message: 'Código incorreto.' });
+      }
+
+      recoveryOtpStore.delete(email);
+
+      return res.status(200).json({
+        success: true,
+        message: 'Código validado.',
+        invite_token: entry.invite_token,
+        token: entry.invite_token,
+        token_type: 'invite_token',
+        expires_in: '24h'
+      });
+    } catch (error) {
+      return res.status(500).json({ success: false, message: 'Falha ao verificar código.', detail: error.message });
     }
   }
 
@@ -9759,6 +9816,7 @@ class CondominioController {
               bloco: solicitante?.bloco || ''
             },
             reserva: {
+              id: String(agendaCriada.id),
               sala_nome: espaco[0]?.nome || '',
               data: dataFormatada,
               periodo: periodoTexto,
@@ -10085,7 +10143,7 @@ class CondominioController {
             );
             if (!moradorReserva?.email) return;
 
-            const statusTexto = idStatus === 3 ? 'aprovado' : idStatus === 4 ? 'reprovado' : 'cancelado';
+            const statusTexto = idStatus === 3 ? 'Aprovada' : idStatus === 4 ? 'Reprovada' : 'Cancelada';
             const dataFormatada = moradorReserva.data_agendamento
               ? new Date(moradorReserva.data_agendamento).toISOString().slice(0, 10).split('-').reverse().join('/')
               : '';
