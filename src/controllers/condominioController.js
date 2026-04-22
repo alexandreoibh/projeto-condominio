@@ -7,7 +7,7 @@ const { put } = require('@vercel/blob');
 const fetch = require('node-fetch');
 const { QueryTypes } = require('sequelize');
 const pushNotificationService = require('../service/pushNotificationService');
-const { despacharEmailReserva } = require('../service/emailDispatchService');
+const { despacharEmail, despacharEmailReserva } = require('../service/emailDispatchService');
 const { buildAvatarProxyUrl, buildConsumoImagemProxyUrl, buildDashboardImagemProxyUrl, getBlobReadToken, resolveBlobUrl } = require('../helpers/avatarProxy');
 
 const INVITE_TOKEN_SECRET =
@@ -7801,6 +7801,213 @@ class CondominioController {
       });
     } catch (error) {
       return res.status(500).json({ success: false, message: 'Falha ao verificar código.', detail: error.message });
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Recuperação de senha — fluxo completo para o APP React
+  // ---------------------------------------------------------------------------
+
+  async recoveryRequest(req, res) {
+    const ip = req.ip || req.headers['x-forwarded-for'] || 'unknown';
+    try {
+      const loginRaw = String(req.body.login || '').trim();
+      const loginEmail = loginRaw.toLowerCase();
+      const loginCpf = loginRaw.replace(/\D/g, '');
+
+      // Rate limit: 5 requisições por IP a cada 15 min
+      const rateLimitKey = `recovery_req:${ip}`;
+      const RATE_WINDOW = 15 * 60 * 1000;
+      const RATE_MAX = 5;
+      const rateEntry = recoveryOtpStore.get(rateLimitKey);
+      const now = Date.now();
+      if (rateEntry && rateEntry._rateLimit) {
+        if (now - rateEntry.windowStart < RATE_WINDOW && rateEntry.count >= RATE_MAX) {
+          return res.status(429).json({ success: false, code: 'RATE_LIMIT', message: 'Muitas tentativas. Aguarde 15 minutos.' });
+        }
+        if (now - rateEntry.windowStart >= RATE_WINDOW) {
+          recoveryOtpStore.delete(rateLimitKey);
+        }
+      }
+      const newRate = rateEntry && rateEntry._rateLimit && now - rateEntry.windowStart < RATE_WINDOW
+        ? { _rateLimit: true, count: rateEntry.count + 1, windowStart: rateEntry.windowStart }
+        : { _rateLimit: true, count: 1, windowStart: now };
+      recoveryOtpStore.set(rateLimitKey, newRate);
+
+      const [usuario] = await postgres.query(
+        `SELECT tu.id, tu.id_condominio, tu.nome, tu.sobrenome, tu.email, tu.status,
+                tc.nome AS nome_condominio, tc.ativo AS condominio_ativo
+           FROM "condominio-bh"."tb-usuarios" tu
+           LEFT JOIN "condominio-bh"."tb-condominios" tc ON tc.id::text = tu.id_condominio::text
+          WHERE (lower(tu.email) = :email OR tu.cpf = :cpf)
+          ORDER BY tu.id DESC LIMIT 1`,
+        { replacements: { email: loginEmail, cpf: loginCpf }, type: QueryTypes.SELECT }
+      );
+
+      // Resposta genérica para não vazar se o usuário existe
+      if (!usuario || !['ativo'].includes(String(usuario.status || '').toLowerCase()) || !usuario.condominio_ativo) {
+        return res.status(200).json({ success: true, message: 'Se o e-mail estiver cadastrado, você receberá o código.' });
+      }
+
+      const otpCode = String(Math.floor(100000 + Math.random() * 900000));
+      const codeHash = await bcrypt.hash(otpCode, 10);
+      const expiresAt = new Date(Date.now() + RECOVERY_OTP_TTL_MS);
+      const idUsuario = this._toInt(usuario.id, null);
+      const idCondominio = this._toInt(usuario.id_condominio, null);
+
+      const inviteToken = jwt.sign(
+        { id_usuario: idUsuario, id_condominio: idCondominio, email: this._normalizarEmailOuNull(usuario.email), flow: 'password_recovery', jti: crypto.randomBytes(16).toString('hex') },
+        INVITE_TOKEN_SECRET,
+        { expiresIn: '24h' }
+      );
+
+      // Remove tokens anteriores pendentes e insere o novo
+      await postgres.query(
+        `DELETE FROM "condominio-bh".tb_recovery_tokens WHERE id_usuario = :id_usuario AND consumed_at IS NULL`,
+        { replacements: { id_usuario: idUsuario }, type: QueryTypes.DELETE }
+      );
+
+      await postgres.query(
+        `INSERT INTO "condominio-bh".tb_recovery_tokens
+           (id_usuario, id_condominio, code_hash, invite_token, expires_at, attempts, created_at, updated_at)
+         VALUES (:id_usuario, :id_condominio, :code_hash, :invite_token, :expires_at, 0, NOW(), NOW())`,
+        { replacements: { id_usuario: idUsuario, id_condominio: idCondominio, code_hash: codeHash, invite_token: inviteToken, expires_at: expiresAt }, type: QueryTypes.INSERT }
+      );
+
+      const emailUsuario = this._normalizarEmailOuNull(usuario.email);
+      const nomeCompleto = this._normalizarNomeCapitalizado(`${usuario.nome || ''} ${usuario.sobrenome || ''}`.trim()) || null;
+
+      setImmediate(async () => {
+        try {
+          await despacharEmail({
+            _ref: `recovery_${idUsuario}`,
+            template: 'auth_recovery_token',
+            email: emailUsuario || '',
+            nome: nomeCompleto || '',
+            token: otpCode
+          });
+        } catch (emailErr) {
+          console.error('[recovery] Erro ao enviar e-mail:', emailErr?.message);
+        }
+      });
+
+      return res.status(200).json({
+        success: true,
+        message: 'Se o e-mail estiver cadastrado, você receberá o código.',
+        user_id: idUsuario,
+        expires_at: expiresAt.toISOString()
+      });
+    } catch (error) {
+      console.error('[recovery/request] Erro:', error?.message);
+      return res.status(500).json({ success: false, code: 'INTERNAL_ERROR', message: 'Erro interno ao processar recuperação.' });
+    }
+  }
+
+  async recoveryVerify(req, res) {
+    try {
+      const idUsuario = this._toInt(req.body.user_id, null);
+      const code = String(req.body.code || '').trim();
+      const MAX_ATTEMPTS = 5;
+
+      const [record] = await postgres.query(
+        `SELECT id, code_hash, invite_token, expires_at, attempts, consumed_at
+           FROM "condominio-bh".tb_recovery_tokens
+          WHERE id_usuario = :id_usuario
+            AND consumed_at IS NULL
+          ORDER BY created_at DESC LIMIT 1`,
+        { replacements: { id_usuario: idUsuario }, type: QueryTypes.SELECT }
+      );
+
+      if (!record) {
+        return res.status(401).json({ success: false, code: 'INVALID_CODE', message: 'Código inválido ou expirado.' });
+      }
+
+      if (new Date(record.expires_at) < new Date()) {
+        return res.status(401).json({ success: false, code: 'CODE_EXPIRED', message: 'Código expirado. Solicite um novo.' });
+      }
+
+      if (record.attempts >= MAX_ATTEMPTS) {
+        return res.status(429).json({ success: false, code: 'MAX_ATTEMPTS', message: 'Limite de tentativas atingido. Solicite um novo código.' });
+      }
+
+      // Incrementa tentativas antes de validar (evita timing attack)
+      await postgres.query(
+        `UPDATE "condominio-bh".tb_recovery_tokens SET attempts = attempts + 1, updated_at = NOW() WHERE id = :id`,
+        { replacements: { id: record.id }, type: QueryTypes.UPDATE }
+      );
+
+      const codeValido = await bcrypt.compare(code, record.code_hash);
+      if (!codeValido) {
+        return res.status(401).json({ success: false, code: 'INVALID_CODE', message: 'Código incorreto.' });
+      }
+
+      // Marca como consumido
+      await postgres.query(
+        `UPDATE "condominio-bh".tb_recovery_tokens SET consumed_at = NOW(), updated_at = NOW() WHERE id = :id`,
+        { replacements: { id: record.id }, type: QueryTypes.UPDATE }
+      );
+
+      return res.status(200).json({
+        success: true,
+        message: 'Código validado.',
+        invite_token: record.invite_token,
+        token: record.invite_token,
+        token_type: 'invite_token',
+        expires_in: '24h'
+      });
+    } catch (error) {
+      console.error('[recovery/verify] Erro:', error?.message);
+      return res.status(500).json({ success: false, code: 'INTERNAL_ERROR', message: 'Erro interno ao verificar código.' });
+    }
+  }
+
+  async recoveryReset(req, res) {
+    try {
+      const idUsuario = this._toInt(req.body.user_id, null);
+      const inviteTokenInput = String(req.body.invite_token || '').trim();
+      const novaSenha = String(req.body.password || '').trim();
+
+      let payload;
+      try {
+        payload = jwt.verify(inviteTokenInput, INVITE_TOKEN_SECRET);
+      } catch {
+        return res.status(401).json({ success: false, code: 'INVALID_TOKEN', message: 'Token inválido ou expirado.' });
+      }
+
+      if (payload.flow !== 'password_recovery') {
+        return res.status(403).json({ success: false, code: 'FORBIDDEN', message: 'Token não autorizado para esta operação.' });
+      }
+
+      if (this._toInt(payload.id_usuario, null) !== idUsuario) {
+        return res.status(403).json({ success: false, code: 'FORBIDDEN', message: 'Token não pertence a este usuário.' });
+      }
+
+      const senhaHash = await bcrypt.hash(novaSenha, 10);
+
+      const updated = await postgres.query(
+        `UPDATE "condominio-bh"."tb-usuarios"
+            SET senha_hash = :senha_hash, updated_at = NOW()
+          WHERE id = :id
+          RETURNING id`,
+        { replacements: { id: idUsuario, senha_hash: senhaHash }, type: QueryTypes.UPDATE }
+      );
+
+      if (!updated?.[0]?.length) {
+        return res.status(404).json({ success: false, code: 'NOT_FOUND', message: 'Usuário não encontrado.' });
+      }
+
+      // Invalida todos os tokens de recovery pendentes deste usuário
+      await postgres.query(
+        `DELETE FROM "condominio-bh".tb_recovery_tokens WHERE id_usuario = :id_usuario`,
+        { replacements: { id_usuario: idUsuario }, type: QueryTypes.DELETE }
+      );
+
+      console.log(`[recovery/reset] Senha redefinida para id_usuario=${idUsuario}`);
+
+      return res.status(200).json({ success: true, message: 'Senha redefinida com sucesso.' });
+    } catch (error) {
+      console.error('[recovery/reset] Erro:', error?.message);
+      return res.status(500).json({ success: false, code: 'INTERNAL_ERROR', message: 'Erro interno ao redefinir senha.' });
     }
   }
 
