@@ -1,4 +1,4 @@
-const express = require('express');
+﻿const express = require('express');
 const bodyparser = require('body-parser');
 const cors = require("cors");
 const app = express();
@@ -18,6 +18,7 @@ const loginRoute = require('./routes/login');
 const condominioRoute = require('./routes/condominio');
 const usuarioRoute = require('./routes/usuario');
 const recoveryRoute = require('./routes/recovery');
+const reuniaoRoute = require('./routes/reuniao');
 // ******************Gestor fim********************************************* 
 
 
@@ -34,6 +35,7 @@ app.use('/api/login', loginRoute);
 app.use('/api/condominio', condominioRoute);
 app.use('/api/usuario', usuarioRoute);
 app.use('/api/auth/recovery', recoveryRoute);
+app.use('/api/reuniao', reuniaoRoute);
 
 app.use('/login', loginRoute);
 app.use('/service/back-cond.php', loginRoute);

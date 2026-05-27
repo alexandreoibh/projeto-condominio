@@ -7453,7 +7453,9 @@ class CondominioController {
         return res.status(422).json({ message: 'Dados inválidos para cadastro por convite.' });
       }
 
-      if (!blocoToken && blocoBody && qtdeBlocosToken) {
+      if (!blocoToken && blocoBody && qtdeBlocosToken && qtdeBlocosToken > 1) {
+        // Quando há mais de 1 bloco, valida que o valor enviado é um número inteiro no intervalo válido.
+        // Quando qtde_blocos === 1, qualquer valor de bloco é aceito (label como "Torre 1" é válido).
         const blocoBodyInt = this._toInt(blocoBody, null);
         if (!blocoBodyInt || blocoBodyInt < 1 || blocoBodyInt > qtdeBlocosToken) {
           return res.status(422).json({ message: 'Dados inválidos para cadastro por convite.' });
@@ -7467,7 +7469,11 @@ class CondominioController {
       }
 
       const apartamentoCadastro = apartamentoBody || apartamentoToken || null;
-      const blocoCadastro = blocoBody || blocoToken || (qtdeBlocosToken === 1 ? '1' : null);
+      // Quando qtde_blocos === 1 normaliza sempre para '1', independente do label enviado ("Torre 1", "Torre", etc.)
+      const blocoCadastro =
+        blocoToken ||
+        (qtdeBlocosToken === 1 ? '1' : null) ||
+        (this._toInt(blocoBody, null) !== null ? String(this._toInt(blocoBody, null)) : null);
 
       if (!apartamentoCadastro || !blocoCadastro) {
         return res.status(422).json({
