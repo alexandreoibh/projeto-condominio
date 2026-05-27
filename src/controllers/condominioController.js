@@ -7534,7 +7534,7 @@ class CondominioController {
 
       if (duplicado && duplicado.length > 0) {
         return res.status(422).json({
-          message: 'Dados inválidos para cadastro por convite.'
+          message: 'Cadastro não concluído: um dos dados informados já está associado a uma conta existente.'
         });
       }
 
