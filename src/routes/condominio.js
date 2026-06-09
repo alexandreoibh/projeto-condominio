@@ -2323,10 +2323,10 @@ router.post(
 			.optional({ nullable: true, checkFalsy: true })
 			.isInt({ min: 0 })
 			.withMessage('Campo max_dias_permite_agendar deve ser numérico inteiro.'),
-		body('sala_bloqueia_outras')
+		body('bloqueia_outras_salas')
 			.optional({ nullable: true, checkFalsy: false })
 			.isInt({ min: 0, max: 1 })
-			.withMessage('Campo sala_bloqueia_outras deve ser 0 ou 1.')
+			.withMessage('Campo bloqueia_outras_salas deve ser 0 ou 1.')
 	],
 	validate,
 	controller.criarEspaco.bind(controller)
@@ -2407,10 +2407,10 @@ router.put(
 			.optional({ nullable: true, checkFalsy: true })
 			.isInt({ min: 0 })
 			.withMessage('Campo max_dias_permite_agendar deve ser numérico inteiro.'),
-		body('sala_bloqueia_outras')
+		body('bloqueia_outras_salas')
 			.optional({ nullable: true, checkFalsy: false })
 			.isInt({ min: 0, max: 1 })
-			.withMessage('Campo sala_bloqueia_outras deve ser 0 ou 1.')
+			.withMessage('Campo bloqueia_outras_salas deve ser 0 ou 1.')
 	],
 	validate,
 	controller.editarEspaco.bind(controller)

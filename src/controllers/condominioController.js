@@ -8644,7 +8644,7 @@ class CondominioController {
         taxa_reserva,
         max_res_unid_ano,
         max_dias_permite_agendar,
-        sala_bloqueia_outras
+        bloqueia_outras_salas
       } = req.body;
 
       const insert = await postgres.query(
@@ -8729,7 +8729,7 @@ class CondominioController {
             taxa_reserva: taxa_reserva || null,
             max_res_unid_ano: max_res_unid_ano ?? null,
             max_dias_permite_agendar: max_dias_permite_agendar ?? null,
-            sala_bloqueia_outras: sala_bloqueia_outras ?? 0
+            sala_bloqueia_outras: bloqueia_outras_salas ?? 0
           }
         }
       );
@@ -8783,7 +8783,7 @@ class CondominioController {
         taxa_reserva,
         max_res_unid_ano,
         max_dias_permite_agendar,
-        sala_bloqueia_outras
+        bloqueia_outras_salas
       } = req.body;
 
       const update = await postgres.query(
@@ -8841,7 +8841,7 @@ class CondominioController {
             taxa_reserva: taxa_reserva || null,
             max_res_unid_ano: max_res_unid_ano ?? null,
             max_dias_permite_agendar: max_dias_permite_agendar ?? null,
-            sala_bloqueia_outras: sala_bloqueia_outros ?? 0
+            sala_bloqueia_outras: bloqueia_outras_salas ?? 0
           }
         }
       );
