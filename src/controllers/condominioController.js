@@ -9152,6 +9152,7 @@ class CondominioController {
               c.qtde_blocos,
             e.nome AS espaco_nome,
             e.localizacao AS espaco_localizacao,
+            e.sala_bloqueia_outras AS bloqueia_outras_salas,
               COALESCE(ea.taxa_reserva, e.taxa_reserva) AS taxa_reserva,
             tt.descricao_status 
           FROM "condominio-bh".tb_espaco_agenda ea
@@ -9580,7 +9581,7 @@ class CondominioController {
       }
 
       const espaco = await postgres.query(
-        `SELECT id, nome, periodo_modo, taxa_reserva, max_res_unid_ano, max_dias_permite_agendar
+        `SELECT id, nome, periodo_modo, taxa_reserva, max_res_unid_ano, max_dias_permite_agendar, sala_bloqueia_outras
            FROM "condominio-bh".tb_espaco
           WHERE id = :idEspaco
             AND id_condominio = :idCondominio
@@ -9719,6 +9720,57 @@ class CondominioController {
             message: `Limite de ${maxResUnidAno} reserva(s) por ano para este espaço atingido.`
           });
         }
+      }
+
+      const espacoBloqueador = this._toInt(espaco[0].sala_bloqueia_outras, 0) === 1;
+
+      if (espacoBloqueador) {
+        const [{ total: totalReservasDia }] = await postgres.query(
+          `SELECT COUNT(*) AS total
+             FROM "condominio-bh".tb_espaco_agenda
+            WHERE id_condominio = :id_condominio
+              AND data_agendamento >= :data_agendamento_inicio
+              AND data_agendamento <  :data_agendamento_fim
+              AND status IN (1, 2, 3)`,
+          {
+            replacements: {
+              id_condominio: idCondominioToken,
+              data_agendamento_inicio: inicioDiaUtc,
+              data_agendamento_fim: fimDiaUtc
+            },
+            type: QueryTypes.SELECT
+          }
+        );
+        if (Number(totalReservasDia) > 0) {
+          return res.status(409).json({
+            message: 'Esta sala bloqueia todas as outras. Já existe reserva nesta data.'
+          });
+        }
+      }
+
+      const bloqueadorJaReservado = await postgres.query(
+        `SELECT ea.id
+           FROM "condominio-bh".tb_espaco_agenda ea
+           JOIN "condominio-bh".tb_espaco e ON e.id = ea.id_espaco
+          WHERE ea.id_condominio = :id_condominio
+            AND ea.data_agendamento >= :data_agendamento_inicio
+            AND ea.data_agendamento <  :data_agendamento_fim
+            AND ea.status IN (1, 2, 3)
+            AND e.sala_bloqueia_outras = 1
+          LIMIT 1`,
+        {
+          replacements: {
+            id_condominio: idCondominioToken,
+            data_agendamento_inicio: inicioDiaUtc,
+            data_agendamento_fim: fimDiaUtc
+          },
+          type: QueryTypes.SELECT
+        }
+      );
+      if (bloqueadorJaReservado.length > 0) {
+        return res.status(409).json({
+          message: 'Existe uma sala exclusiva já reservada para esta data. Nenhuma outra sala pode ser reservada.'
+        });
       }
 
       const reservasMesmoDia = await postgres.query(
