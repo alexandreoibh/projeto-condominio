@@ -6,6 +6,7 @@ const { QueryTypes } = require("sequelize");
 const postgres = require("../database/postgres");
 const { buildAvatarProxyUrl } = require("../helpers/avatarProxy");
 
+
 const JWT_SECRET = process.env.JWT_SECRET || "dev_jwt_secret_change_me";
 
 class Login {
