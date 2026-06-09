@@ -8643,7 +8643,8 @@ class CondominioController {
         periodo_modo,
         taxa_reserva,
         max_res_unid_ano,
-        max_dias_permite_agendar
+        max_dias_permite_agendar,
+        sala_bloqueia_outras
       } = req.body;
 
       const insert = await postgres.query(
@@ -8671,6 +8672,7 @@ class CondominioController {
           taxa_reserva,
           max_res_unid_ano,
           max_dias_permite_agendar,
+          sala_bloqueia_outras,
           created_at,
           updated_at
         ) VALUES (
@@ -8697,6 +8699,7 @@ class CondominioController {
           :taxa_reserva,
           :max_res_unid_ano,
           :max_dias_permite_agendar,
+          :sala_bloqueia_outras,
           now(),
           now()
         )
@@ -8725,7 +8728,8 @@ class CondominioController {
             periodo_modo: periodo_modo || null,
             taxa_reserva: taxa_reserva || null,
             max_res_unid_ano: max_res_unid_ano ?? null,
-            max_dias_permite_agendar: max_dias_permite_agendar ?? null
+            max_dias_permite_agendar: max_dias_permite_agendar ?? null,
+            sala_bloqueia_outras: sala_bloqueia_outras ?? 0
           }
         }
       );
@@ -8778,7 +8782,8 @@ class CondominioController {
         periodo_modo,
         taxa_reserva,
         max_res_unid_ano,
-        max_dias_permite_agendar
+        max_dias_permite_agendar,
+        sala_bloqueia_outras
       } = req.body;
 
       const update = await postgres.query(
@@ -8805,6 +8810,7 @@ class CondominioController {
                 taxa_reserva = :taxa_reserva,
                 max_res_unid_ano = :max_res_unid_ano,
                 max_dias_permite_agendar = :max_dias_permite_agendar,
+                sala_bloqueia_outras = :sala_bloqueia_outras,
                 updated_at = now()
           WHERE id = :id
             AND id_condominio = :id_condominio
@@ -8834,7 +8840,8 @@ class CondominioController {
             periodo_modo: periodo_modo || null,
             taxa_reserva: taxa_reserva || null,
             max_res_unid_ano: max_res_unid_ano ?? null,
-            max_dias_permite_agendar: max_dias_permite_agendar ?? null
+            max_dias_permite_agendar: max_dias_permite_agendar ?? null,
+            sala_bloqueia_outras: sala_bloqueia_outros ?? 0
           }
         }
       );
