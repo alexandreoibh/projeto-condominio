@@ -251,7 +251,8 @@ router.post(
   '/balancete/publicar',
   auth,
   [
-    body('periodo').notEmpty().withMessage('periodo é obrigatório.').bail().matches(/^\d{4}-\d{2}$/).withMessage('periodo deve estar no formato YYYY-MM.'),
+    body('periodo').optional({ nullable: true, checkFalsy: true }).matches(/^\d{4}-\d{2}(-\d{2})?$/).withMessage('periodo deve estar no formato YYYY-MM ou YYYY-MM-DD.'),
+    body('competencia').optional({ nullable: true, checkFalsy: true }).matches(/^\d{4}-\d{2}(-\d{2})?$/).withMessage('competencia deve estar no formato YYYY-MM ou YYYY-MM-DD.'),
   ],
   validate,
   controller.publicarBalancete.bind(controller)

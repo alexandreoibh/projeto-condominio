@@ -811,10 +811,12 @@ class FinanceiroController {
       // Moradores só veem balancetes publicados
       if (!this._isGestor(req)) {
         const bal = await postgres.query(
-          `SELECT * FROM "condominio-bh".tb_fin_balancetes
-            WHERE id_condominio = :id_condominio
-              AND TO_CHAR(competencia, 'YYYY-MM') = :periodo
-              AND publicado = true`,
+          `SELECT b.*, u.nome AS publicado_por_nome
+             FROM "condominio-bh".tb_fin_balancetes b
+             LEFT JOIN "condominio-bh"."tb-usuarios" u ON u.id = b.publicado_por
+            WHERE b.id_condominio = :id_condominio
+              AND TO_CHAR(b.competencia, 'YYYY-MM') = :periodo
+              AND b.publicado = true`,
           { replacements, type: QueryTypes.SELECT }
         );
         if (!bal[0]) return res.status(404).json({ message: 'Balancete não publicado para este período.' });
@@ -857,8 +859,10 @@ class FinanceiroController {
           { replacements, type: QueryTypes.SELECT }
         ),
         postgres.query(
-          `SELECT * FROM "condominio-bh".tb_fin_balancetes
-            WHERE id_condominio = :id_condominio AND TO_CHAR(competencia, 'YYYY-MM') = :periodo`,
+          `SELECT b.*, u.nome AS publicado_por_nome
+             FROM "condominio-bh".tb_fin_balancetes b
+             LEFT JOIN "condominio-bh"."tb-usuarios" u ON u.id = b.publicado_por
+            WHERE b.id_condominio = :id_condominio AND TO_CHAR(b.competencia, 'YYYY-MM') = :periodo`,
           { replacements, type: QueryTypes.SELECT }
         ),
         postgres.query(
@@ -918,7 +922,9 @@ class FinanceiroController {
       if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
       if (!['Admin', 'Sindico'].includes(req.nomePerfil)) return res.status(403).json({ message: 'Apenas Admin ou Síndico podem publicar balancetes.' });
 
-      const { periodo } = req.body;
+      const periodo = this._normalizarPeriodo(req.body.competencia) || this._normalizarPeriodo(req.body.periodo);
+      if (!periodo) return res.status(422).json({ message: 'competencia (ou periodo) é obrigatório.' });
+
       const idPublicadoPor = this._toInt(req.idcliente, null);
       const replacements = { id_condominio: idCondominio, periodo };
 
@@ -945,34 +951,52 @@ class FinanceiroController {
       const totalDespesas = Number(totaisDespesas[0]?.total || 0);
       const saldoFinal = totalReceitas - totalDespesas;
 
-      await postgres.query(
-        `INSERT INTO "condominio-bh".tb_fin_saldo_caixa
-            (id_condominio, competencia, saldo_inicial, total_receitas, total_despesas, saldo_final, publicado, publicado_em, created_at)
-           VALUES (:id_condominio, TO_DATE(:periodo, 'YYYY-MM'), 0, :total_receitas, :total_despesas, :saldo_final, true, now(), now())
-           ON CONFLICT (id_condominio, competencia) DO UPDATE
-             SET total_receitas = EXCLUDED.total_receitas,
-                 total_despesas = EXCLUDED.total_despesas,
-                 saldo_final    = EXCLUDED.saldo_final,
-                 publicado      = true,
-                 publicado_em   = now()`,
-        { replacements: { ...replacements, total_receitas: totalReceitas, total_despesas: totalDespesas, saldo_final: saldoFinal } }
+      const saldoCaixaReplacements = { ...replacements, total_receitas: totalReceitas, total_despesas: totalDespesas, saldo_final: saldoFinal };
+      const [saldoCaixaAtualizado] = await postgres.query(
+        `UPDATE "condominio-bh".tb_fin_saldo_caixa
+            SET total_receitas = :total_receitas,
+                total_despesas = :total_despesas,
+                saldo_final    = :saldo_final,
+                publicado      = true,
+                publicado_em   = now()
+          WHERE id_condominio = :id_condominio AND competencia = TO_DATE(:periodo, 'YYYY-MM')
+          RETURNING id`,
+        { replacements: saldoCaixaReplacements }
       );
+      if (!saldoCaixaAtualizado[0]) {
+        await postgres.query(
+          `INSERT INTO "condominio-bh".tb_fin_saldo_caixa
+              (id_condominio, competencia, saldo_inicial, total_receitas, total_despesas, saldo_final, publicado, publicado_em, created_at)
+             VALUES (:id_condominio, TO_DATE(:periodo, 'YYYY-MM'), 0, :total_receitas, :total_despesas, :saldo_final, true, now(), now())`,
+          { replacements: saldoCaixaReplacements }
+        );
+      }
 
-      const [balRows] = await postgres.query(
-        `INSERT INTO "condominio-bh".tb_fin_balancetes
-            (id_condominio, competencia, publicado, publicado_em, publicado_por, created_at)
-           VALUES (:id_condominio, TO_DATE(:periodo, 'YYYY-MM'), true, now(), :publicado_por, now())
-           ON CONFLICT (id_condominio, competencia) DO UPDATE
-             SET publicado     = true,
-                 publicado_em  = now(),
-                 publicado_por = EXCLUDED.publicado_por
-           RETURNING *`,
-        { replacements: { ...replacements, publicado_por: idPublicadoPor } }
+      const balanceteReplacements = { ...replacements, publicado_por: idPublicadoPor };
+      const [balanceteAtualizado] = await postgres.query(
+        `UPDATE "condominio-bh".tb_fin_balancetes
+            SET publicado     = true,
+                publicado_em  = now(),
+                publicado_por = :publicado_por
+          WHERE id_condominio = :id_condominio AND competencia = TO_DATE(:periodo, 'YYYY-MM')
+          RETURNING *`,
+        { replacements: balanceteReplacements }
       );
+      let balancete = balanceteAtualizado[0];
+      if (!balancete) {
+        const [balanceteInserido] = await postgres.query(
+          `INSERT INTO "condominio-bh".tb_fin_balancetes
+              (id_condominio, competencia, publicado, publicado_em, publicado_por, created_at)
+             VALUES (:id_condominio, TO_DATE(:periodo, 'YYYY-MM'), true, now(), :publicado_por, now())
+             RETURNING *`,
+          { replacements: balanceteReplacements }
+        );
+        balancete = balanceteInserido[0];
+      }
 
       res.status(200).json({
         message: 'Balancete publicado.',
-        balancete: balRows[0],
+        balancete,
         total_receitas: totalReceitas,
         total_despesas: totalDespesas,
         saldo_final: saldoFinal,
@@ -984,7 +1008,7 @@ class FinanceiroController {
           const moradores = await postgres.query(
             `SELECT DISTINCT u.id
                FROM "condominio-bh"."tb-usuarios" u
-              WHERE u.id_condominio = :id_condominio AND u.ativo = true`,
+              WHERE u.id_condominio = :id_condominio AND LOWER(u.status) = 'ativo'`,
             { replacements: { id_condominio: idCondominio }, type: QueryTypes.SELECT }
           );
           const ids = moradores.map((m) => m.id);
