@@ -1,0 +1,1240 @@
+'use strict';
+
+const { QueryTypes } = require('sequelize');
+const { put } = require('@vercel/blob');
+const postgres = require('../database/postgres');
+const pushNotificationService = require('../service/pushNotificationService');
+
+const PERFIS_GESTAO = new Set(['Admin', 'Sindico', 'Sub-Sindico']);
+
+class FinanceiroController {
+  _toInt(value, fallback) {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isNaN(parsed) ? fallback : parsed;
+  }
+
+  _normalizarTextoOuNull(value) {
+    if (value === undefined || value === null) return null;
+    const text = String(value).trim();
+    return text === '' ? null : text;
+  }
+
+  _parseDecimalOuNull(value) {
+    if (value === undefined || value === null || String(value).trim() === '') return null;
+    const parsed = Number(String(value).replace(',', '.'));
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+
+  _periodoAtual() {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  }
+
+  _normalizarPeriodo(valor) {
+    if (!valor) return null;
+    const match = String(valor).trim().match(/^(\d{4}-\d{2})/);
+    return match ? match[1] : null;
+  }
+
+  _periodoDaQuery(req) {
+    return this._normalizarPeriodo(req.query.competencia) || this._normalizarPeriodo(req.query.periodo);
+  }
+
+  _isGestor(req) {
+    return PERFIS_GESTAO.has(req.nomePerfil);
+  }
+
+  // ─── Grupo de Receita ───────────────────────────────────────────────────────
+
+  async listarGrupoReceita(req, res) {
+    try {
+      const whereParts = ['ativo = true'];
+      const replacements = {};
+
+      if (req.query.origem) {
+        whereParts.push('origem = :origem');
+        replacements.origem = req.query.origem;
+      }
+
+      const data = await postgres.query(
+        `SELECT id, codigo, nome, origem, descricao, grupo
+           FROM "condominio-bh".tb_fin_grupo_receita
+          WHERE ${whereParts.join(' AND ')}
+          ORDER BY nome`,
+        { replacements, type: QueryTypes.SELECT }
+      );
+
+      return res.status(200).json({ data });
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao listar grupos de receita.', detail: error.message });
+    }
+  }
+
+  // ─── Grupo de Despesa ───────────────────────────────────────────────────────
+
+  async listarGrupoDespesa(req, res) {
+    try {
+      const whereParts = ['ativo = true'];
+      const replacements = {};
+
+      if (req.query.origem) {
+        whereParts.push('origem = :origem');
+        replacements.origem = req.query.origem;
+      }
+
+      const data = await postgres.query(
+        `SELECT id, codigo, nome, origem, descricao, grupo
+           FROM "condominio-bh".tb_fin_grupo_despesa
+          WHERE ${whereParts.join(' AND ')}
+          ORDER BY nome`,
+        { replacements, type: QueryTypes.SELECT }
+      );
+
+      return res.status(200).json({ data });
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao listar grupos de despesa.', detail: error.message });
+    }
+  }
+
+  // ─── Receitas ───────────────────────────────────────────────────────────────
+
+  async listarReceitas(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const page = Math.max(this._toInt(req.query.page, 1), 1);
+      const pageSize = Math.min(Math.max(this._toInt(req.query.pageSize, 25), 1), 200);
+      const offset = (page - 1) * pageSize;
+
+      const whereParts = ['r.id_condominio = :id_condominio'];
+      const replacements = { id_condominio: idCondominio, limit: pageSize, offset };
+
+      const periodoReceitas = this._periodoDaQuery(req);
+      if (periodoReceitas) {
+        whereParts.push("TO_CHAR(r.competencia, 'YYYY-MM') = :periodo");
+        replacements.periodo = periodoReceitas;
+      }
+      if (req.query.categoria) {
+        whereParts.push('r.categoria = :categoria');
+        replacements.categoria = req.query.categoria;
+      }
+      if (req.query.situacao) {
+        whereParts.push('r.situacao = :situacao');
+        replacements.situacao = req.query.situacao;
+      }
+      if (req.query.id_grupo_receita) {
+        whereParts.push('r.id_grupo_receita = :id_grupo_receita');
+        replacements.id_grupo_receita = this._toInt(req.query.id_grupo_receita, null);
+      }
+
+      const whereClause = whereParts.join(' AND ');
+
+      const [totalRows, data] = await Promise.all([
+        postgres.query(
+          `SELECT COUNT(*)::int AS total FROM "condominio-bh".tb_fin_receitas r WHERE ${whereClause}`,
+          { replacements, type: QueryTypes.SELECT }
+        ),
+        postgres.query(
+          `SELECT r.*,
+                  us.nome,
+                  us.bloco,
+                  us.apartamento
+             FROM "condominio-bh".tb_fin_receitas r
+             LEFT JOIN "condominio-bh"."tb-usuarios" us ON us.id = r.id_usuario
+            WHERE ${whereClause}
+            ORDER BY r.data_vencimento DESC, r.id DESC
+            LIMIT :limit OFFSET :offset`,
+          { replacements, type: QueryTypes.SELECT }
+        ),
+      ]);
+
+      const total = totalRows[0]?.total || 0;
+      return res.status(200).json({
+        page,
+        pageSize,
+        total,
+        totalPages: total === 0 ? 0 : Math.ceil(total / pageSize),
+        data,
+      });
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao listar receitas.', detail: error.message });
+    }
+  }
+
+  async criarReceita(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const {
+        descricao, valor, competencia, data_vencimento,
+        data_pagamento, situacao, id_grupo_receita, id_usuario, id_unidade,
+        numero_documento, observacao,
+      } = req.body;
+
+      const grupoRows = await postgres.query(
+        `SELECT id, nome, origem, grupo FROM "condominio-bh".tb_fin_grupo_receita WHERE id = :id LIMIT 1`,
+        { replacements: { id: this._toInt(id_grupo_receita, null) }, type: QueryTypes.SELECT }
+      );
+      if (!grupoRows[0]) return res.status(422).json({ message: 'id_grupo_receita não encontrado.' });
+
+      const grupo = grupoRows[0];
+      const idUsuario = this._toInt(id_usuario, null);
+      const idUnidade = this._toInt(id_unidade, null);
+
+      const [rows] = await postgres.query(
+        `INSERT INTO "condominio-bh".tb_fin_receitas (
+            id_condominio, id_unidade, id_usuario, id_usuario_cadastro, categoria, descricao, valor,
+            competencia, data_vencimento, data_pagamento, situacao,
+            id_grupo_receita, id_categoria, grupo_receita,
+            numero_documento, observacao, created_at, updated_at
+          ) VALUES (
+            :id_condominio, :id_unidade, :id_usuario, :id_usuario_cadastro, :categoria, :descricao, :valor,
+            :competencia::date, :data_vencimento::date, :data_pagamento::date, :situacao,
+            :id_grupo_receita, :id_categoria, :grupo_receita,
+            :numero_documento, :observacao, now(), now()
+          ) RETURNING *`,
+        {
+          replacements: {
+            id_condominio: idCondominio,
+            id_unidade: idUnidade,
+            id_usuario: idUsuario,
+            id_usuario_cadastro: this._toInt(req.idcliente, null),
+            categoria: grupo.nome,
+            descricao: this._normalizarTextoOuNull(descricao),
+            valor: this._parseDecimalOuNull(valor),
+            competencia,
+            data_vencimento,
+            data_pagamento: this._normalizarTextoOuNull(data_pagamento),
+            situacao: situacao || 'em_aberto',
+            id_grupo_receita: grupo.id,
+            id_categoria: String(grupo.id),
+            grupo_receita: grupo.origem,
+            numero_documento: this._normalizarTextoOuNull(numero_documento),
+            observacao: this._normalizarTextoOuNull(observacao),
+          },
+        }
+      );
+
+      return res.status(201).json(rows[0]);
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao criar receita.', detail: error.message });
+    }
+  }
+
+  async atualizarReceita(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const id = this._toInt(req.params.id, null);
+      const campos = ['updated_at = now()'];
+      const replacements = { id, id_condominio: idCondominio };
+
+      const camposDatas = new Set(['competencia', 'data_vencimento', 'data_pagamento']);
+      const camposInt = new Set(['id_grupo_receita']);
+      const camposPermitidos = [
+        'categoria', 'descricao', 'valor', 'competencia', 'data_vencimento', 'data_pagamento',
+        'situacao', 'id_grupo_receita', 'id_categoria', 'grupo_receita', 'numero_documento', 'observacao',
+      ];
+
+      for (const campo of camposPermitidos) {
+        if (req.body[campo] !== undefined) {
+          if (camposDatas.has(campo)) {
+            campos.push(`${campo} = :${campo}::date`);
+            replacements[campo] = this._normalizarTextoOuNull(req.body[campo]);
+          } else if (campo === 'valor') {
+            campos.push(`${campo} = :${campo}`);
+            replacements[campo] = this._parseDecimalOuNull(req.body[campo]);
+          } else if (camposInt.has(campo)) {
+            campos.push(`${campo} = :${campo}`);
+            replacements[campo] = this._toInt(req.body[campo], null);
+          } else {
+            campos.push(`${campo} = :${campo}`);
+            replacements[campo] = this._normalizarTextoOuNull(req.body[campo]);
+          }
+        }
+      }
+
+      const [rows] = await postgres.query(
+        `UPDATE "condominio-bh".tb_fin_receitas
+            SET ${campos.join(', ')}
+          WHERE id = :id AND id_condominio = :id_condominio
+          RETURNING *`,
+        { replacements }
+      );
+
+      if (!rows[0]) return res.status(404).json({ message: 'Receita não encontrada.' });
+      return res.status(200).json(rows[0]);
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao atualizar receita.', detail: error.message });
+    }
+  }
+
+  async excluirReceita(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const id = this._toInt(req.params.id, null);
+
+      const [rows] = await postgres.query(
+        `UPDATE "condominio-bh".tb_fin_receitas
+            SET situacao = 'cancelado', updated_at = now()
+          WHERE id = :id AND id_condominio = :id_condominio
+          RETURNING id`,
+        { replacements: { id, id_condominio: idCondominio } }
+      );
+
+      if (!rows[0]) return res.status(404).json({ message: 'Receita não encontrada.' });
+      return res.status(200).json({ message: 'Receita cancelada.' });
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao excluir receita.', detail: error.message });
+    }
+  }
+
+  // ─── Despesas ───────────────────────────────────────────────────────────────
+
+  async listarDespesas(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const page = Math.max(this._toInt(req.query.page, 1), 1);
+      const pageSize = Math.min(Math.max(this._toInt(req.query.pageSize, 25), 1), 200);
+      const offset = (page - 1) * pageSize;
+
+      const whereParts = ['d.id_condominio = :id_condominio'];
+      const replacements = { id_condominio: idCondominio, limit: pageSize, offset };
+
+      const periodoDespesas = this._periodoDaQuery(req);
+      if (periodoDespesas) {
+        whereParts.push("TO_CHAR(d.competencia, 'YYYY-MM') = :periodo");
+        replacements.periodo = periodoDespesas;
+      }
+      if (req.query.categoria) {
+        whereParts.push('d.categoria = :categoria');
+        replacements.categoria = req.query.categoria;
+      }
+      if (req.query.situacao) {
+        whereParts.push('d.situacao = :situacao');
+        replacements.situacao = req.query.situacao;
+      }
+
+      const whereClause = whereParts.join(' AND ');
+
+      const [totalRows, data] = await Promise.all([
+        postgres.query(
+          `SELECT COUNT(*)::int AS total
+             FROM "condominio-bh".tb_fin_despesas d
+            INNER JOIN "condominio-bh".tb_fin_grupo_despesa g ON g.codigo = d.categoria
+            WHERE ${whereClause}`,
+          { replacements, type: QueryTypes.SELECT }
+        ),
+        postgres.query(
+          `SELECT d.*,
+                  g.codigo AS grupo_despesa_codigo,
+                  g.nome AS grupo_despesa_nome,
+                  g.descricao AS grupo_despesa_descricao,
+                  g.origem AS grupo_despesa_origem,
+                  g.grupo AS grupo_despesa_grupo,
+                  COALESCE(
+                    (SELECT array_to_json(array_agg(row_to_json(doc) ORDER BY doc.id))
+                       FROM "condominio-bh".tb_fin_despesas_documentos doc
+                      WHERE doc.id_despesa = d.id),
+                    '[]'::json
+                  ) AS documentos
+             FROM "condominio-bh".tb_fin_despesas d
+            INNER JOIN "condominio-bh".tb_fin_grupo_despesa g ON g.codigo = d.categoria
+            WHERE ${whereClause}
+            ORDER BY d.data_despesa DESC, d.id DESC
+            LIMIT :limit OFFSET :offset`,
+          { replacements, type: QueryTypes.SELECT }
+        ),
+      ]);
+
+      const total = totalRows[0]?.total || 0;
+      return res.status(200).json({
+        page,
+        pageSize,
+        total,
+        totalPages: total === 0 ? 0 : Math.ceil(total / pageSize),
+        data,
+      });
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao listar despesas.', detail: error.message });
+    }
+  }
+
+  async criarDespesa(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const {
+        fornecedor, categoria, descricao, valor, competencia,
+        data_despesa, data_pagamento, forma_pagamento, situacao,
+        numero_documento, observacao,
+      } = req.body;
+
+      const [rows] = await postgres.query(
+        `INSERT INTO "condominio-bh".tb_fin_despesas (
+            id_condominio, fornecedor, categoria, descricao, valor,
+            competencia, data_despesa, data_pagamento, forma_pagamento,
+            situacao, numero_documento, observacao, created_at, updated_at
+          ) VALUES (
+            :id_condominio, :fornecedor, :categoria, :descricao, :valor,
+            :competencia::date, :data_despesa::date, :data_pagamento::date,
+            :forma_pagamento, :situacao, :numero_documento, :observacao, now(), now()
+          ) RETURNING *`,
+        {
+          replacements: {
+            id_condominio: idCondominio,
+            fornecedor: this._normalizarTextoOuNull(fornecedor),
+            categoria,
+            descricao: this._normalizarTextoOuNull(descricao) ?? '',
+            valor: this._parseDecimalOuNull(valor),
+            competencia,
+            data_despesa,
+            data_pagamento: this._normalizarTextoOuNull(data_pagamento),
+            forma_pagamento: this._normalizarTextoOuNull(forma_pagamento),
+            situacao: situacao || 'a_pagar',
+            numero_documento: this._normalizarTextoOuNull(numero_documento),
+            observacao: this._normalizarTextoOuNull(observacao),
+          },
+        }
+      );
+
+      return res.status(201).json(rows[0]);
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao criar despesa.', detail: error.message });
+    }
+  }
+
+  async atualizarDespesa(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const id = this._toInt(req.params.id, null);
+      const campos = ['updated_at = now()'];
+      const replacements = { id, id_condominio: idCondominio };
+
+      const camposDatas = new Set(['competencia', 'data_despesa', 'data_pagamento']);
+      const camposPermitidos = ['fornecedor', 'categoria', 'descricao', 'valor', 'competencia', 'data_despesa', 'data_pagamento', 'forma_pagamento', 'situacao', 'numero_documento', 'observacao'];
+
+      for (const campo of camposPermitidos) {
+        if (req.body[campo] !== undefined) {
+          if (camposDatas.has(campo)) {
+            campos.push(`${campo} = :${campo}::date`);
+            replacements[campo] = this._normalizarTextoOuNull(req.body[campo]);
+          } else if (campo === 'valor') {
+            campos.push(`${campo} = :${campo}`);
+            replacements[campo] = this._parseDecimalOuNull(req.body[campo]);
+          } else if (campo === 'descricao') {
+            campos.push(`${campo} = :${campo}`);
+            replacements[campo] = this._normalizarTextoOuNull(req.body[campo]) ?? '';
+          } else {
+            campos.push(`${campo} = :${campo}`);
+            replacements[campo] = this._normalizarTextoOuNull(req.body[campo]);
+          }
+        }
+      }
+
+      const [rows] = await postgres.query(
+        `UPDATE "condominio-bh".tb_fin_despesas
+            SET ${campos.join(', ')}
+          WHERE id = :id AND id_condominio = :id_condominio
+          RETURNING *`,
+        { replacements }
+      );
+
+      if (!rows[0]) return res.status(404).json({ message: 'Despesa não encontrada.' });
+      return res.status(200).json(rows[0]);
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao atualizar despesa.', detail: error.message });
+    }
+  }
+
+  async excluirDespesa(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const id = this._toInt(req.params.id, null);
+
+      const [rows] = await postgres.query(
+        `UPDATE "condominio-bh".tb_fin_despesas
+            SET situacao = 'cancelado', updated_at = now()
+          WHERE id = :id AND id_condominio = :id_condominio
+          RETURNING id`,
+        { replacements: { id, id_condominio: idCondominio } }
+      );
+
+      if (!rows[0]) return res.status(404).json({ message: 'Despesa não encontrada.' });
+      return res.status(200).json({ message: 'Despesa cancelada.' });
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao excluir despesa.', detail: error.message });
+    }
+  }
+
+  async uploadDocumentoDespesa(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      if (!req.file) return res.status(400).json({ message: 'Arquivo não enviado.' });
+
+      const idDespesa = this._toInt(req.params.id, null);
+      const tipo = req.body.tipo;
+
+      const despesas = await postgres.query(
+        `SELECT id FROM "condominio-bh".tb_fin_despesas WHERE id = :id AND id_condominio = :id_condominio`,
+        { replacements: { id: idDespesa, id_condominio: idCondominio }, type: QueryTypes.SELECT }
+      );
+      if (!despesas[0]) return res.status(404).json({ message: 'Despesa não encontrada.' });
+
+      const arquivo = req.file;
+      const ext = (arquivo.originalname.split('.').pop() || 'bin').toLowerCase();
+      const ambiente = process.env.NODE_ENV === 'production' ? 'prod' : 'dev';
+      const nomeArquivo = `${Date.now()}_${Math.random().toString(36).substr(2, 8)}.${ext}`;
+      const blobPath = `${ambiente}/condominios/${idCondominio}/financeiro/despesas/${idDespesa}/${nomeArquivo}`;
+
+      const uploadResult = await put(blobPath, arquivo.buffer, { access: 'public', contentType: arquivo.mimetype });
+      const caminhoArquivo = uploadResult?.url || blobPath;
+
+      const [docRows] = await postgres.query(
+        `INSERT INTO "condominio-bh".tb_fin_despesas_documentos
+            (id_despesa, tipo, nome_arquivo, caminho_arquivo, data_envio)
+           VALUES (:id_despesa, :tipo, :nome_arquivo, :caminho_arquivo, now())
+           RETURNING *`,
+        {
+          replacements: {
+            id_despesa: idDespesa,
+            tipo,
+            nome_arquivo: arquivo.originalname,
+            caminho_arquivo: caminhoArquivo,
+          },
+        }
+      );
+
+      return res.status(201).json(docRows[0]);
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao fazer upload do documento.', detail: error.message });
+    }
+  }
+
+  async excluirDocumentoDespesa(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const idDespesa = this._toInt(req.params.id, null);
+      const idDoc = this._toInt(req.params.docId, null);
+
+      const docs = await postgres.query(
+        `SELECT doc.id, doc.caminho_arquivo
+           FROM "condominio-bh".tb_fin_despesas_documentos doc
+           JOIN "condominio-bh".tb_fin_despesas d ON d.id = doc.id_despesa
+          WHERE doc.id = :id_doc AND doc.id_despesa = :id_despesa AND d.id_condominio = :id_condominio`,
+        { replacements: { id_doc: idDoc, id_despesa: idDespesa, id_condominio: idCondominio }, type: QueryTypes.SELECT }
+      );
+
+      if (!docs[0]) return res.status(404).json({ message: 'Documento não encontrado.' });
+
+      try {
+        const { del } = require('@vercel/blob');
+        await del(docs[0].caminho_arquivo);
+      } catch (_) {
+        // remoção do blob é melhor esforço
+      }
+
+      await postgres.query(
+        `DELETE FROM "condominio-bh".tb_fin_despesas_documentos WHERE id = :id`,
+        { replacements: { id: idDoc } }
+      );
+
+      return res.status(200).json({ message: 'Documento removido.' });
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao remover documento.', detail: error.message });
+    }
+  }
+
+  // ─── Dashboard ───────────────────────────────────────────────────────────────
+
+  async getDashboard(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const periodo = this._periodoDaQuery(req) || this._periodoAtual();
+      const rpl = { id_condominio: idCondominio, periodo };
+
+      const [kpisReceitas, kpisDespesas, ultimasDespesas, topInadimplentes, grafico, distribuicaoDespesas] = await Promise.all([
+        postgres.query(
+          `SELECT
+              COALESCE(SUM(CASE WHEN situacao != 'cancelado' THEN valor ELSE 0 END), 0)::numeric AS total_receitas,
+              COALESCE(SUM(CASE WHEN situacao = 'pago' THEN valor ELSE 0 END), 0)::numeric AS total_recebido,
+              COALESCE(SUM(CASE WHEN situacao = 'em_aberto' AND data_vencimento < CURRENT_DATE THEN valor ELSE 0 END), 0)::numeric AS total_inadimplente
+             FROM "condominio-bh".tb_fin_receitas
+            WHERE id_condominio = :id_condominio
+              AND TO_CHAR(competencia, 'YYYY-MM') = :periodo`,
+          { replacements: rpl, type: QueryTypes.SELECT }
+        ),
+        postgres.query(
+          `SELECT
+              COALESCE(SUM(CASE WHEN situacao != 'cancelado' THEN valor ELSE 0 END), 0)::numeric AS total_despesas,
+              COALESCE(SUM(CASE WHEN situacao = 'pago' THEN valor ELSE 0 END), 0)::numeric AS total_pago
+             FROM "condominio-bh".tb_fin_despesas
+            WHERE id_condominio = :id_condominio
+              AND TO_CHAR(competencia, 'YYYY-MM') = :periodo`,
+          { replacements: rpl, type: QueryTypes.SELECT }
+        ),
+        postgres.query(
+          `SELECT d.id, d.descricao, d.categoria, d.valor, d.situacao, d.data_despesa, d.fornecedor,
+                  g.nome AS grupo_despesa_nome,
+                  g.descricao AS grupo_despesa_descricao
+             FROM "condominio-bh".tb_fin_despesas d
+            INNER JOIN "condominio-bh".tb_fin_grupo_despesa g ON g.codigo = d.categoria
+            WHERE d.id_condominio = :id_condominio
+              AND TO_CHAR(d.competencia, 'YYYY-MM') = :periodo
+              AND d.situacao != 'cancelado'
+            ORDER BY d.data_despesa DESC
+            LIMIT 5`,
+          { replacements: rpl, type: QueryTypes.SELECT }
+        ),
+        postgres.query(
+          `SELECT r.id, r.descricao, r.valor, r.data_vencimento, r.id_unidade, r.id_usuario,
+                  (CURRENT_DATE - r.data_vencimento) AS dias_atraso,
+                  un.unidades_bloco AS unidade,
+                  us.bloco
+             FROM "condominio-bh".tb_fin_receitas r
+             LEFT JOIN "condominio-bh".tb_condominios_unidades un ON un.id = r.id_unidade
+             LEFT JOIN "condominio-bh"."tb-usuarios" us ON us.id = r.id_usuario
+            WHERE r.id_condominio = :id_condominio
+              AND r.situacao = 'em_aberto'
+              AND r.data_vencimento < CURRENT_DATE
+            ORDER BY (CURRENT_DATE - r.data_vencimento) DESC
+            LIMIT 5`,
+          { replacements: rpl, type: QueryTypes.SELECT }
+        ),
+        postgres.query(
+          `SELECT
+              TO_CHAR(meses.mes, 'YYYY-MM') AS mes,
+              COALESCE(r.total_receitas, 0)::numeric AS total_receitas,
+              COALESCE(r.total_recebido, 0)::numeric AS total_recebido,
+              COALESCE(d.total_despesas, 0)::numeric AS total_despesas,
+              COALESCE(d.total_pago, 0)::numeric AS total_pago
+             FROM generate_series(
+                    DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '5 months',
+                    DATE_TRUNC('month', CURRENT_DATE),
+                    INTERVAL '1 month'
+                  ) AS meses(mes)
+             LEFT JOIN (
+                 SELECT DATE_TRUNC('month', competencia) AS mes,
+                        SUM(CASE WHEN situacao != 'cancelado' THEN valor ELSE 0 END) AS total_receitas,
+                        SUM(CASE WHEN situacao = 'pago' THEN valor ELSE 0 END) AS total_recebido
+                   FROM "condominio-bh".tb_fin_receitas
+                  WHERE id_condominio = :id_condominio
+                  GROUP BY DATE_TRUNC('month', competencia)
+             ) r ON r.mes = meses.mes
+             LEFT JOIN (
+                 SELECT DATE_TRUNC('month', competencia) AS mes,
+                        SUM(CASE WHEN situacao != 'cancelado' THEN valor ELSE 0 END) AS total_despesas,
+                        SUM(CASE WHEN situacao = 'pago' THEN valor ELSE 0 END) AS total_pago
+                   FROM "condominio-bh".tb_fin_despesas
+                  WHERE id_condominio = :id_condominio
+                  GROUP BY DATE_TRUNC('month', competencia)
+             ) d ON d.mes = meses.mes
+            ORDER BY meses.mes`,
+          { replacements: { id_condominio: idCondominio }, type: QueryTypes.SELECT }
+        ),
+        postgres.query(
+          `SELECT g.codigo AS categoria,
+                  g.nome AS grupo_despesa_nome,
+                  g.descricao AS grupo_despesa_descricao,
+                  COALESCE(SUM(d.valor), 0)::numeric AS total
+             FROM "condominio-bh".tb_fin_despesas d
+            INNER JOIN "condominio-bh".tb_fin_grupo_despesa g ON g.codigo = d.categoria
+            WHERE d.id_condominio = :id_condominio
+              AND TO_CHAR(d.competencia, 'YYYY-MM') = :periodo
+              AND d.situacao != 'cancelado'
+            GROUP BY g.codigo, g.nome, g.descricao
+            ORDER BY total DESC`,
+          { replacements: rpl, type: QueryTypes.SELECT }
+        ),
+      ]);
+
+      const kr = kpisReceitas[0] || {};
+      const kd = kpisDespesas[0] || {};
+
+      return res.status(200).json({
+        periodo,
+        kpis: {
+          total_receitas: Number(kr.total_receitas || 0),
+          total_recebido: Number(kr.total_recebido || 0),
+          total_inadimplente: Number(kr.total_inadimplente || 0),
+          total_despesas: Number(kd.total_despesas || 0),
+          total_pago: Number(kd.total_pago || 0),
+          saldo: Number(kr.total_recebido || 0) - Number(kd.total_pago || 0),
+        },
+        ultimas_despesas: ultimasDespesas,
+        top_inadimplentes: topInadimplentes,
+        grafico_6meses: grafico,
+        distribuicao_despesas: distribuicaoDespesas.map((item) => ({
+          ...item,
+          total: Number(item.total || 0),
+        })),
+      });
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao carregar dashboard.', detail: error.message });
+    }
+  }
+
+  // ─── Inadimplência ──────────────────────────────────────────────────────────
+
+  async listarInadimplencia(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const page = Math.max(this._toInt(req.query.page, 1), 1);
+      const pageSize = Math.min(Math.max(this._toInt(req.query.pageSize, 25), 1), 200);
+      const offset = (page - 1) * pageSize;
+      const replacements = { id_condominio: idCondominio, limit: pageSize, offset };
+
+      const [totalRows, data] = await Promise.all([
+        postgres.query(
+          `SELECT COUNT(*)::int AS total
+             FROM "condominio-bh".tb_fin_receitas r
+             LEFT JOIN "condominio-bh".tb_condominios_unidades un ON un.id = r.id_unidade
+             LEFT JOIN "condominio-bh"."tb-usuarios" us ON us.id = r.id_usuario
+            WHERE r.id_condominio = :id_condominio
+              AND r.situacao = 'em_aberto'
+              AND r.data_vencimento < CURRENT_DATE`,
+          { replacements, type: QueryTypes.SELECT }
+        ),
+        postgres.query(
+          `SELECT r.id, r.descricao, r.categoria, r.valor, r.data_vencimento, r.competencia,
+                  r.id_unidade, r.id_usuario, r.grupo_receita AS tipo_pendencia,
+                  (CURRENT_DATE - r.data_vencimento) AS dias_atraso,
+                  i.juros, i.multa, i.valor_atualizado,
+                  un.unidades_bloco,
+                  us.nome,
+                  us.bloco
+             FROM "condominio-bh".tb_fin_receitas r
+             LEFT JOIN "condominio-bh".tb_fin_inadimplencia i ON i.id_receita = r.id
+             LEFT JOIN "condominio-bh".tb_condominios_unidades un ON un.id = r.id_unidade
+             LEFT JOIN "condominio-bh"."tb-usuarios" us ON us.id = r.id_usuario
+            WHERE r.id_condominio = :id_condominio
+              AND r.situacao = 'em_aberto'
+              AND r.data_vencimento < CURRENT_DATE
+            ORDER BY (CURRENT_DATE - r.data_vencimento) DESC
+            LIMIT :limit OFFSET :offset`,
+          { replacements, type: QueryTypes.SELECT }
+        ),
+      ]);
+
+      const total = totalRows[0]?.total || 0;
+      return res.status(200).json({
+        page,
+        pageSize,
+        total,
+        totalPages: total === 0 ? 0 : Math.ceil(total / pageSize),
+        data,
+      });
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao listar inadimplência.', detail: error.message });
+    }
+  }
+
+  async cobrarInadimplente(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const idReceita = this._toInt(req.params.id, null);
+
+      const receitas = await postgres.query(
+        `SELECT r.id, r.descricao, r.valor, r.data_vencimento, r.id_usuario
+           FROM "condominio-bh".tb_fin_receitas r
+          WHERE r.id = :id AND r.id_condominio = :id_condominio AND r.situacao = 'em_aberto'`,
+        { replacements: { id: idReceita, id_condominio: idCondominio }, type: QueryTypes.SELECT }
+      );
+
+      if (!receitas[0]) return res.status(404).json({ message: 'Receita inadimplente não encontrada.' });
+
+      const receita = receitas[0];
+      res.status(200).json({ message: 'Cobrança disparada.' });
+
+      if (receita.id_usuario) {
+        setImmediate(() => {
+          pushNotificationService
+            .enviarParaUsuarios([receita.id_usuario], {
+              title: 'Aviso de Inadimplência',
+              body: `Você possui débito pendente: ${receita.descricao} — vencido em ${receita.data_vencimento}.`,
+              data: { tipo: 'financeiro', id_receita: receita.id },
+            })
+            .catch(() => {});
+        });
+      }
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao processar cobrança.', detail: error.message });
+    }
+  }
+
+  // ─── Balancete ───────────────────────────────────────────────────────────────
+
+  async getBalancete(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+
+      const periodo = this._periodoDaQuery(req) || this._periodoAtual();
+      const ano = periodo.slice(0, 4);
+      const replacements = { id_condominio: idCondominio, periodo, ano };
+
+      // Moradores só veem balancetes publicados
+      if (!this._isGestor(req)) {
+        const bal = await postgres.query(
+          `SELECT * FROM "condominio-bh".tb_fin_balancetes
+            WHERE id_condominio = :id_condominio
+              AND TO_CHAR(competencia, 'YYYY-MM') = :periodo
+              AND publicado = true`,
+          { replacements, type: QueryTypes.SELECT }
+        );
+        if (!bal[0]) return res.status(404).json({ message: 'Balancete não publicado para este período.' });
+        return res.status(200).json(bal[0]);
+      }
+
+      const [recebidoAcumulado, pagoAcumulado, receitasAno, despesasAno, balancete, receitas, despesas] = await Promise.all([
+        postgres.query(
+          `SELECT COALESCE(SUM(CASE WHEN situacao = 'pago' THEN valor ELSE 0 END), 0)::numeric AS total
+             FROM "condominio-bh".tb_fin_receitas
+            WHERE id_condominio = :id_condominio
+              AND competencia < (TO_DATE(:periodo, 'YYYY-MM') + INTERVAL '1 month')`,
+          { replacements, type: QueryTypes.SELECT }
+        ),
+        postgres.query(
+          `SELECT COALESCE(SUM(CASE WHEN situacao = 'pago' THEN valor ELSE 0 END), 0)::numeric AS total
+             FROM "condominio-bh".tb_fin_despesas
+            WHERE id_condominio = :id_condominio
+              AND competencia < (TO_DATE(:periodo, 'YYYY-MM') + INTERVAL '1 month')`,
+          { replacements, type: QueryTypes.SELECT }
+        ),
+        postgres.query(
+          `SELECT
+              COALESCE(SUM(CASE WHEN situacao != 'cancelado' THEN valor ELSE 0 END), 0)::numeric AS total,
+              COALESCE(SUM(CASE WHEN situacao = 'pago' THEN valor ELSE 0 END), 0)::numeric AS pago,
+              COALESCE(SUM(CASE WHEN situacao = 'em_aberto' THEN valor ELSE 0 END), 0)::numeric AS pendente
+             FROM "condominio-bh".tb_fin_receitas
+            WHERE id_condominio = :id_condominio
+              AND EXTRACT(YEAR FROM competencia) = :ano`,
+          { replacements, type: QueryTypes.SELECT }
+        ),
+        postgres.query(
+          `SELECT
+              COALESCE(SUM(CASE WHEN situacao != 'cancelado' THEN valor ELSE 0 END), 0)::numeric AS total,
+              COALESCE(SUM(CASE WHEN situacao = 'pago' THEN valor ELSE 0 END), 0)::numeric AS pago,
+              COALESCE(SUM(CASE WHEN situacao = 'a_pagar' THEN valor ELSE 0 END), 0)::numeric AS pendente
+             FROM "condominio-bh".tb_fin_despesas
+            WHERE id_condominio = :id_condominio
+              AND EXTRACT(YEAR FROM competencia) = :ano`,
+          { replacements, type: QueryTypes.SELECT }
+        ),
+        postgres.query(
+          `SELECT * FROM "condominio-bh".tb_fin_balancetes
+            WHERE id_condominio = :id_condominio AND TO_CHAR(competencia, 'YYYY-MM') = :periodo`,
+          { replacements, type: QueryTypes.SELECT }
+        ),
+        postgres.query(
+          `SELECT id, categoria, descricao, valor, data_vencimento, data_pagamento, situacao, id_unidade
+             FROM "condominio-bh".tb_fin_receitas
+            WHERE id_condominio = :id_condominio
+              AND TO_CHAR(competencia, 'YYYY-MM') = :periodo
+              AND situacao != 'cancelado'
+            ORDER BY data_vencimento`,
+          { replacements, type: QueryTypes.SELECT }
+        ),
+        postgres.query(
+          `SELECT d.id, d.categoria, d.descricao, d.valor, d.data_despesa, d.data_pagamento, d.situacao, d.fornecedor,
+                  g.nome AS grupo_despesa_nome,
+                  g.descricao AS grupo_despesa_descricao
+             FROM "condominio-bh".tb_fin_despesas d
+            INNER JOIN "condominio-bh".tb_fin_grupo_despesa g ON g.codigo = d.categoria
+            WHERE d.id_condominio = :id_condominio
+              AND TO_CHAR(d.competencia, 'YYYY-MM') = :periodo
+              AND d.situacao != 'cancelado'
+            ORDER BY d.data_despesa`,
+          { replacements, type: QueryTypes.SELECT }
+        ),
+      ]);
+
+      const totalRecebidoAcumulado = Number(recebidoAcumulado[0]?.total || 0);
+      const totalPagoAcumulado = Number(pagoAcumulado[0]?.total || 0);
+
+      return res.status(200).json({
+        periodo,
+        saldo_caixa: totalRecebidoAcumulado - totalPagoAcumulado,
+        balancete: balancete[0] || null,
+        receitas,
+        despesas,
+        totais_ano: {
+          ano,
+          receitas: {
+            total: Number(receitasAno[0]?.total || 0),
+            pago: Number(receitasAno[0]?.pago || 0),
+            pendente: Number(receitasAno[0]?.pendente || 0),
+          },
+          despesas: {
+            total: Number(despesasAno[0]?.total || 0),
+            pago: Number(despesasAno[0]?.pago || 0),
+            pendente: Number(despesasAno[0]?.pendente || 0),
+          },
+        },
+      });
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao carregar balancete.', detail: error.message });
+    }
+  }
+
+  async publicarBalancete(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!['Admin', 'Sindico'].includes(req.nomePerfil)) return res.status(403).json({ message: 'Apenas Admin ou Síndico podem publicar balancetes.' });
+
+      const { periodo } = req.body;
+      const idPublicadoPor = this._toInt(req.idcliente, null);
+      const replacements = { id_condominio: idCondominio, periodo };
+
+      const [totaisReceitas, totaisDespesas] = await Promise.all([
+        postgres.query(
+          `SELECT COALESCE(SUM(valor), 0)::numeric AS total
+             FROM "condominio-bh".tb_fin_receitas
+            WHERE id_condominio = :id_condominio
+              AND TO_CHAR(competencia, 'YYYY-MM') = :periodo
+              AND situacao = 'pago'`,
+          { replacements, type: QueryTypes.SELECT }
+        ),
+        postgres.query(
+          `SELECT COALESCE(SUM(valor), 0)::numeric AS total
+             FROM "condominio-bh".tb_fin_despesas
+            WHERE id_condominio = :id_condominio
+              AND TO_CHAR(competencia, 'YYYY-MM') = :periodo
+              AND situacao = 'pago'`,
+          { replacements, type: QueryTypes.SELECT }
+        ),
+      ]);
+
+      const totalReceitas = Number(totaisReceitas[0]?.total || 0);
+      const totalDespesas = Number(totaisDespesas[0]?.total || 0);
+      const saldoFinal = totalReceitas - totalDespesas;
+
+      await postgres.query(
+        `INSERT INTO "condominio-bh".tb_fin_saldo_caixa
+            (id_condominio, competencia, saldo_inicial, total_receitas, total_despesas, saldo_final, publicado, publicado_em, created_at)
+           VALUES (:id_condominio, TO_DATE(:periodo, 'YYYY-MM'), 0, :total_receitas, :total_despesas, :saldo_final, true, now(), now())
+           ON CONFLICT (id_condominio, competencia) DO UPDATE
+             SET total_receitas = EXCLUDED.total_receitas,
+                 total_despesas = EXCLUDED.total_despesas,
+                 saldo_final    = EXCLUDED.saldo_final,
+                 publicado      = true,
+                 publicado_em   = now()`,
+        { replacements: { ...replacements, total_receitas: totalReceitas, total_despesas: totalDespesas, saldo_final: saldoFinal } }
+      );
+
+      const [balRows] = await postgres.query(
+        `INSERT INTO "condominio-bh".tb_fin_balancetes
+            (id_condominio, competencia, publicado, publicado_em, publicado_por, created_at)
+           VALUES (:id_condominio, TO_DATE(:periodo, 'YYYY-MM'), true, now(), :publicado_por, now())
+           ON CONFLICT (id_condominio, competencia) DO UPDATE
+             SET publicado     = true,
+                 publicado_em  = now(),
+                 publicado_por = EXCLUDED.publicado_por
+           RETURNING *`,
+        { replacements: { ...replacements, publicado_por: idPublicadoPor } }
+      );
+
+      res.status(200).json({
+        message: 'Balancete publicado.',
+        balancete: balRows[0],
+        total_receitas: totalReceitas,
+        total_despesas: totalDespesas,
+        saldo_final: saldoFinal,
+      });
+
+      // Notifica moradores via push de forma assíncrona
+      setImmediate(async () => {
+        try {
+          const moradores = await postgres.query(
+            `SELECT DISTINCT u.id
+               FROM "condominio-bh"."tb-usuarios" u
+              WHERE u.id_condominio = :id_condominio AND u.ativo = true`,
+            { replacements: { id_condominio: idCondominio }, type: QueryTypes.SELECT }
+          );
+          const ids = moradores.map((m) => m.id);
+          if (ids.length > 0) {
+            await pushNotificationService.enviarParaUsuarios(ids, {
+              title: 'Balancete Disponível',
+              body: `O balancete de ${periodo} foi publicado.`,
+              data: { tipo: 'financeiro', periodo },
+            });
+          }
+        } catch (_) {}
+      });
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao publicar balancete.', detail: error.message });
+    }
+  }
+
+  // ─── Fornecedores ───────────────────────────────────────────────────────────
+
+  async listarFornecedores(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const page = Math.max(this._toInt(req.query.page, 1), 1);
+      const pageSize = Math.min(Math.max(this._toInt(req.query.pageSize, 25), 1), 200);
+      const offset = (page - 1) * pageSize;
+
+      const whereParts = ['f.id_condominio = :id_condominio'];
+      const replacements = { id_condominio: idCondominio, limit: pageSize, offset };
+
+      if (req.query.categoria) {
+        whereParts.push('f.categoria = :categoria');
+        replacements.categoria = req.query.categoria;
+      }
+      if (req.query.tipo_pessoa) {
+        whereParts.push('f.tipo_pessoa = :tipo_pessoa');
+        replacements.tipo_pessoa = req.query.tipo_pessoa;
+      }
+      if (req.query.ativo !== undefined) {
+        whereParts.push('f.ativo = :ativo');
+        replacements.ativo = String(req.query.ativo) === 'true';
+      }
+      if (req.query.busca) {
+        whereParts.push('(f.nome ILIKE :busca OR f.nome_fantasia ILIKE :busca OR f.cpf_cnpj ILIKE :busca)');
+        replacements.busca = `%${req.query.busca}%`;
+      }
+
+      const whereClause = whereParts.join(' AND ');
+
+      const [totalRows, data] = await Promise.all([
+        postgres.query(
+          `SELECT COUNT(*)::int AS total FROM "condominio-bh".tb_fin_fornecedor f WHERE ${whereClause}`,
+          { replacements, type: QueryTypes.SELECT }
+        ),
+        postgres.query(
+          `SELECT f.*
+             FROM "condominio-bh".tb_fin_fornecedor f
+            WHERE ${whereClause}
+            ORDER BY f.nome
+            LIMIT :limit OFFSET :offset`,
+          { replacements, type: QueryTypes.SELECT }
+        ),
+      ]);
+
+      const total = totalRows[0]?.total || 0;
+      return res.status(200).json({
+        page,
+        pageSize,
+        total,
+        totalPages: total === 0 ? 0 : Math.ceil(total / pageSize),
+        data,
+      });
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao listar fornecedores.', detail: error.message });
+    }
+  }
+
+  async obterFornecedor(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const id = this._toInt(req.params.id, null);
+
+      const rows = await postgres.query(
+        `SELECT * FROM "condominio-bh".tb_fin_fornecedor WHERE id = :id AND id_condominio = :id_condominio`,
+        { replacements: { id, id_condominio: idCondominio }, type: QueryTypes.SELECT }
+      );
+
+      if (!rows[0]) return res.status(404).json({ message: 'Fornecedor não encontrado.' });
+      return res.status(200).json(rows[0]);
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao obter fornecedor.', detail: error.message });
+    }
+  }
+
+  async criarFornecedor(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const {
+        nome, nome_fantasia, tipo_pessoa, cpf_cnpj, inscricao_estadual, inscricao_municipal,
+        telefone, celular, whatsapp, email, site, cep, endereco, numero, complemento,
+        bairro, cidade, estado, banco, agencia, conta, tipo_conta, chave_pix, tipo_pix,
+        observacao, categoria,
+      } = req.body;
+
+      const [rows] = await postgres.query(
+        `INSERT INTO "condominio-bh".tb_fin_fornecedor (
+            id_condominio, nome, nome_fantasia, tipo_pessoa, cpf_cnpj, inscricao_estadual,
+            inscricao_municipal, telefone, celular, whatsapp, email, site, cep, endereco,
+            numero, complemento, bairro, cidade, estado, banco, agencia, conta, tipo_conta,
+            chave_pix, tipo_pix, observacao, categoria, ativo, created_at, updated_at
+          ) VALUES (
+            :id_condominio, :nome, :nome_fantasia, :tipo_pessoa, :cpf_cnpj, :inscricao_estadual,
+            :inscricao_municipal, :telefone, :celular, :whatsapp, :email, :site, :cep, :endereco,
+            :numero, :complemento, :bairro, :cidade, :estado, :banco, :agencia, :conta, :tipo_conta,
+            :chave_pix, :tipo_pix, :observacao, :categoria, true, now(), now()
+          ) RETURNING *`,
+        {
+          replacements: {
+            id_condominio: idCondominio,
+            nome: this._normalizarTextoOuNull(nome),
+            nome_fantasia: this._normalizarTextoOuNull(nome_fantasia),
+            tipo_pessoa: tipo_pessoa || 'J',
+            cpf_cnpj: this._normalizarTextoOuNull(cpf_cnpj),
+            inscricao_estadual: this._normalizarTextoOuNull(inscricao_estadual),
+            inscricao_municipal: this._normalizarTextoOuNull(inscricao_municipal),
+            telefone: this._normalizarTextoOuNull(telefone),
+            celular: this._normalizarTextoOuNull(celular),
+            whatsapp: this._normalizarTextoOuNull(whatsapp),
+            email: this._normalizarTextoOuNull(email),
+            site: this._normalizarTextoOuNull(site),
+            cep: this._normalizarTextoOuNull(cep),
+            endereco: this._normalizarTextoOuNull(endereco),
+            numero: this._normalizarTextoOuNull(numero),
+            complemento: this._normalizarTextoOuNull(complemento),
+            bairro: this._normalizarTextoOuNull(bairro),
+            cidade: this._normalizarTextoOuNull(cidade),
+            estado: this._normalizarTextoOuNull(estado),
+            banco: this._normalizarTextoOuNull(banco),
+            agencia: this._normalizarTextoOuNull(agencia),
+            conta: this._normalizarTextoOuNull(conta),
+            tipo_conta: this._normalizarTextoOuNull(tipo_conta),
+            chave_pix: this._normalizarTextoOuNull(chave_pix),
+            tipo_pix: this._normalizarTextoOuNull(tipo_pix),
+            observacao: this._normalizarTextoOuNull(observacao),
+            categoria: this._normalizarTextoOuNull(categoria),
+          },
+        }
+      );
+
+      return res.status(201).json(rows[0]);
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao criar fornecedor.', detail: error.message });
+    }
+  }
+
+  async atualizarFornecedor(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const id = this._toInt(req.params.id, null);
+      const campos = ['updated_at = now()'];
+      const replacements = { id, id_condominio: idCondominio };
+
+      const camposPermitidos = [
+        'nome', 'nome_fantasia', 'tipo_pessoa', 'cpf_cnpj', 'inscricao_estadual', 'inscricao_municipal',
+        'telefone', 'celular', 'whatsapp', 'email', 'site', 'cep', 'endereco', 'numero', 'complemento',
+        'bairro', 'cidade', 'estado', 'banco', 'agencia', 'conta', 'tipo_conta', 'chave_pix', 'tipo_pix',
+        'observacao', 'categoria',
+      ];
+
+      for (const campo of camposPermitidos) {
+        if (req.body[campo] !== undefined) {
+          campos.push(`${campo} = :${campo}`);
+          replacements[campo] = this._normalizarTextoOuNull(req.body[campo]);
+        }
+      }
+
+      if (campos.length === 1) return res.status(422).json({ message: 'Nenhum campo para atualizar.' });
+
+      const [rows] = await postgres.query(
+        `UPDATE "condominio-bh".tb_fin_fornecedor
+            SET ${campos.join(', ')}
+          WHERE id = :id AND id_condominio = :id_condominio
+          RETURNING *`,
+        { replacements }
+      );
+
+      if (!rows[0]) return res.status(404).json({ message: 'Fornecedor não encontrado.' });
+      return res.status(200).json(rows[0]);
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao atualizar fornecedor.', detail: error.message });
+    }
+  }
+
+  async atualizarStatusFornecedor(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const id = this._toInt(req.params.id, null);
+      const ativo = req.body.ativo === true || String(req.body.ativo) === 'true';
+
+      const [rows] = await postgres.query(
+        `UPDATE "condominio-bh".tb_fin_fornecedor
+            SET ativo = :ativo, updated_at = now()
+          WHERE id = :id AND id_condominio = :id_condominio
+          RETURNING *`,
+        { replacements: { id, id_condominio: idCondominio, ativo } }
+      );
+
+      if (!rows[0]) return res.status(404).json({ message: 'Fornecedor não encontrado.' });
+      return res.status(200).json(rows[0]);
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao atualizar status do fornecedor.', detail: error.message });
+    }
+  }
+
+  async excluirFornecedor(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const id = this._toInt(req.params.id, null);
+
+      const [rows] = await postgres.query(
+        `UPDATE "condominio-bh".tb_fin_fornecedor
+            SET ativo = false, updated_at = now()
+          WHERE id = :id AND id_condominio = :id_condominio
+          RETURNING id`,
+        { replacements: { id, id_condominio: idCondominio } }
+      );
+
+      if (!rows[0]) return res.status(404).json({ message: 'Fornecedor não encontrado.' });
+      return res.status(200).json({ message: 'Fornecedor inativado.' });
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao inativar fornecedor.', detail: error.message });
+    }
+  }
+}
+
+module.exports = FinanceiroController;

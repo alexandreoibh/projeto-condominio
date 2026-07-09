@@ -19,6 +19,7 @@ const condominioRoute = require('./routes/condominio');
 const usuarioRoute = require('./routes/usuario');
 const recoveryRoute = require('./routes/recovery');
 const reuniaoRoute = require('./routes/reuniao');
+const financeiroRoute = require('./routes/financeiro');
 // ******************Gestor fim********************************************* 
 
 
@@ -36,6 +37,7 @@ app.use('/api/condominio', condominioRoute);
 app.use('/api/usuario', usuarioRoute);
 app.use('/api/auth/recovery', recoveryRoute);
 app.use('/api/reuniao', reuniaoRoute);
+app.use('/api/condominio/financeiro', financeiroRoute);
 
 app.use('/login', loginRoute);
 app.use('/service/back-cond.php', loginRoute);
