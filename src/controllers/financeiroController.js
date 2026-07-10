@@ -1023,8 +1023,10 @@ class FinanceiroController {
           }
 
           const mesesAbrev = ['JAN', 'FEV', 'MAR', 'ABR', 'MAI', 'JUN', 'JUL', 'AGO', 'SET', 'OUT', 'NOV', 'DEZ'];
+          const mesesCompletos = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
           const [anoPeriodo, mesPeriodo] = periodo.split('-');
           const mensagemNotificacao = `Houve publicação da Prestação Contas ${mesesAbrev[Number(mesPeriodo) - 1]}/${anoPeriodo}, acompanhe no dashboard`;
+          const competenciaFormatada = `${mesesCompletos[Number(mesPeriodo) - 1]}/${anoPeriodo}`;
           const idCodigoBalancete = this._toInt(balancete?.id, null);
 
           for (const idMorador of ids) {
@@ -1078,6 +1080,7 @@ class FinanceiroController {
                   email: destinatario.email,
                   nome: destinatario.nome || '',
                   periodo,
+                  competencia: competenciaFormatada,
                   mensagem: mensagemNotificacao,
                   condominio_nome: destinatario.condominio_nome || '',
                 });
