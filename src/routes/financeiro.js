@@ -253,6 +253,7 @@ router.post(
   [
     body('periodo').optional({ nullable: true, checkFalsy: true }).matches(/^\d{4}-\d{2}(-\d{2})?$/).withMessage('periodo deve estar no formato YYYY-MM ou YYYY-MM-DD.'),
     body('competencia').optional({ nullable: true, checkFalsy: true }).matches(/^\d{4}-\d{2}(-\d{2})?$/).withMessage('competencia deve estar no formato YYYY-MM ou YYYY-MM-DD.'),
+    body('enviar_email').optional({ nullable: true }).isIn([0, 1, '0', '1']).withMessage('enviar_email deve ser 0 ou 1.'),
   ],
   validate,
   controller.publicarBalancete.bind(controller)

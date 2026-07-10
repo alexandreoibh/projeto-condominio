@@ -4,6 +4,7 @@ const { QueryTypes } = require('sequelize');
 const { put } = require('@vercel/blob');
 const postgres = require('../database/postgres');
 const pushNotificationService = require('../service/pushNotificationService');
+const { despacharEmail } = require('../service/emailDispatchService');
 
 const PERFIS_GESTAO = new Set(['Admin', 'Sindico', 'Sub-Sindico']);
 
@@ -925,6 +926,7 @@ class FinanceiroController {
       const periodo = this._normalizarPeriodo(req.body.competencia) || this._normalizarPeriodo(req.body.periodo);
       if (!periodo) return res.status(422).json({ message: 'competencia (ou periodo) é obrigatório.' });
 
+      const enviarEmail = String(req.body.enviar_email) === '1';
       const idPublicadoPor = this._toInt(req.idcliente, null);
       const replacements = { id_condominio: idCondominio, periodo };
 
@@ -1018,6 +1020,71 @@ class FinanceiroController {
               body: `O balancete de ${periodo} foi publicado.`,
               data: { tipo: 'financeiro', periodo },
             });
+          }
+
+          const mesesAbrev = ['JAN', 'FEV', 'MAR', 'ABR', 'MAI', 'JUN', 'JUL', 'AGO', 'SET', 'OUT', 'NOV', 'DEZ'];
+          const [anoPeriodo, mesPeriodo] = periodo.split('-');
+          const mensagemNotificacao = `Houve publicação da Prestação Contas ${mesesAbrev[Number(mesPeriodo) - 1]}/${anoPeriodo}, acompanhe no dashboard`;
+          const idCodigoBalancete = this._toInt(balancete?.id, null);
+
+          for (const idMorador of ids) {
+            await postgres.query(
+              `INSERT INTO "condominio-bh".tb_notificacao_log (
+                  id_notificacao_tipo,
+                  id_usuario,
+                  mensagem,
+                  id_usuario_pedido,
+                  id_condominio,
+                  id_codigo
+                ) VALUES (
+                  :id_notificacao_tipo,
+                  :id_usuario,
+                  :mensagem,
+                  :id_usuario_pedido,
+                  :id_condominio,
+                  :id_codigo
+                )`,
+              {
+                replacements: {
+                  id_notificacao_tipo: 9,
+                  id_usuario: this._toInt(idMorador, null),
+                  mensagem: mensagemNotificacao,
+                  id_usuario_pedido: idPublicadoPor,
+                  id_condominio: idCondominio,
+                  id_codigo: idCodigoBalancete,
+                },
+              }
+            );
+          }
+
+          if (enviarEmail) {
+            const destinatarios = await postgres.query(
+              `SELECT DISTINCT u.id, u.nome, u.email, c.nome AS condominio_nome
+                 FROM "condominio-bh"."tb-usuarios" u
+                 LEFT JOIN "condominio-bh".tb_sgw_perfil p ON p.id::text = u.tipo_perfil_id::text
+                 LEFT JOIN "condominio-bh"."tb-condominios" c ON c.id::text = u.id_condominio::text
+                WHERE u.id_condominio = :id_condominio
+                  AND LOWER(u.status) = 'ativo'
+                  AND COALESCE(p.nome, '') != 'Portaria'
+                  AND u.email IS NOT NULL AND u.email <> ''`,
+              { replacements: { id_condominio: idCondominio }, type: QueryTypes.SELECT }
+            );
+
+            for (const destinatario of destinatarios) {
+              try {
+                await despacharEmail({
+                  _ref: `balancete_${idCondominio}_${periodo}_${destinatario.id}`,
+                  template: 'balancete_publicado',
+                  email: destinatario.email,
+                  nome: destinatario.nome || '',
+                  periodo,
+                  mensagem: mensagemNotificacao,
+                  condominio_nome: destinatario.condominio_nome || '',
+                });
+              } catch (emailErr) {
+                console.error(`[publicarBalancete] Erro ao enviar e-mail para usuário ${destinatario.id}:`, emailErr?.message);
+              }
+            }
           }
         } catch (_) {}
       });
