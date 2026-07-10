@@ -769,10 +769,16 @@ class FinanceiroController {
       if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
 
       const idReceita = this._toInt(req.params.id, null);
+      const idSolicitante = this._toInt(req.idcliente, null);
 
       const receitas = await postgres.query(
-        `SELECT r.id, r.descricao, r.valor, r.data_vencimento, r.id_usuario
+        `SELECT r.id, r.descricao, r.valor, r.data_vencimento, r.id_usuario,
+                u.nome AS usuario_nome, u.email AS usuario_email,
+                c.nome AS condominio_nome,
+                (CURRENT_DATE - r.data_vencimento) AS dias_atraso
            FROM "condominio-bh".tb_fin_receitas r
+           LEFT JOIN "condominio-bh"."tb-usuarios" u ON u.id = r.id_usuario
+           LEFT JOIN "condominio-bh"."tb-condominios" c ON c.id::text = r.id_condominio::text
           WHERE r.id = :id AND r.id_condominio = :id_condominio AND r.situacao = 'em_aberto'`,
         { replacements: { id: idReceita, id_condominio: idCondominio }, type: QueryTypes.SELECT }
       );
@@ -783,14 +789,66 @@ class FinanceiroController {
       res.status(200).json({ message: 'Cobrança disparada.' });
 
       if (receita.id_usuario) {
-        setImmediate(() => {
-          pushNotificationService
-            .enviarParaUsuarios([receita.id_usuario], {
+        const mensagemCobranca = `Você possui débito pendente: ${receita.descricao} — vencido em ${receita.data_vencimento}.`;
+
+        setImmediate(async () => {
+          try {
+            await pushNotificationService.enviarParaUsuarios([receita.id_usuario], {
               title: 'Aviso de Inadimplência',
-              body: `Você possui débito pendente: ${receita.descricao} — vencido em ${receita.data_vencimento}.`,
+              body: mensagemCobranca,
               data: { tipo: 'financeiro', id_receita: receita.id },
-            })
-            .catch(() => {});
+            });
+            await postgres.query(
+              `INSERT INTO "condominio-bh".tb_fin_cobranca_log
+                  (id_condominio, id_receita, id_usuario, id_usuario_solicitante, canal, mensagem)
+                 VALUES (:id_condominio, :id_receita, :id_usuario, :id_usuario_solicitante, 'push', :mensagem)`,
+              {
+                replacements: {
+                  id_condominio: idCondominio,
+                  id_receita: receita.id,
+                  id_usuario: this._toInt(receita.id_usuario, null),
+                  id_usuario_solicitante: idSolicitante,
+                  mensagem: mensagemCobranca,
+                },
+              }
+            );
+          } catch (pushErr) {
+            console.error('[cobrarInadimplente] Erro no push:', pushErr?.message);
+          }
+
+          if (receita.usuario_email) {
+            try {
+              await despacharEmail({
+                _ref: `cobranca_${idCondominio}_${receita.id}`,
+                template: 'cobranca_inadimplente',
+                emails: [receita.usuario_email],
+                cobranca: {
+                  nome: receita.usuario_nome || '',
+                  descricao: receita.descricao || '',
+                  valor: Number(receita.valor || 0),
+                  data_vencimento: receita.data_vencimento,
+                  dias_atraso: Number(receita.dias_atraso || 0),
+                  condominio_nome: receita.condominio_nome || '',
+                },
+              });
+              await postgres.query(
+                `INSERT INTO "condominio-bh".tb_fin_cobranca_log
+                    (id_condominio, id_receita, id_usuario, id_usuario_solicitante, canal, mensagem)
+                   VALUES (:id_condominio, :id_receita, :id_usuario, :id_usuario_solicitante, 'email', :mensagem)`,
+                {
+                  replacements: {
+                    id_condominio: idCondominio,
+                    id_receita: receita.id,
+                    id_usuario: this._toInt(receita.id_usuario, null),
+                    id_usuario_solicitante: idSolicitante,
+                    mensagem: mensagemCobranca,
+                  },
+                }
+              );
+            } catch (emailErr) {
+              console.error('[cobrarInadimplente] Erro no e-mail:', emailErr?.message);
+            }
+          }
         });
       }
     } catch (error) {
