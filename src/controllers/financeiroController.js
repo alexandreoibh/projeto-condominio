@@ -1081,20 +1081,19 @@ class FinanceiroController {
 
             console.log(`[publicarBalancete] Disparando e-mail para ${destinatarios.length} destinatário(s), template=balancete_publicado.`);
 
-            for (const destinatario of destinatarios) {
+            if (destinatarios.length > 0) {
               try {
                 await despacharEmail({
-                  _ref: `balancete_${idCondominio}_${periodo}_${destinatario.id}`,
+                  _ref: `balancete_${idCondominio}_${periodo}`,
                   template: 'balancete_publicado',
-                  email: destinatario.email,
-                  nome: destinatario.nome || '',
-                  periodo,
-                  competencia: competenciaFormatada,
-                  mensagem: mensagemNotificacao,
-                  condominio_nome: destinatario.condominio_nome || '',
+                  emails: destinatarios.map((d) => d.email),
+                  balancete: {
+                    competencia: competenciaFormatada,
+                    condominio_nome: destinatarios[0]?.condominio_nome || '',
+                  },
                 });
               } catch (emailErr) {
-                console.error(`[publicarBalancete] Erro ao enviar e-mail para usuário ${destinatario.id}:`, emailErr?.message);
+                console.error('[publicarBalancete] Erro ao enviar e-mail em lote:', emailErr?.message);
               }
             }
           } catch (destinatariosErr) {
