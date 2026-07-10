@@ -880,7 +880,7 @@ class FinanceiroController {
         if (!publicado[0]) return res.status(404).json({ message: 'Balancete não publicado para este período.' });
       }
 
-      const [recebidoAcumulado, pagoAcumulado, receitasAno, despesasAno, balancete, receitas, despesas] = await Promise.all([
+      const [recebidoAcumulado, pagoAcumulado, receitasAno, despesasAno, balancete, receitas, despesas, ultimaAlteracaoRows] = await Promise.all([
         postgres.query(
           `SELECT COALESCE(SUM(CASE WHEN situacao = 'pago' THEN valor ELSE 0 END), 0)::numeric AS total
              FROM "condominio-bh".tb_fin_receitas
@@ -943,15 +943,39 @@ class FinanceiroController {
             ORDER BY d.data_despesa`,
           { replacements, type: QueryTypes.SELECT }
         ),
+        postgres.query(
+          `SELECT MAX(updated_at) AS ultima_alteracao
+             FROM (
+               SELECT updated_at FROM "condominio-bh".tb_fin_receitas WHERE id_condominio = :id_condominio AND TO_CHAR(competencia, 'YYYY-MM') = :periodo
+               UNION ALL
+               SELECT updated_at FROM "condominio-bh".tb_fin_despesas WHERE id_condominio = :id_condominio AND TO_CHAR(competencia, 'YYYY-MM') = :periodo
+             ) t`,
+          { replacements, type: QueryTypes.SELECT }
+        ),
       ]);
 
       const totalRecebidoAcumulado = Number(recebidoAcumulado[0]?.total || 0);
       const totalPagoAcumulado = Number(pagoAcumulado[0]?.total || 0);
 
+      const balanceteRow = balancete[0] || null;
+      const ultimaAlteracao = ultimaAlteracaoRows[0]?.ultima_alteracao || null;
+      const balanceteComFlag = balanceteRow
+        ? {
+            ...balanceteRow,
+            ultima_alteracao_em: ultimaAlteracao,
+            alterado_apos_publicacao: Boolean(
+              balanceteRow.publicado &&
+                ultimaAlteracao &&
+                balanceteRow.publicado_em &&
+                new Date(ultimaAlteracao) > new Date(balanceteRow.publicado_em)
+            ),
+          }
+        : null;
+
       return res.status(200).json({
         periodo,
         saldo_caixa: totalRecebidoAcumulado - totalPagoAcumulado,
-        balancete: balancete[0] || null,
+        balancete: balanceteComFlag,
         receitas,
         despesas,
         totais_ano: {
