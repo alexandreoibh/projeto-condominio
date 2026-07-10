@@ -856,6 +856,83 @@ class FinanceiroController {
     }
   }
 
+  // ─── Cobrança (log) ──────────────────────────────────────────────────────────
+
+  async listarCobrancaLog(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const page = Math.max(this._toInt(req.query.page, 1), 1);
+      const pageSize = Math.min(Math.max(this._toInt(req.query.pageSize, 25), 1), 200);
+      const offset = (page - 1) * pageSize;
+
+      const whereParts = ['cl.id_condominio = :id_condominio'];
+      const replacements = { id_condominio: idCondominio, limit: pageSize, offset };
+
+      const idReceitaFiltro = this._toInt(req.query.id_receita, null);
+      if (idReceitaFiltro) {
+        whereParts.push('cl.id_receita = :id_receita');
+        replacements.id_receita = idReceitaFiltro;
+      }
+
+      const idUsuarioFiltro = this._toInt(req.query.id_usuario, null);
+      if (idUsuarioFiltro) {
+        whereParts.push('cl.id_usuario = :id_usuario');
+        replacements.id_usuario = idUsuarioFiltro;
+      }
+
+      if (req.query.canal) {
+        whereParts.push('cl.canal = :canal');
+        replacements.canal = req.query.canal;
+      }
+
+      if (req.query.data_inicio) {
+        whereParts.push('cl.created_at >= :data_inicio');
+        replacements.data_inicio = req.query.data_inicio;
+      }
+      if (req.query.data_fim) {
+        whereParts.push('cl.created_at <= :data_fim');
+        replacements.data_fim = req.query.data_fim;
+      }
+
+      const whereClause = whereParts.join(' AND ');
+
+      const [totalRows, data] = await Promise.all([
+        postgres.query(
+          `SELECT COUNT(*)::int AS total FROM "condominio-bh".tb_fin_cobranca_log cl WHERE ${whereClause}`,
+          { replacements, type: QueryTypes.SELECT }
+        ),
+        postgres.query(
+          `SELECT cl.id, cl.id_receita, cl.canal, cl.mensagem, cl.created_at,
+                  cl.id_usuario, u.nome AS usuario_nome,
+                  cl.id_usuario_solicitante, us.nome AS solicitante_nome,
+                  r.descricao AS receita_descricao, r.valor AS receita_valor
+             FROM "condominio-bh".tb_fin_cobranca_log cl
+             LEFT JOIN "condominio-bh"."tb-usuarios" u ON u.id = cl.id_usuario
+             LEFT JOIN "condominio-bh"."tb-usuarios" us ON us.id = cl.id_usuario_solicitante
+             LEFT JOIN "condominio-bh".tb_fin_receitas r ON r.id = cl.id_receita
+            WHERE ${whereClause}
+            ORDER BY cl.created_at DESC
+            LIMIT :limit OFFSET :offset`,
+          { replacements, type: QueryTypes.SELECT }
+        ),
+      ]);
+
+      const total = totalRows[0]?.total || 0;
+      return res.status(200).json({
+        page,
+        pageSize,
+        total,
+        totalPages: total === 0 ? 0 : Math.ceil(total / pageSize),
+        data,
+      });
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao listar cobranças.', detail: error.message });
+    }
+  }
+
   // ─── Balancete ───────────────────────────────────────────────────────────────
 
   async getBalancete(req, res) {

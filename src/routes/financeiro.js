@@ -234,6 +234,24 @@ router.post(
   controller.cobrarInadimplente.bind(controller)
 );
 
+// ── Cobrança (log) ────────────────────────────────────────────────────────────
+
+router.get(
+  '/cobrancas',
+  auth,
+  [
+    query('id_receita').optional({ nullable: true, checkFalsy: true }).isInt({ min: 1 }).withMessage('id_receita deve ser inteiro positivo.'),
+    query('id_usuario').optional({ nullable: true, checkFalsy: true }).isInt({ min: 1 }).withMessage('id_usuario deve ser inteiro positivo.'),
+    query('canal').optional({ nullable: true, checkFalsy: true }).isIn(['push', 'email', 'sms']).withMessage('canal inválido.'),
+    query('data_inicio').optional({ nullable: true, checkFalsy: true }).isISO8601().withMessage('data_inicio deve ser data válida.'),
+    query('data_fim').optional({ nullable: true, checkFalsy: true }).isISO8601().withMessage('data_fim deve ser data válida.'),
+    query('page').optional().isInt({ min: 1 }).withMessage('page deve ser inteiro maior que zero.'),
+    query('pageSize').optional().isInt({ min: 1, max: 200 }).withMessage('pageSize deve estar entre 1 e 200.'),
+  ],
+  validate,
+  controller.listarCobrancaLog.bind(controller)
+);
+
 // ── Balancete ─────────────────────────────────────────────────────────────────
 
 router.get(
