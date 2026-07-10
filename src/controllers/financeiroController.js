@@ -811,17 +811,15 @@ class FinanceiroController {
 
       // Moradores só veem balancetes publicados
       if (!this._isGestor(req)) {
-        const bal = await postgres.query(
-          `SELECT b.*, u.nome AS publicado_por_nome
-             FROM "condominio-bh".tb_fin_balancetes b
-             LEFT JOIN "condominio-bh"."tb-usuarios" u ON u.id = b.publicado_por
-            WHERE b.id_condominio = :id_condominio
-              AND TO_CHAR(b.competencia, 'YYYY-MM') = :periodo
-              AND b.publicado = true`,
+        const publicado = await postgres.query(
+          `SELECT 1
+             FROM "condominio-bh".tb_fin_balancetes
+            WHERE id_condominio = :id_condominio
+              AND TO_CHAR(competencia, 'YYYY-MM') = :periodo
+              AND publicado = true`,
           { replacements, type: QueryTypes.SELECT }
         );
-        if (!bal[0]) return res.status(404).json({ message: 'Balancete não publicado para este período.' });
-        return res.status(200).json(bal[0]);
+        if (!publicado[0]) return res.status(404).json({ message: 'Balancete não publicado para este período.' });
       }
 
       const [recebidoAcumulado, pagoAcumulado, receitasAno, despesasAno, balancete, receitas, despesas] = await Promise.all([
@@ -1004,8 +1002,16 @@ class FinanceiroController {
         saldo_final: saldoFinal,
       });
 
-      // Notifica moradores via push de forma assíncrona
+      // Notifica moradores via push / log / e-mail — cada etapa isolada, uma falha não bloqueia as demais
       setImmediate(async () => {
+        const mesesAbrev = ['JAN', 'FEV', 'MAR', 'ABR', 'MAI', 'JUN', 'JUL', 'AGO', 'SET', 'OUT', 'NOV', 'DEZ'];
+        const mesesCompletos = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+        const [anoPeriodo, mesPeriodo] = periodo.split('-');
+        const mensagemNotificacao = `Houve publicação da Prestação Contas ${mesesAbrev[Number(mesPeriodo) - 1]}/${anoPeriodo}, acompanhe no dashboard`;
+        const competenciaFormatada = `${mesesCompletos[Number(mesPeriodo) - 1]}/${anoPeriodo}`;
+        const idCodigoBalancete = this._toInt(balancete?.id, null);
+
+        let ids = [];
         try {
           const moradores = await postgres.query(
             `SELECT DISTINCT u.id
@@ -1013,7 +1019,7 @@ class FinanceiroController {
               WHERE u.id_condominio = :id_condominio AND LOWER(u.status) = 'ativo'`,
             { replacements: { id_condominio: idCondominio }, type: QueryTypes.SELECT }
           );
-          const ids = moradores.map((m) => m.id);
+          ids = moradores.map((m) => m.id);
           if (ids.length > 0) {
             await pushNotificationService.enviarParaUsuarios(ids, {
               title: 'Balancete Disponível',
@@ -1021,14 +1027,11 @@ class FinanceiroController {
               data: { tipo: 'financeiro', periodo },
             });
           }
+        } catch (pushErr) {
+          console.error('[publicarBalancete] Erro no push:', pushErr?.message);
+        }
 
-          const mesesAbrev = ['JAN', 'FEV', 'MAR', 'ABR', 'MAI', 'JUN', 'JUL', 'AGO', 'SET', 'OUT', 'NOV', 'DEZ'];
-          const mesesCompletos = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
-          const [anoPeriodo, mesPeriodo] = periodo.split('-');
-          const mensagemNotificacao = `Houve publicação da Prestação Contas ${mesesAbrev[Number(mesPeriodo) - 1]}/${anoPeriodo}, acompanhe no dashboard`;
-          const competenciaFormatada = `${mesesCompletos[Number(mesPeriodo) - 1]}/${anoPeriodo}`;
-          const idCodigoBalancete = this._toInt(balancete?.id, null);
-
+        try {
           for (const idMorador of ids) {
             await postgres.query(
               `INSERT INTO "condominio-bh".tb_notificacao_log (
@@ -1058,8 +1061,12 @@ class FinanceiroController {
               }
             );
           }
+        } catch (logErr) {
+          console.error('[publicarBalancete] Erro no log de notificação:', logErr?.message);
+        }
 
-          if (enviarEmail) {
+        if (enviarEmail) {
+          try {
             const destinatarios = await postgres.query(
               `SELECT DISTINCT u.id, u.nome, u.email, c.nome AS condominio_nome
                  FROM "condominio-bh"."tb-usuarios" u
@@ -1071,6 +1078,8 @@ class FinanceiroController {
                   AND u.email IS NOT NULL AND u.email <> ''`,
               { replacements: { id_condominio: idCondominio }, type: QueryTypes.SELECT }
             );
+
+            console.log(`[publicarBalancete] Disparando e-mail para ${destinatarios.length} destinatário(s), template=balancete_publicado.`);
 
             for (const destinatario of destinatarios) {
               try {
@@ -1088,8 +1097,10 @@ class FinanceiroController {
                 console.error(`[publicarBalancete] Erro ao enviar e-mail para usuário ${destinatario.id}:`, emailErr?.message);
               }
             }
+          } catch (destinatariosErr) {
+            console.error('[publicarBalancete] Erro no disparo de e-mail:', destinatariosErr?.message);
           }
-        } catch (_) {}
+        }
       });
     } catch (error) {
       return res.status(500).json({ message: 'Falha ao publicar balancete.', detail: error.message });
