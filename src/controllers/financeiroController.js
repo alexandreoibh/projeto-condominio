@@ -757,7 +757,8 @@ class FinanceiroController {
                   i.juros, i.multa, i.valor_atualizado,
                   un.unidades_bloco,
                   us.nome,
-                  us.bloco
+                  us.bloco,
+                  us.email
              FROM "condominio-bh".tb_fin_receitas r
              LEFT JOIN "condominio-bh".tb_fin_inadimplencia i ON i.id_receita = r.id
              LEFT JOIN "condominio-bh".tb_condominios_unidades un ON un.id = r.id_unidade
