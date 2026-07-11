@@ -548,7 +548,7 @@ class FinanceiroController {
       const nomeArquivo = `${Date.now()}_${Math.random().toString(36).substr(2, 8)}.${ext}`;
       const blobPath = `cobranca/boletos/condominio-${idCondominio}/${anomes}/${nomeArquivo}`;
 
-      const uploadResult = await put(blobPath, arquivo.buffer, { access: 'public', contentType: arquivo.mimetype });
+      const uploadResult = await put(blobPath, arquivo.buffer, { access: 'private', contentType: arquivo.mimetype });
       const url = uploadResult?.url || blobPath;
 
       return res.status(201).json({ url, blob_path: blobPath, nome_arquivo: arquivo.originalname });
