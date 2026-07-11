@@ -771,32 +771,77 @@ class FinanceiroController {
       const idReceita = this._toInt(req.params.id, null);
       const idSolicitante = this._toInt(req.idcliente, null);
 
-      const receitas = await postgres.query(
-        `SELECT r.id, r.descricao, r.valor, r.data_vencimento, r.id_usuario,
+      const outrasPendenciasIds = Array.isArray(req.body.outras_pendencias_ids)
+        ? [...new Set(
+            req.body.outras_pendencias_ids
+              .map((valor) => this._toInt(valor, null))
+              .filter((valor) => valor && valor !== idReceita)
+          )]
+        : [];
+      const anexosUrls = Array.isArray(req.body.anexos_urls)
+        ? req.body.anexos_urls.map((valor) => String(valor).trim()).filter(Boolean)
+        : [];
+      const observacao = this._normalizarTextoOuNull(req.body.observacao);
+
+      const idsConsulta = [idReceita, ...outrasPendenciasIds];
+
+      const receitasEncontradas = await postgres.query(
+        `SELECT r.id, r.id_unidade, r.descricao, r.valor, r.data_vencimento, r.id_usuario,
                 u.nome AS usuario_nome, u.email AS usuario_email,
                 c.nome AS condominio_nome,
                 (CURRENT_DATE - r.data_vencimento) AS dias_atraso
            FROM "condominio-bh".tb_fin_receitas r
            LEFT JOIN "condominio-bh"."tb-usuarios" u ON u.id = r.id_usuario
            LEFT JOIN "condominio-bh"."tb-condominios" c ON c.id::text = r.id_condominio::text
-          WHERE r.id = :id AND r.id_condominio = :id_condominio AND r.situacao = 'em_aberto'`,
-        { replacements: { id: idReceita, id_condominio: idCondominio }, type: QueryTypes.SELECT }
+          WHERE r.id IN (:ids) AND r.id_condominio = :id_condominio AND r.situacao = 'em_aberto'`,
+        { replacements: { ids: idsConsulta, id_condominio: idCondominio }, type: QueryTypes.SELECT }
       );
 
-      if (!receitas[0]) return res.status(404).json({ message: 'Receita inadimplente não encontrada.' });
+      const porId = new Map(receitasEncontradas.map((r) => [this._toInt(r.id, null), r]));
+      const receitaPrincipal = porId.get(idReceita);
+      if (!receitaPrincipal) return res.status(404).json({ message: 'Receita inadimplente não encontrada.' });
 
-      const receita = receitas[0];
-      res.status(200).json({ message: 'Cobrança disparada.' });
+      if (outrasPendenciasIds.length > 0) {
+        const naoEncontrados = outrasPendenciasIds.filter((id) => !porId.has(id));
+        if (naoEncontrados.length > 0) {
+          return res.status(422).json({
+            message: `Pendência(s) não encontrada(s) ou não está(ão) em aberto: ${naoEncontrados.join(', ')}`,
+          });
+        }
 
-      if (receita.id_usuario) {
-        const mensagemCobranca = `Você possui débito pendente: ${receita.descricao} — vencido em ${receita.data_vencimento}.`;
+        const idUnidadePrincipal = this._toInt(receitaPrincipal.id_unidade, null);
+        if (!idUnidadePrincipal) {
+          return res.status(422).json({ message: 'A pendência principal não tem unidade vinculada — não é possível consolidar.' });
+        }
 
-        setImmediate(async () => {
+        const divergentes = outrasPendenciasIds.filter(
+          (id) => this._toInt(porId.get(id).id_unidade, null) !== idUnidadePrincipal
+        );
+        if (divergentes.length > 0) {
+          return res.status(422).json({
+            message: `Pendência(s) de outra unidade, consolidação não permitida: ${divergentes.join(', ')}`,
+          });
+        }
+      }
+
+      const pendencias = idsConsulta.map((id) => porId.get(id));
+      const consolidado = outrasPendenciasIds.length > 0;
+
+      res.status(200).json({
+        message: 'Cobrança disparada.',
+        ...(consolidado ? { pendencias_incluidas: idsConsulta } : {}),
+      });
+
+      setImmediate(async () => {
+        for (const pendencia of pendencias) {
+          if (!pendencia.id_usuario) continue;
+
+          const mensagemIndividual = `Você possui débito pendente: ${pendencia.descricao} — vencido em ${pendencia.data_vencimento}.`;
           try {
-            await pushNotificationService.enviarParaUsuarios([receita.id_usuario], {
+            await pushNotificationService.enviarParaUsuarios([pendencia.id_usuario], {
               title: 'Aviso de Inadimplência',
-              body: mensagemCobranca,
-              data: { tipo: 'financeiro', id_receita: receita.id },
+              body: mensagemIndividual,
+              data: { tipo: 'financeiro', id_receita: pendencia.id },
             });
             await postgres.query(
               `INSERT INTO "condominio-bh".tb_fin_cobranca_log
@@ -805,32 +850,54 @@ class FinanceiroController {
               {
                 replacements: {
                   id_condominio: idCondominio,
-                  id_receita: receita.id,
-                  id_usuario: this._toInt(receita.id_usuario, null),
+                  id_receita: pendencia.id,
+                  id_usuario: this._toInt(pendencia.id_usuario, null),
                   id_usuario_solicitante: idSolicitante,
-                  mensagem: mensagemCobranca,
+                  mensagem: mensagemIndividual,
                 },
               }
             );
           } catch (pushErr) {
-            console.error('[cobrarInadimplente] Erro no push:', pushErr?.message);
+            console.error(`[cobrarInadimplente] Erro no push (receita ${pendencia.id}):`, pushErr?.message);
           }
+        }
 
-          if (receita.usuario_email) {
-            try {
-              await despacharEmail({
-                _ref: `cobranca_${idCondominio}_${receita.id}`,
-                template: 'cobranca_inadimplente',
-                emails: [receita.usuario_email],
-                cobranca: {
-                  nome: receita.usuario_nome || '',
-                  descricao: receita.descricao || '',
-                  valor: Number(receita.valor || 0),
-                  data_vencimento: receita.data_vencimento,
-                  dias_atraso: Number(receita.dias_atraso || 0),
-                  condominio_nome: receita.condominio_nome || '',
-                },
-              });
+        const emails = [...new Set(pendencias.map((p) => p.usuario_email).filter(Boolean))];
+        if (emails.length > 0) {
+          try {
+            const valorTotal = pendencias.reduce((soma, p) => soma + Number(p.valor || 0), 0);
+            const diasAtrasoMax = Math.max(...pendencias.map((p) => Number(p.dias_atraso || 0)));
+
+            const mensagemCobranca = consolidado
+              ? `Você possui ${pendencias.length} débitos pendentes na sua unidade, totalizando R$ ${valorTotal.toFixed(2)}.`
+              : `Você possui débito pendente: ${receitaPrincipal.descricao} — vencido em ${receitaPrincipal.data_vencimento}.`;
+
+            const details = {};
+            if (observacao) details['Observação'] = observacao;
+            if (anexosUrls.length > 0) details['Boletos'] = anexosUrls.join('\n');
+            if (consolidado) {
+              details['Pendências consolidadas'] = pendencias
+                .map((p) => `${p.descricao} — R$ ${Number(p.valor || 0).toFixed(2)} — venceu ${p.data_vencimento}`)
+                .join('\n');
+            }
+
+            await despacharEmail({
+              _ref: `cobranca_${idCondominio}_${idsConsulta.join('-')}`,
+              template: 'cobranca_inadimplente',
+              emails,
+              cobranca: {
+                nome: receitaPrincipal.usuario_nome || '',
+                descricao: consolidado ? `${pendencias.length} pendências consolidadas` : (receitaPrincipal.descricao || ''),
+                valor: valorTotal,
+                data_vencimento: receitaPrincipal.data_vencimento,
+                dias_atraso: diasAtrasoMax,
+                condominio_nome: receitaPrincipal.condominio_nome || '',
+              },
+              ...(Object.keys(details).length > 0 ? { details } : {}),
+              ...(anexosUrls.length > 0 ? { link: anexosUrls[0] } : {}),
+            });
+
+            for (const pendencia of pendencias) {
               await postgres.query(
                 `INSERT INTO "condominio-bh".tb_fin_cobranca_log
                     (id_condominio, id_receita, id_usuario, id_usuario_solicitante, canal, mensagem)
@@ -838,19 +905,19 @@ class FinanceiroController {
                 {
                   replacements: {
                     id_condominio: idCondominio,
-                    id_receita: receita.id,
-                    id_usuario: this._toInt(receita.id_usuario, null),
+                    id_receita: pendencia.id,
+                    id_usuario: this._toInt(pendencia.id_usuario, null),
                     id_usuario_solicitante: idSolicitante,
                     mensagem: mensagemCobranca,
                   },
                 }
               );
-            } catch (emailErr) {
-              console.error('[cobrarInadimplente] Erro no e-mail:', emailErr?.message);
             }
+          } catch (emailErr) {
+            console.error('[cobrarInadimplente] Erro no e-mail:', emailErr?.message);
           }
-        });
-      }
+        }
+      });
     } catch (error) {
       return res.status(500).json({ message: 'Falha ao processar cobrança.', detail: error.message });
     }

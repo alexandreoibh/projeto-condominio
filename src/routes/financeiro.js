@@ -229,7 +229,14 @@ router.get(
 router.post(
   '/inadimplencia/:id/cobrar',
   auth,
-  [param('id').isInt({ min: 1 }).withMessage('id inválido.')],
+  [
+    param('id').isInt({ min: 1 }).withMessage('id inválido.'),
+    body('anexos_urls').optional({ nullable: true }).isArray({ max: 20 }).withMessage('anexos_urls deve ser uma lista de até 20 URLs.'),
+    body('anexos_urls.*').optional().isURL({ require_protocol: true }).withMessage('cada item de anexos_urls deve ser uma URL válida.'),
+    body('observacao').optional({ nullable: true, checkFalsy: true }).isLength({ max: 1000 }).withMessage('observacao deve ter no máximo 1000 caracteres.'),
+    body('outras_pendencias_ids').optional({ nullable: true }).isArray({ max: 20 }).withMessage('outras_pendencias_ids deve ser uma lista de até 20 ids.'),
+    body('outras_pendencias_ids.*').optional().isInt({ min: 1 }).withMessage('cada item de outras_pendencias_ids deve ser um id inteiro positivo.'),
+  ],
   validate,
   controller.cobrarInadimplente.bind(controller)
 );
