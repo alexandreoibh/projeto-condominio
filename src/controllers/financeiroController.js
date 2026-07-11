@@ -845,8 +845,8 @@ class FinanceiroController {
             });
             await postgres.query(
               `INSERT INTO "condominio-bh".tb_fin_cobranca_log
-                  (id_condominio, id_receita, id_usuario, id_usuario_solicitante, canal, mensagem)
-                 VALUES (:id_condominio, :id_receita, :id_usuario, :id_usuario_solicitante, 'push', :mensagem)`,
+                  (id_condominio, id_receita, id_usuario, id_usuario_solicitante, canal, mensagem, observacao, enviou_anexo)
+                 VALUES (:id_condominio, :id_receita, :id_usuario, :id_usuario_solicitante, 'push', :mensagem, :observacao, false)`,
               {
                 replacements: {
                   id_condominio: idCondominio,
@@ -854,6 +854,7 @@ class FinanceiroController {
                   id_usuario: this._toInt(pendencia.id_usuario, null),
                   id_usuario_solicitante: idSolicitante,
                   mensagem: mensagemIndividual,
+                  observacao,
                 },
               }
             );
@@ -900,8 +901,8 @@ class FinanceiroController {
             for (const pendencia of pendencias) {
               await postgres.query(
                 `INSERT INTO "condominio-bh".tb_fin_cobranca_log
-                    (id_condominio, id_receita, id_usuario, id_usuario_solicitante, canal, mensagem)
-                   VALUES (:id_condominio, :id_receita, :id_usuario, :id_usuario_solicitante, 'email', :mensagem)`,
+                    (id_condominio, id_receita, id_usuario, id_usuario_solicitante, canal, mensagem, observacao, enviou_anexo)
+                   VALUES (:id_condominio, :id_receita, :id_usuario, :id_usuario_solicitante, 'email', :mensagem, :observacao, :enviou_anexo)`,
                 {
                   replacements: {
                     id_condominio: idCondominio,
@@ -909,6 +910,8 @@ class FinanceiroController {
                     id_usuario: this._toInt(pendencia.id_usuario, null),
                     id_usuario_solicitante: idSolicitante,
                     mensagem: mensagemCobranca,
+                    observacao,
+                    enviou_anexo: anexosUrls.length > 0,
                   },
                 }
               );
@@ -973,6 +976,7 @@ class FinanceiroController {
         ),
         postgres.query(
           `SELECT cl.id, cl.id_receita, cl.canal, cl.mensagem, cl.created_at,
+                  cl.observacao, cl.enviou_anexo,
                   cl.id_usuario, u.nome AS usuario_nome,
                   cl.id_usuario_solicitante, us.nome AS solicitante_nome,
                   r.descricao AS receita_descricao, r.valor AS receita_valor
