@@ -245,7 +245,6 @@ router.post(
   '/inadimplencia/boletos/upload',
   auth,
   uploadDoc.single('arquivo'),
-  [body('id_unidade').notEmpty().withMessage('id_unidade é obrigatório.').bail().isInt({ min: 1 }).withMessage('id_unidade deve ser inteiro positivo.')],
   validate,
   controller.uploadBoletoCobranca.bind(controller)
 );

@@ -542,14 +542,11 @@ class FinanceiroController {
       if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
       if (!req.file) return res.status(400).json({ message: 'Arquivo não enviado.' });
 
-      const idUnidade = this._toInt(req.body.id_unidade, null);
-      if (!idUnidade) return res.status(422).json({ message: 'id_unidade é obrigatório.' });
-
       const arquivo = req.file;
       const ext = (arquivo.originalname.split('.').pop() || 'bin').toLowerCase();
       const anomes = this._periodoAtual().replace('-', '');
       const nomeArquivo = `${Date.now()}_${Math.random().toString(36).substr(2, 8)}.${ext}`;
-      const blobPath = `cobranca/boletos/${idUnidade}/${anomes}/${nomeArquivo}`;
+      const blobPath = `cobranca/boletos/condominio-${idCondominio}/${anomes}/${nomeArquivo}`;
 
       const uploadResult = await put(blobPath, arquivo.buffer, { access: 'public', contentType: arquivo.mimetype });
       const url = uploadResult?.url || blobPath;
