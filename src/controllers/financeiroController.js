@@ -535,6 +535,31 @@ class FinanceiroController {
     }
   }
 
+  async uploadBoletoCobranca(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+      if (!req.file) return res.status(400).json({ message: 'Arquivo não enviado.' });
+
+      const idUnidade = this._toInt(req.body.id_unidade, null);
+      if (!idUnidade) return res.status(422).json({ message: 'id_unidade é obrigatório.' });
+
+      const arquivo = req.file;
+      const ext = (arquivo.originalname.split('.').pop() || 'bin').toLowerCase();
+      const anomes = this._periodoAtual().replace('-', '');
+      const nomeArquivo = `${Date.now()}_${Math.random().toString(36).substr(2, 8)}.${ext}`;
+      const blobPath = `cobranca/boletos/${idUnidade}/${anomes}/${nomeArquivo}`;
+
+      const uploadResult = await put(blobPath, arquivo.buffer, { access: 'public', contentType: arquivo.mimetype });
+      const url = uploadResult?.url || blobPath;
+
+      return res.status(201).json({ url, blob_path: blobPath, nome_arquivo: arquivo.originalname });
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao enviar boleto.', detail: error.message });
+    }
+  }
+
   async excluirDocumentoDespesa(req, res) {
     try {
       const idCondominio = this._toInt(req.id_condominio, null);
@@ -901,8 +926,8 @@ class FinanceiroController {
             for (const pendencia of pendencias) {
               await postgres.query(
                 `INSERT INTO "condominio-bh".tb_fin_cobranca_log
-                    (id_condominio, id_receita, id_usuario, id_usuario_solicitante, canal, mensagem, observacao, enviou_anexo)
-                   VALUES (:id_condominio, :id_receita, :id_usuario, :id_usuario_solicitante, 'email', :mensagem, :observacao, :enviou_anexo)`,
+                    (id_condominio, id_receita, id_usuario, id_usuario_solicitante, canal, mensagem, observacao, enviou_anexo, path_anexo)
+                   VALUES (:id_condominio, :id_receita, :id_usuario, :id_usuario_solicitante, 'email', :mensagem, :observacao, :enviou_anexo, :path_anexo)`,
                 {
                   replacements: {
                     id_condominio: idCondominio,
@@ -912,6 +937,7 @@ class FinanceiroController {
                     mensagem: mensagemCobranca,
                     observacao,
                     enviou_anexo: anexosUrls.length > 0,
+                    path_anexo: anexosUrls.length > 0 ? anexosUrls.join('\n') : null,
                   },
                 }
               );
@@ -976,7 +1002,7 @@ class FinanceiroController {
         ),
         postgres.query(
           `SELECT cl.id, cl.id_receita, cl.canal, cl.mensagem, cl.created_at,
-                  cl.observacao, cl.enviou_anexo,
+                  cl.observacao, cl.enviou_anexo, cl.path_anexo,
                   cl.id_usuario, u.nome AS usuario_nome,
                   cl.id_usuario_solicitante, us.nome AS solicitante_nome,
                   r.descricao AS receita_descricao, r.valor AS receita_valor
