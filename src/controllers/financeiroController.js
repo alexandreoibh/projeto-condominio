@@ -31,6 +31,10 @@ class FinanceiroController {
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   }
 
+  _publicApiBaseUrl() {
+    return process.env.PUBLIC_API_BASE_URL || 'https://back-projeto-condominio.vercel.app';
+  }
+
   _normalizarPeriodo(valor) {
     if (!valor) return null;
     const match = String(valor).trim().match(/^(\d{4}-\d{2})/);
@@ -557,6 +561,34 @@ class FinanceiroController {
     }
   }
 
+  async downloadBoletoCobranca(req, res) {
+    try {
+      const url = String(req.query.url || '');
+      const baseBlobUrl = process.env.BLOB_STORAGE_URL || '';
+
+      if (!url || !baseBlobUrl || !url.startsWith(baseBlobUrl) || !url.includes('/cobranca/boletos/')) {
+        return res.status(400).json({ message: 'Parâmetro url inválido.' });
+      }
+
+      const blobResponse = await fetch(url, {
+        headers: { Authorization: `Bearer ${process.env.BLOB_READ_WRITE_TOKEN}` },
+      });
+
+      if (!blobResponse.ok) {
+        return res.status(blobResponse.status).json({ message: 'Falha ao obter o boleto.' });
+      }
+
+      const nomeArquivo = url.split('/').pop() || 'boleto.pdf';
+      const buffer = Buffer.from(await blobResponse.arrayBuffer());
+
+      res.setHeader('Content-Type', blobResponse.headers.get('content-type') || 'application/octet-stream');
+      res.setHeader('Content-Disposition', `attachment; filename="${nomeArquivo}"`);
+      return res.status(200).send(buffer);
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao baixar boleto.', detail: error.message });
+    }
+  }
+
   async excluirDocumentoDespesa(req, res) {
     try {
       const idCondominio = this._toInt(req.id_condominio, null);
@@ -896,9 +928,13 @@ class FinanceiroController {
               ? `Você possui ${pendencias.length} débitos pendentes na sua unidade, totalizando R$ ${valorTotal.toFixed(2)}.`
               : `Você possui débito pendente: ${receitaPrincipal.descricao} — vencido em ${receitaPrincipal.data_vencimento}.`;
 
+            const boletosParaEmail = anexosUrls.map(
+              (url) => `${this._publicApiBaseUrl()}/api/condominio/financeiro/boletos/download?url=${encodeURIComponent(url)}`
+            );
+
             const details = {};
             if (observacao) details['Observação'] = observacao;
-            if (anexosUrls.length > 0) details['Boletos'] = anexosUrls.join('\n');
+            if (boletosParaEmail.length > 0) details['Boletos'] = boletosParaEmail.join('\n');
             if (consolidado) {
               details['Pendências consolidadas'] = pendencias
                 .map((p) => `${p.descricao} — R$ ${Number(p.valor || 0).toFixed(2)} — venceu ${p.data_vencimento}`)
@@ -918,7 +954,7 @@ class FinanceiroController {
                 condominio_nome: receitaPrincipal.condominio_nome || '',
               },
               ...(Object.keys(details).length > 0 ? { details } : {}),
-              ...(anexosUrls.length > 0 ? { link: anexosUrls[0] } : {}),
+              ...(boletosParaEmail.length > 0 ? { link: boletosParaEmail[0] } : {}),
             });
 
             for (const pendencia of pendencias) {

@@ -249,6 +249,12 @@ router.post(
   controller.uploadBoletoCobranca.bind(controller)
 );
 
+// Sem `auth` de propósito: aberta pelo morador direto do link do e-mail, sem login.
+router.get(
+  '/boletos/download',
+  controller.downloadBoletoCobranca.bind(controller)
+);
+
 // ── Cobrança (log) ────────────────────────────────────────────────────────────
 
 router.get(
