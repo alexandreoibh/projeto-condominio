@@ -2,6 +2,7 @@
 const app = require('./src/app');
 const postgres = require('./src/database/postgres');
 require('./src/task/lembreteReserva');
+require('./src/task/gerarReceitasRotina');
 const port = process.env.PORT  || 3001
 console.log(`Oi starting on port... ${port}`);
 

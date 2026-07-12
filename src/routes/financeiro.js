@@ -73,6 +73,17 @@ router.post(
     body('id_unidade').optional({ nullable: true, checkFalsy: true }).isInt({ min: 1 }).withMessage('id_unidade deve ser inteiro positivo.'),
     body('numero_documento').optional({ nullable: true, checkFalsy: true }).isLength({ max: 100 }).withMessage('numero_documento deve ter no máximo 100 caracteres.'),
     body('observacao').optional({ nullable: true }),
+    body('is_rotina').optional().isBoolean().withMessage('is_rotina deve ser booleano.'),
+    body('rotina_dia_vencimento')
+      .custom((value, { req }) => {
+        const isRotina = req.body.is_rotina === true || req.body.is_rotina === 'true';
+        if (!isRotina) return true;
+        const texto = String(value || '').trim();
+        if (texto === 'ultimo_dia') return true;
+        return /^\d{1,2}$/.test(texto) && Number(texto) >= 1 && Number(texto) <= 31;
+      })
+      .withMessage('rotina_dia_vencimento deve ser um número de 1 a 31 ou "ultimo_dia" quando is_rotina é true.'),
+    body('rotina_data_fim').optional({ nullable: true, checkFalsy: true }).isISO8601().withMessage('rotina_data_fim deve ser data válida.'),
   ],
   validate,
   controller.criarReceita.bind(controller)
@@ -106,6 +117,21 @@ router.delete(
   [param('id').isInt({ min: 1 }).withMessage('id inválido.')],
   validate,
   controller.excluirReceita.bind(controller)
+);
+
+router.get(
+  '/receitas/rotinas',
+  auth,
+  validate,
+  controller.listarRotinasReceita.bind(controller)
+);
+
+router.delete(
+  '/receitas/rotinas/:id',
+  auth,
+  [param('id').isInt({ min: 1 }).withMessage('id inválido.')],
+  validate,
+  controller.cancelarRotinaReceita.bind(controller)
 );
 
 // ── Despesas ──────────────────────────────────────────────────────────────────

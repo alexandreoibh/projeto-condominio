@@ -49,6 +49,14 @@ class FinanceiroController {
     return PERFIS_GESTAO.has(req.nomePerfil);
   }
 
+  _calcularVencimentoRotina(diaVencimento, ano, mes) {
+    const ultimoDiaMes = new Date(ano, mes, 0).getDate();
+    const dia = diaVencimento === 'ultimo_dia'
+      ? ultimoDiaMes
+      : Math.min(this._toInt(diaVencimento, ultimoDiaMes), ultimoDiaMes);
+    return `${ano}-${String(mes).padStart(2, '0')}-${String(dia).padStart(2, '0')}`;
+  }
+
   // ─── Grupo de Receita ───────────────────────────────────────────────────────
 
   async listarGrupoReceita(req, res) {
@@ -178,6 +186,7 @@ class FinanceiroController {
         descricao, valor, competencia, data_vencimento,
         data_pagamento, situacao, id_grupo_receita, id_usuario, id_unidade,
         numero_documento, observacao,
+        is_rotina, rotina_dia_vencimento, rotina_data_fim,
       } = req.body;
 
       const grupoRows = await postgres.query(
@@ -190,17 +199,46 @@ class FinanceiroController {
       const idUsuario = this._toInt(id_usuario, null);
       const idUnidade = this._toInt(id_unidade, null);
 
+      const isRotina = is_rotina === true || is_rotina === 'true';
+      let idRotina = null;
+
+      if (isRotina) {
+        const diaVencimentoTexto = String(rotina_dia_vencimento || '').trim();
+        const diaValido = diaVencimentoTexto === 'ultimo_dia'
+          || (/^\d{1,2}$/.test(diaVencimentoTexto) && this._toInt(diaVencimentoTexto, 0) >= 1 && this._toInt(diaVencimentoTexto, 0) <= 31);
+        if (!diaValido) {
+          return res.status(422).json({ message: 'rotina_dia_vencimento deve ser um número de 1 a 31 ou "ultimo_dia".' });
+        }
+
+        const [rotinaRows] = await postgres.query(
+          `INSERT INTO "condominio-bh".tb_fin_receita_rotina (
+              id_condominio, dia_vencimento, data_fim, ativo, id_usuario_cadastro, created_at, updated_at
+            ) VALUES (
+              :id_condominio, :dia_vencimento, :data_fim::date, true, :id_usuario_cadastro, now(), now()
+            ) RETURNING id`,
+          {
+            replacements: {
+              id_condominio: idCondominio,
+              dia_vencimento: diaVencimentoTexto,
+              data_fim: this._normalizarTextoOuNull(rotina_data_fim),
+              id_usuario_cadastro: this._toInt(req.idcliente, null),
+            },
+          }
+        );
+        idRotina = rotinaRows[0].id;
+      }
+
       const [rows] = await postgres.query(
         `INSERT INTO "condominio-bh".tb_fin_receitas (
             id_condominio, id_unidade, id_usuario, id_usuario_cadastro, categoria, descricao, valor,
             competencia, data_vencimento, data_pagamento, situacao,
             id_grupo_receita, id_categoria, grupo_receita,
-            numero_documento, observacao, created_at, updated_at
+            numero_documento, observacao, id_rotina, created_at, updated_at
           ) VALUES (
             :id_condominio, :id_unidade, :id_usuario, :id_usuario_cadastro, :categoria, :descricao, :valor,
             :competencia::date, :data_vencimento::date, :data_pagamento::date, :situacao,
             :id_grupo_receita, :id_categoria, :grupo_receita,
-            :numero_documento, :observacao, now(), now()
+            :numero_documento, :observacao, :id_rotina, now(), now()
           ) RETURNING *`,
         {
           replacements: {
@@ -220,6 +258,7 @@ class FinanceiroController {
             grupo_receita: grupo.origem,
             numero_documento: this._normalizarTextoOuNull(numero_documento),
             observacao: this._normalizarTextoOuNull(observacao),
+            id_rotina: idRotina,
           },
         }
       );
@@ -227,6 +266,58 @@ class FinanceiroController {
       return res.status(201).json(rows[0]);
     } catch (error) {
       return res.status(500).json({ message: 'Falha ao criar receita.', detail: error.message });
+    }
+  }
+
+  async listarRotinasReceita(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const data = await postgres.query(
+        `SELECT rot.id, rot.dia_vencimento, rot.data_fim, rot.ativo, rot.created_at,
+                r.categoria, r.descricao, r.valor, r.id_usuario, r.id_unidade, r.id_grupo_receita,
+                us.nome, us.bloco, us.apartamento
+           FROM "condominio-bh".tb_fin_receita_rotina rot
+           LEFT JOIN (
+             SELECT DISTINCT ON (id_rotina) id_rotina, categoria, descricao, valor, id_usuario, id_unidade, id_grupo_receita
+               FROM "condominio-bh".tb_fin_receitas
+              WHERE id_rotina IS NOT NULL
+              ORDER BY id_rotina, id DESC
+           ) r ON r.id_rotina = rot.id
+           LEFT JOIN "condominio-bh"."tb-usuarios" us ON us.id = r.id_usuario
+          WHERE rot.id_condominio = :id_condominio
+          ORDER BY rot.ativo DESC, rot.created_at DESC`,
+        { replacements: { id_condominio: idCondominio }, type: QueryTypes.SELECT }
+      );
+
+      return res.status(200).json({ data });
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao listar rotinas de receita.', detail: error.message });
+    }
+  }
+
+  async cancelarRotinaReceita(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const id = this._toInt(req.params.id, null);
+
+      const [rows] = await postgres.query(
+        `UPDATE "condominio-bh".tb_fin_receita_rotina
+            SET ativo = false, updated_at = now()
+          WHERE id = :id AND id_condominio = :id_condominio
+          RETURNING id`,
+        { replacements: { id, id_condominio: idCondominio } }
+      );
+      if (!rows[0]) return res.status(404).json({ message: 'Rotina não encontrada.' });
+
+      return res.status(200).json({ message: 'Rotina cancelada com sucesso.' });
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao cancelar rotina de receita.', detail: error.message });
     }
   }
 
