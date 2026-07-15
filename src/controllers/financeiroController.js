@@ -422,7 +422,9 @@ class FinanceiroController {
             COALESCE(SUM(CASE WHEN situacao = 'pago' THEN valor ELSE 0 END), 0)::numeric AS soma_pago,
             COALESCE(SUM(CASE WHEN situacao = 'em_aberto' THEN valor ELSE 0 END), 0)::numeric AS soma_em_aberto,
             COALESCE(MAX(CASE WHEN situacao = 'pago' THEN valor END), 0)::numeric AS maior_pago,
-            COALESCE(MAX(CASE WHEN situacao = 'em_aberto' THEN valor END), 0)::numeric AS maior_em_aberto
+            COALESCE(MAX(CASE WHEN situacao = 'em_aberto' THEN valor END), 0)::numeric AS maior_em_aberto,
+            COUNT(*) FILTER (WHERE situacao = 'pago')::int AS qtd_pago,
+            COUNT(*) FILTER (WHERE situacao = 'em_aberto')::int AS qtd_em_aberto
            FROM "condominio-bh".tb_fin_receitas
           WHERE ${whereParts.join(' AND ')}`,
         { replacements, type: QueryTypes.SELECT }
@@ -434,6 +436,8 @@ class FinanceiroController {
         soma_em_aberto: Number(resumo.soma_em_aberto || 0),
         maior_pago: Number(resumo.maior_pago || 0),
         maior_em_aberto: Number(resumo.maior_em_aberto || 0),
+        qtd_pago: Number(resumo.qtd_pago || 0),
+        qtd_em_aberto: Number(resumo.qtd_em_aberto || 0),
       });
     } catch (error) {
       return res.status(500).json({ message: 'Falha ao consolidar receitas.', detail: error.message });
@@ -538,7 +542,9 @@ class FinanceiroController {
             COALESCE(SUM(CASE WHEN d.situacao = 'pago' THEN d.valor ELSE 0 END), 0)::numeric AS soma_pago,
             COALESCE(SUM(CASE WHEN d.situacao = 'a_pagar' THEN d.valor ELSE 0 END), 0)::numeric AS soma_em_aberto,
             COALESCE(MAX(CASE WHEN d.situacao = 'pago' THEN d.valor END), 0)::numeric AS maior_pago,
-            COALESCE(MAX(CASE WHEN d.situacao = 'a_pagar' THEN d.valor END), 0)::numeric AS maior_em_aberto
+            COALESCE(MAX(CASE WHEN d.situacao = 'a_pagar' THEN d.valor END), 0)::numeric AS maior_em_aberto,
+            COUNT(*) FILTER (WHERE d.situacao = 'pago')::int AS qtd_pago,
+            COUNT(*) FILTER (WHERE d.situacao = 'a_pagar')::int AS qtd_em_aberto
            FROM "condominio-bh".tb_fin_despesas d
           INNER JOIN "condominio-bh".tb_fin_grupo_despesa g ON g.codigo = d.categoria
           WHERE ${whereParts.join(' AND ')}`,
@@ -551,6 +557,8 @@ class FinanceiroController {
         soma_em_aberto: Number(resumo.soma_em_aberto || 0),
         maior_pago: Number(resumo.maior_pago || 0),
         maior_em_aberto: Number(resumo.maior_em_aberto || 0),
+        qtd_pago: Number(resumo.qtd_pago || 0),
+        qtd_em_aberto: Number(resumo.qtd_em_aberto || 0),
       });
     } catch (error) {
       return res.status(500).json({ message: 'Falha ao consolidar despesas.', detail: error.message });
