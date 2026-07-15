@@ -394,6 +394,52 @@ class FinanceiroController {
     }
   }
 
+  async consolidadoReceitas(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const whereParts = ['id_condominio = :id_condominio'];
+      const replacements = { id_condominio: idCondominio };
+
+      const periodo = this._periodoDaQuery(req);
+      if (periodo) {
+        whereParts.push("TO_CHAR(competencia, 'YYYY-MM') = :periodo");
+        replacements.periodo = periodo;
+      }
+      if (req.query.categoria) {
+        whereParts.push('categoria = :categoria');
+        replacements.categoria = req.query.categoria;
+      }
+      if (req.query.id_grupo_receita) {
+        whereParts.push('id_grupo_receita = :id_grupo_receita');
+        replacements.id_grupo_receita = this._toInt(req.query.id_grupo_receita, null);
+      }
+
+      const rows = await postgres.query(
+        `SELECT
+            COALESCE(SUM(CASE WHEN situacao = 'pago' THEN valor ELSE 0 END), 0)::numeric AS soma_pago,
+            COALESCE(SUM(CASE WHEN situacao = 'em_aberto' THEN valor ELSE 0 END), 0)::numeric AS soma_em_aberto,
+            COALESCE(MAX(CASE WHEN situacao = 'pago' THEN valor END), 0)::numeric AS maior_pago,
+            COALESCE(MAX(CASE WHEN situacao = 'em_aberto' THEN valor END), 0)::numeric AS maior_em_aberto
+           FROM "condominio-bh".tb_fin_receitas
+          WHERE ${whereParts.join(' AND ')}`,
+        { replacements, type: QueryTypes.SELECT }
+      );
+
+      const resumo = rows[0] || {};
+      return res.status(200).json({
+        soma_pago: Number(resumo.soma_pago || 0),
+        soma_em_aberto: Number(resumo.soma_em_aberto || 0),
+        maior_pago: Number(resumo.maior_pago || 0),
+        maior_em_aberto: Number(resumo.maior_em_aberto || 0),
+      });
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao consolidar receitas.', detail: error.message });
+    }
+  }
+
   // ─── Despesas ───────────────────────────────────────────────────────────────
 
   async listarDespesas(req, res) {
@@ -465,6 +511,49 @@ class FinanceiroController {
       });
     } catch (error) {
       return res.status(500).json({ message: 'Falha ao listar despesas.', detail: error.message });
+    }
+  }
+
+  async consolidadoDespesas(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const whereParts = ['d.id_condominio = :id_condominio'];
+      const replacements = { id_condominio: idCondominio };
+
+      const periodo = this._periodoDaQuery(req);
+      if (periodo) {
+        whereParts.push("TO_CHAR(d.competencia, 'YYYY-MM') = :periodo");
+        replacements.periodo = periodo;
+      }
+      if (req.query.categoria) {
+        whereParts.push('d.categoria = :categoria');
+        replacements.categoria = req.query.categoria;
+      }
+
+      const rows = await postgres.query(
+        `SELECT
+            COALESCE(SUM(CASE WHEN d.situacao = 'pago' THEN d.valor ELSE 0 END), 0)::numeric AS soma_pago,
+            COALESCE(SUM(CASE WHEN d.situacao = 'a_pagar' THEN d.valor ELSE 0 END), 0)::numeric AS soma_em_aberto,
+            COALESCE(MAX(CASE WHEN d.situacao = 'pago' THEN d.valor END), 0)::numeric AS maior_pago,
+            COALESCE(MAX(CASE WHEN d.situacao = 'a_pagar' THEN d.valor END), 0)::numeric AS maior_em_aberto
+           FROM "condominio-bh".tb_fin_despesas d
+          INNER JOIN "condominio-bh".tb_fin_grupo_despesa g ON g.codigo = d.categoria
+          WHERE ${whereParts.join(' AND ')}`,
+        { replacements, type: QueryTypes.SELECT }
+      );
+
+      const resumo = rows[0] || {};
+      return res.status(200).json({
+        soma_pago: Number(resumo.soma_pago || 0),
+        soma_em_aberto: Number(resumo.soma_em_aberto || 0),
+        maior_pago: Number(resumo.maior_pago || 0),
+        maior_em_aberto: Number(resumo.maior_em_aberto || 0),
+      });
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao consolidar despesas.', detail: error.message });
     }
   }
 

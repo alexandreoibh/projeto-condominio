@@ -120,6 +120,19 @@ router.delete(
 );
 
 router.get(
+  '/receita-consolidado',
+  auth,
+  [
+    query('periodo').optional({ nullable: true, checkFalsy: true }).matches(/^\d{4}-\d{2}(-\d{2})?$/).withMessage('periodo deve estar no formato YYYY-MM ou YYYY-MM-DD.'),
+    query('competencia').optional({ nullable: true, checkFalsy: true }).matches(/^\d{4}-\d{2}(-\d{2})?$/).withMessage('competencia deve estar no formato YYYY-MM ou YYYY-MM-DD.'),
+    query('categoria').optional({ nullable: true, checkFalsy: true }).isLength({ max: 60 }).withMessage('categoria deve ter no máximo 60 caracteres.'),
+    query('id_grupo_receita').optional({ nullable: true, checkFalsy: true }).isInt({ min: 1 }).withMessage('id_grupo_receita deve ser inteiro positivo.'),
+  ],
+  validate,
+  controller.consolidadoReceitas.bind(controller)
+);
+
+router.get(
   '/receitas/rotinas',
   auth,
   validate,
@@ -198,6 +211,18 @@ router.delete(
   [param('id').isInt({ min: 1 }).withMessage('id inválido.')],
   validate,
   controller.excluirDespesa.bind(controller)
+);
+
+router.get(
+  '/despesa-consolidado',
+  auth,
+  [
+    query('periodo').optional({ nullable: true, checkFalsy: true }).matches(/^\d{4}-\d{2}(-\d{2})?$/).withMessage('periodo deve estar no formato YYYY-MM ou YYYY-MM-DD.'),
+    query('competencia').optional({ nullable: true, checkFalsy: true }).matches(/^\d{4}-\d{2}(-\d{2})?$/).withMessage('competencia deve estar no formato YYYY-MM ou YYYY-MM-DD.'),
+    query('categoria').optional({ nullable: true, checkFalsy: true }).isLength({ max: 60 }).withMessage('categoria deve ter no máximo 60 caracteres.'),
+  ],
+  validate,
+  controller.consolidadoDespesas.bind(controller)
 );
 
 router.post(
