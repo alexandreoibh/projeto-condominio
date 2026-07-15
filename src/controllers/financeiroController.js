@@ -423,8 +423,8 @@ class FinanceiroController {
             COALESCE(SUM(CASE WHEN situacao = 'em_aberto' THEN valor ELSE 0 END), 0)::numeric AS soma_em_aberto,
             COALESCE(MAX(CASE WHEN situacao = 'pago' THEN valor END), 0)::numeric AS maior_pago,
             COALESCE(MAX(CASE WHEN situacao = 'em_aberto' THEN valor END), 0)::numeric AS maior_em_aberto,
-            COUNT(*) FILTER (WHERE situacao = 'pago')::int AS qtd_pago,
-            COUNT(*) FILTER (WHERE situacao = 'em_aberto')::int AS qtd_em_aberto
+            COALESCE(SUM(CASE WHEN situacao = 'pago' THEN 1 ELSE 0 END), 0)::int AS qtd_pago,
+            COALESCE(SUM(CASE WHEN situacao = 'em_aberto' THEN 1 ELSE 0 END), 0)::int AS qtd_em_aberto
            FROM "condominio-bh".tb_fin_receitas
           WHERE ${whereParts.join(' AND ')}`,
         { replacements, type: QueryTypes.SELECT }
@@ -543,8 +543,8 @@ class FinanceiroController {
             COALESCE(SUM(CASE WHEN d.situacao = 'a_pagar' THEN d.valor ELSE 0 END), 0)::numeric AS soma_em_aberto,
             COALESCE(MAX(CASE WHEN d.situacao = 'pago' THEN d.valor END), 0)::numeric AS maior_pago,
             COALESCE(MAX(CASE WHEN d.situacao = 'a_pagar' THEN d.valor END), 0)::numeric AS maior_em_aberto,
-            COUNT(*) FILTER (WHERE d.situacao = 'pago')::int AS qtd_pago,
-            COUNT(*) FILTER (WHERE d.situacao = 'a_pagar')::int AS qtd_em_aberto
+            COALESCE(SUM(CASE WHEN d.situacao = 'pago' THEN 1 ELSE 0 END), 0)::int AS qtd_pago,
+            COALESCE(SUM(CASE WHEN d.situacao = 'a_pagar' THEN 1 ELSE 0 END), 0)::int AS qtd_em_aberto
            FROM "condominio-bh".tb_fin_despesas d
           INNER JOIN "condominio-bh".tb_fin_grupo_despesa g ON g.codigo = d.categoria
           WHERE ${whereParts.join(' AND ')}`,
