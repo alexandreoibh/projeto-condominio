@@ -1286,7 +1286,7 @@ class FinanceiroController {
 
       const [recebidoAcumulado, pagoAcumulado, receitasAno, despesasAno, balancete, receitas, despesas, ultimaAlteracaoRows] = await Promise.all([
         postgres.query(
-          `SELECT COALESCE(SUM(CASE WHEN situacao = 'pago' THEN valor ELSE 0 END), 0)::numeric AS total
+          `SELECT COALESCE(SUM(CASE WHEN situacao = 'pago' THEN valor + COALESCE(valor_fundo_reserva, 0) ELSE 0 END), 0)::numeric AS total
              FROM "condominio-bh".tb_fin_receitas
             WHERE id_condominio = :id_condominio
               AND competencia < (TO_DATE(:periodo, 'YYYY-MM') + INTERVAL '1 month')`,
@@ -1303,7 +1303,10 @@ class FinanceiroController {
           `SELECT
               COALESCE(SUM(CASE WHEN situacao != 'cancelado' THEN valor ELSE 0 END), 0)::numeric AS total,
               COALESCE(SUM(CASE WHEN situacao = 'pago' THEN valor ELSE 0 END), 0)::numeric AS pago,
-              COALESCE(SUM(CASE WHEN situacao = 'em_aberto' THEN valor ELSE 0 END), 0)::numeric AS pendente
+              COALESCE(SUM(CASE WHEN situacao = 'em_aberto' THEN valor ELSE 0 END), 0)::numeric AS pendente,
+              COALESCE(SUM(CASE WHEN situacao != 'cancelado' THEN valor_fundo_reserva ELSE 0 END), 0)::numeric AS fundo_reserva_total,
+              COALESCE(SUM(CASE WHEN situacao = 'pago' THEN valor_fundo_reserva ELSE 0 END), 0)::numeric AS fundo_reserva_pago,
+              COALESCE(SUM(CASE WHEN situacao = 'em_aberto' THEN valor_fundo_reserva ELSE 0 END), 0)::numeric AS fundo_reserva_pendente
              FROM "condominio-bh".tb_fin_receitas
             WHERE id_condominio = :id_condominio
               AND EXTRACT(YEAR FROM competencia) = :ano`,
@@ -1327,7 +1330,9 @@ class FinanceiroController {
           { replacements, type: QueryTypes.SELECT }
         ),
         postgres.query(
-          `SELECT id, categoria, descricao, valor, data_vencimento, data_pagamento, situacao, id_unidade
+          `SELECT id, categoria, descricao, valor, valor_fundo_reserva,
+                  (valor + COALESCE(valor_fundo_reserva, 0)) AS valor_total,
+                  data_vencimento, data_pagamento, situacao, id_unidade
              FROM "condominio-bh".tb_fin_receitas
             WHERE id_condominio = :id_condominio
               AND TO_CHAR(competencia, 'YYYY-MM') = :periodo
@@ -1388,6 +1393,12 @@ class FinanceiroController {
             total: Number(receitasAno[0]?.total || 0),
             pago: Number(receitasAno[0]?.pago || 0),
             pendente: Number(receitasAno[0]?.pendente || 0),
+            fundo_reserva: {
+              total: Number(receitasAno[0]?.fundo_reserva_total || 0),
+              pago: Number(receitasAno[0]?.fundo_reserva_pago || 0),
+              pendente: Number(receitasAno[0]?.fundo_reserva_pendente || 0),
+            },
+            total_com_fundo_reserva: Number(receitasAno[0]?.total || 0) + Number(receitasAno[0]?.fundo_reserva_total || 0),
           },
           despesas: {
             total: Number(despesasAno[0]?.total || 0),
