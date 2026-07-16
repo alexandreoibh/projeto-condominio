@@ -437,15 +437,26 @@ class FinanceiroController {
       );
 
       const resumo = rows[0] || {};
+      const receitaPago = Number(resumo.soma_pago || 0);
+      const fundoReservaPago = Number(resumo.soma_fundo_reserva_pago || 0);
+      const receitaEmAberto = Number(resumo.soma_em_aberto || 0);
+      const fundoReservaEmAberto = Number(resumo.soma_fundo_reserva_em_aberto || 0);
+
       return res.status(200).json({
-        soma_pago: Number(resumo.soma_pago || 0),
-        soma_em_aberto: Number(resumo.soma_em_aberto || 0),
-        maior_pago: Number(resumo.maior_pago || 0),
-        maior_em_aberto: Number(resumo.maior_em_aberto || 0),
-        qtd_pago: Number(resumo.qtd_pago || 0),
-        qtd_em_aberto: Number(resumo.qtd_em_aberto || 0),
-        soma_fundo_reserva_pago: Number(resumo.soma_fundo_reserva_pago || 0),
-        soma_fundo_reserva_em_aberto: Number(resumo.soma_fundo_reserva_em_aberto || 0),
+        pago: {
+          quantidade: Number(resumo.qtd_pago || 0),
+          receita: receitaPago,
+          fundo_reserva: fundoReservaPago,
+          total: receitaPago + fundoReservaPago,
+          maior_valor: Number(resumo.maior_pago || 0),
+        },
+        em_aberto: {
+          quantidade: Number(resumo.qtd_em_aberto || 0),
+          receita: receitaEmAberto,
+          fundo_reserva: fundoReservaEmAberto,
+          total: receitaEmAberto + fundoReservaEmAberto,
+          maior_valor: Number(resumo.maior_em_aberto || 0),
+        },
       });
     } catch (error) {
       return res.status(500).json({ message: 'Falha ao consolidar receitas.', detail: error.message });
