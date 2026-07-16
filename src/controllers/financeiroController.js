@@ -183,7 +183,7 @@ class FinanceiroController {
       if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
 
       const {
-        descricao, valor, competencia, data_vencimento,
+        descricao, valor, valor_fundo_reserva, competencia, data_vencimento,
         data_pagamento, situacao, id_grupo_receita, id_usuario, id_unidade,
         numero_documento, observacao,
         is_rotina, rotina_dia_vencimento, rotina_data_fim,
@@ -231,11 +231,13 @@ class FinanceiroController {
       const [rows] = await postgres.query(
         `INSERT INTO "condominio-bh".tb_fin_receitas (
             id_condominio, id_unidade, id_usuario, id_usuario_cadastro, categoria, descricao, valor,
+            valor_fundo_reserva,
             competencia, data_vencimento, data_pagamento, situacao,
             id_grupo_receita, id_categoria, grupo_receita,
             numero_documento, observacao, id_rotina, created_at, updated_at
           ) VALUES (
             :id_condominio, :id_unidade, :id_usuario, :id_usuario_cadastro, :categoria, :descricao, :valor,
+            :valor_fundo_reserva,
             :competencia::date, :data_vencimento::date, :data_pagamento::date, :situacao,
             :id_grupo_receita, :id_categoria, :grupo_receita,
             :numero_documento, :observacao, :id_rotina, now(), now()
@@ -249,6 +251,7 @@ class FinanceiroController {
             categoria: grupo.nome,
             descricao: this._normalizarTextoOuNull(descricao),
             valor: this._parseDecimalOuNull(valor),
+            valor_fundo_reserva: this._parseDecimalOuNull(valor_fundo_reserva),
             competencia,
             data_vencimento,
             data_pagamento: this._normalizarTextoOuNull(data_pagamento),
@@ -333,8 +336,9 @@ class FinanceiroController {
 
       const camposDatas = new Set(['competencia', 'data_vencimento', 'data_pagamento']);
       const camposInt = new Set(['id_grupo_receita']);
+      const camposDecimais = new Set(['valor', 'valor_fundo_reserva']);
       const camposPermitidos = [
-        'categoria', 'descricao', 'valor', 'competencia', 'data_vencimento', 'data_pagamento',
+        'categoria', 'descricao', 'valor', 'valor_fundo_reserva', 'competencia', 'data_vencimento', 'data_pagamento',
         'situacao', 'id_grupo_receita', 'id_categoria', 'grupo_receita', 'numero_documento', 'observacao',
       ];
 
@@ -343,7 +347,7 @@ class FinanceiroController {
           if (camposDatas.has(campo)) {
             campos.push(`${campo} = :${campo}::date`);
             replacements[campo] = this._normalizarTextoOuNull(req.body[campo]);
-          } else if (campo === 'valor') {
+          } else if (camposDecimais.has(campo)) {
             campos.push(`${campo} = :${campo}`);
             replacements[campo] = this._parseDecimalOuNull(req.body[campo]);
           } else if (camposInt.has(campo)) {
@@ -424,7 +428,9 @@ class FinanceiroController {
             COALESCE(MAX(CASE WHEN situacao = 'pago' THEN valor END), 0)::numeric AS maior_pago,
             COALESCE(MAX(CASE WHEN situacao = 'em_aberto' THEN valor END), 0)::numeric AS maior_em_aberto,
             COALESCE(SUM(CASE WHEN situacao = 'pago' THEN 1 ELSE 0 END), 0)::int AS qtd_pago,
-            COALESCE(SUM(CASE WHEN situacao = 'em_aberto' THEN 1 ELSE 0 END), 0)::int AS qtd_em_aberto
+            COALESCE(SUM(CASE WHEN situacao = 'em_aberto' THEN 1 ELSE 0 END), 0)::int AS qtd_em_aberto,
+            COALESCE(SUM(CASE WHEN situacao = 'pago' THEN valor_fundo_reserva ELSE 0 END), 0)::numeric AS soma_fundo_reserva_pago,
+            COALESCE(SUM(CASE WHEN situacao = 'em_aberto' THEN valor_fundo_reserva ELSE 0 END), 0)::numeric AS soma_fundo_reserva_em_aberto
            FROM "condominio-bh".tb_fin_receitas
           WHERE ${whereParts.join(' AND ')}`,
         { replacements, type: QueryTypes.SELECT }
@@ -438,6 +444,8 @@ class FinanceiroController {
         maior_em_aberto: Number(resumo.maior_em_aberto || 0),
         qtd_pago: Number(resumo.qtd_pago || 0),
         qtd_em_aberto: Number(resumo.qtd_em_aberto || 0),
+        soma_fundo_reserva_pago: Number(resumo.soma_fundo_reserva_pago || 0),
+        soma_fundo_reserva_em_aberto: Number(resumo.soma_fundo_reserva_em_aberto || 0),
       });
     } catch (error) {
       return res.status(500).json({ message: 'Falha ao consolidar receitas.', detail: error.message });

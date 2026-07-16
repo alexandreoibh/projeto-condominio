@@ -64,6 +64,7 @@ router.post(
   [
     body('descricao').optional({ nullable: true, checkFalsy: true }).isLength({ max: 255 }).withMessage('descricao deve ter no máximo 255 caracteres.'),
     body('valor').notEmpty().withMessage('valor é obrigatório.').bail().isNumeric().withMessage('valor deve ser numérico.'),
+    body('valor_fundo_reserva').optional({ nullable: true, checkFalsy: true }).isNumeric().withMessage('valor_fundo_reserva deve ser numérico.'),
     body('competencia').notEmpty().withMessage('competencia é obrigatório.').bail().isISO8601().withMessage('competencia deve ser data válida.'),
     body('data_vencimento').notEmpty().withMessage('data_vencimento é obrigatório.').bail().isISO8601().withMessage('data_vencimento deve ser data válida.'),
     body('data_pagamento').optional({ nullable: true, checkFalsy: true }).isISO8601().withMessage('data_pagamento deve ser data válida.'),
@@ -97,6 +98,7 @@ router.put(
     body('categoria').optional().isLength({ max: 60 }).withMessage('categoria deve ter no máximo 60 caracteres.'),
     body('descricao').optional().isLength({ max: 255 }).withMessage('descricao deve ter no máximo 255 caracteres.'),
     body('valor').optional().isNumeric().withMessage('valor deve ser numérico.'),
+    body('valor_fundo_reserva').optional({ nullable: true, checkFalsy: true }).isNumeric().withMessage('valor_fundo_reserva deve ser numérico.'),
     body('competencia').optional().isISO8601().withMessage('competencia deve ser data válida.'),
     body('data_vencimento').optional().isISO8601().withMessage('data_vencimento deve ser data válida.'),
     body('data_pagamento').optional({ nullable: true, checkFalsy: true }).isISO8601().withMessage('data_pagamento deve ser data válida.'),
