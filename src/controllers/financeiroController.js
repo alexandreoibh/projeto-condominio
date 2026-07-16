@@ -1295,7 +1295,7 @@ class FinanceiroController {
         if (!publicado[0]) return res.status(404).json({ message: 'Balancete não publicado para este período.' });
       }
 
-      const [recebidoAcumulado, pagoAcumulado, receitasAno, despesasAno, balancete, receitas, despesas, ultimaAlteracaoRows] = await Promise.all([
+      const [recebidoAcumulado, pagoAcumulado, recebidoAcumuladoAnterior, pagoAcumuladoAnterior, receitasAno, despesasAno, balancete, receitas, despesas, ultimaAlteracaoRows] = await Promise.all([
         postgres.query(
           `SELECT COALESCE(SUM(CASE WHEN situacao = 'pago' THEN valor + COALESCE(valor_fundo_reserva, 0) ELSE 0 END), 0)::numeric AS total
              FROM "condominio-bh".tb_fin_receitas
@@ -1308,6 +1308,20 @@ class FinanceiroController {
              FROM "condominio-bh".tb_fin_despesas
             WHERE id_condominio = :id_condominio
               AND competencia < (TO_DATE(:periodo, 'YYYY-MM') + INTERVAL '1 month')`,
+          { replacements, type: QueryTypes.SELECT }
+        ),
+        postgres.query(
+          `SELECT COALESCE(SUM(CASE WHEN situacao = 'pago' THEN valor + COALESCE(valor_fundo_reserva, 0) ELSE 0 END), 0)::numeric AS total
+             FROM "condominio-bh".tb_fin_receitas
+            WHERE id_condominio = :id_condominio
+              AND competencia < TO_DATE(:periodo, 'YYYY-MM')`,
+          { replacements, type: QueryTypes.SELECT }
+        ),
+        postgres.query(
+          `SELECT COALESCE(SUM(CASE WHEN situacao = 'pago' THEN valor ELSE 0 END), 0)::numeric AS total
+             FROM "condominio-bh".tb_fin_despesas
+            WHERE id_condominio = :id_condominio
+              AND competencia < TO_DATE(:periodo, 'YYYY-MM')`,
           { replacements, type: QueryTypes.SELECT }
         ),
         postgres.query(
@@ -1379,6 +1393,9 @@ class FinanceiroController {
 
       const totalRecebidoAcumulado = Number(recebidoAcumulado[0]?.total || 0);
       const totalPagoAcumulado = Number(pagoAcumulado[0]?.total || 0);
+      const totalRecebidoAcumuladoAnterior = Number(recebidoAcumuladoAnterior[0]?.total || 0);
+      const totalPagoAcumuladoAnterior = Number(pagoAcumuladoAnterior[0]?.total || 0);
+      const saldoCaixaMesAnterior = totalRecebidoAcumuladoAnterior - totalPagoAcumuladoAnterior;
 
       const balanceteRow = balancete[0] || null;
       const ultimaAlteracao = ultimaAlteracaoRows[0]?.ultima_alteracao || null;
@@ -1398,6 +1415,7 @@ class FinanceiroController {
       return res.status(200).json({
         periodo,
         saldo_caixa: totalRecebidoAcumulado - totalPagoAcumulado,
+        saldo_caixa_mes_anterior: saldoCaixaMesAnterior,
         balancete: balanceteComFlag,
         receitas,
         despesas,
