@@ -1343,11 +1343,14 @@ class FinanceiroController {
         postgres.query(
           `SELECT id, categoria, descricao, valor, valor_fundo_reserva,
                   (valor + COALESCE(valor_fundo_reserva, 0)) AS valor_total,
-                  data_vencimento, data_pagamento, situacao, id_unidade
+                  competencia, data_vencimento, data_pagamento, situacao, id_unidade
              FROM "condominio-bh".tb_fin_receitas
             WHERE id_condominio = :id_condominio
-              AND TO_CHAR(competencia, 'YYYY-MM') = :periodo
               AND situacao != 'cancelado'
+              AND (
+                   (situacao = 'pago' AND TO_CHAR(data_pagamento, 'YYYY-MM') = :periodo)
+                OR (situacao = 'em_aberto' AND TO_CHAR(competencia, 'YYYY-MM') = :periodo)
+              )
             ORDER BY data_vencimento`,
           { replacements, type: QueryTypes.SELECT }
         ),
