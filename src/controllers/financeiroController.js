@@ -900,6 +900,34 @@ class FinanceiroController {
     }
   }
 
+  async listarDocumentosDespesa(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const idDespesa = this._toInt(req.params.id, null);
+
+      const despesas = await postgres.query(
+        `SELECT id FROM "condominio-bh".tb_fin_despesas WHERE id = :id AND id_condominio = :id_condominio`,
+        { replacements: { id: idDespesa, id_condominio: idCondominio }, type: QueryTypes.SELECT }
+      );
+      if (!despesas[0]) return res.status(404).json({ message: 'Despesa não encontrada.' });
+
+      const data = await postgres.query(
+        `SELECT id, tipo, nome_arquivo, caminho_arquivo, data_envio
+           FROM "condominio-bh".tb_fin_despesas_documentos
+          WHERE id_despesa = :id_despesa
+          ORDER BY data_envio DESC`,
+        { replacements: { id_despesa: idDespesa }, type: QueryTypes.SELECT }
+      );
+
+      return res.status(200).json({ data });
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao listar documentos da despesa.', detail: error.message });
+    }
+  }
+
   async uploadDocumentoDespesa(req, res) {
     try {
       const idCondominio = this._toInt(req.id_condominio, null);

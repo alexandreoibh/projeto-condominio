@@ -235,6 +235,14 @@ router.get(
   controller.consolidadoDespesas.bind(controller)
 );
 
+router.get(
+  '/despesas/:id/documentos',
+  auth,
+  [param('id').isInt({ min: 1 }).withMessage('id inválido.')],
+  validate,
+  controller.listarDocumentosDespesa.bind(controller)
+);
+
 router.post(
   '/despesas/:id/documentos',
   auth,
