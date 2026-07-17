@@ -522,8 +522,11 @@ class FinanceiroController {
             COALESCE(SUM(CASE WHEN r.situacao = 'em_aberto' THEN 1 ELSE 0 END), 0)::int AS qtd_em_aberto
            FROM generate_series(TO_DATE(:periodo_inicio, 'YYYY-MM'), TO_DATE(:periodo_fim, 'YYYY-MM'), INTERVAL '1 month') AS meses(mes)
            LEFT JOIN "condominio-bh".tb_fin_receitas r
-             ON DATE_TRUNC('month', r.competencia) = meses.mes
-            AND r.id_condominio = :id_condominio
+             ON r.id_condominio = :id_condominio
+            AND (
+                 (r.situacao = 'pago' AND DATE_TRUNC('month', r.data_pagamento) = meses.mes)
+              OR (r.situacao != 'pago' AND DATE_TRUNC('month', r.competencia) = meses.mes)
+            )
             ${filtrosExtra.join(' ')}
           GROUP BY meses.mes
           ORDER BY meses.mes`,
@@ -639,7 +642,10 @@ class FinanceiroController {
 
       const periodo = this._periodoDaQuery(req);
       if (periodo) {
-        whereParts.push("TO_CHAR(d.competencia, 'YYYY-MM') = :periodo");
+        whereParts.push(`(
+             (d.situacao = 'pago' AND TO_CHAR(d.data_pagamento, 'YYYY-MM') = :periodo)
+          OR (d.situacao != 'pago' AND TO_CHAR(d.competencia, 'YYYY-MM') = :periodo)
+        )`);
         replacements.periodo = periodo;
       }
       if (req.query.categoria) {
@@ -701,8 +707,11 @@ class FinanceiroController {
             COALESCE(SUM(CASE WHEN d.situacao = 'a_pagar' THEN 1 ELSE 0 END), 0)::int AS qtd_em_aberto
            FROM generate_series(TO_DATE(:periodo_inicio, 'YYYY-MM'), TO_DATE(:periodo_fim, 'YYYY-MM'), INTERVAL '1 month') AS meses(mes)
            LEFT JOIN "condominio-bh".tb_fin_despesas d
-             ON DATE_TRUNC('month', d.competencia) = meses.mes
-            AND d.id_condominio = :id_condominio
+             ON d.id_condominio = :id_condominio
+            AND (
+                 (d.situacao = 'pago' AND DATE_TRUNC('month', d.data_pagamento) = meses.mes)
+              OR (d.situacao != 'pago' AND DATE_TRUNC('month', d.competencia) = meses.mes)
+            )
             ${filtrosExtra.join(' ')}
           GROUP BY meses.mes
           ORDER BY meses.mes`,
