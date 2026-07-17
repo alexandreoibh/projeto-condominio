@@ -586,7 +586,7 @@ class FinanceiroController {
         postgres.query(
           `SELECT COUNT(*)::int AS total
              FROM "condominio-bh".tb_fin_despesas d
-            INNER JOIN "condominio-bh".tb_fin_grupo_despesa g ON g.codigo = d.categoria
+            LEFT JOIN "condominio-bh".tb_fin_grupo_despesa g ON g.codigo = d.categoria
             WHERE ${whereClause}`,
           { replacements, type: QueryTypes.SELECT }
         ),
@@ -604,7 +604,7 @@ class FinanceiroController {
                     '[]'::json
                   ) AS documentos
              FROM "condominio-bh".tb_fin_despesas d
-            INNER JOIN "condominio-bh".tb_fin_grupo_despesa g ON g.codigo = d.categoria
+            LEFT JOIN "condominio-bh".tb_fin_grupo_despesa g ON g.codigo = d.categoria
             WHERE ${whereClause}
             ORDER BY d.data_despesa DESC, d.id DESC
             LIMIT :limit OFFSET :offset`,
@@ -662,7 +662,7 @@ class FinanceiroController {
             COALESCE(SUM(CASE WHEN d.situacao = 'pago' THEN 1 ELSE 0 END), 0)::int AS qtd_pago,
             COALESCE(SUM(CASE WHEN d.situacao = 'a_pagar' THEN 1 ELSE 0 END), 0)::int AS qtd_em_aberto
            FROM "condominio-bh".tb_fin_despesas d
-          INNER JOIN "condominio-bh".tb_fin_grupo_despesa g ON g.codigo = d.categoria
+          LEFT JOIN "condominio-bh".tb_fin_grupo_despesa g ON g.codigo = d.categoria
           WHERE ${whereParts.join(' AND ')}`,
         { replacements, type: QueryTypes.SELECT }
       );
@@ -1019,7 +1019,7 @@ class FinanceiroController {
                   g.nome AS grupo_despesa_nome,
                   g.descricao AS grupo_despesa_descricao
              FROM "condominio-bh".tb_fin_despesas d
-            INNER JOIN "condominio-bh".tb_fin_grupo_despesa g ON g.codigo = d.categoria
+            LEFT JOIN "condominio-bh".tb_fin_grupo_despesa g ON g.codigo = d.categoria
             WHERE d.id_condominio = :id_condominio
               AND TO_CHAR(d.competencia, 'YYYY-MM') = :periodo
               AND d.situacao != 'cancelado'
@@ -1081,7 +1081,7 @@ class FinanceiroController {
                   g.descricao AS grupo_despesa_descricao,
                   COALESCE(SUM(d.valor), 0)::numeric AS total
              FROM "condominio-bh".tb_fin_despesas d
-            INNER JOIN "condominio-bh".tb_fin_grupo_despesa g ON g.codigo = d.categoria
+            LEFT JOIN "condominio-bh".tb_fin_grupo_despesa g ON g.codigo = d.categoria
             WHERE d.id_condominio = :id_condominio
               AND TO_CHAR(d.competencia, 'YYYY-MM') = :periodo
               AND d.situacao != 'cancelado'
@@ -1592,7 +1592,7 @@ class FinanceiroController {
                   g.nome AS grupo_despesa_nome,
                   g.descricao AS grupo_despesa_descricao
              FROM "condominio-bh".tb_fin_despesas d
-            INNER JOIN "condominio-bh".tb_fin_grupo_despesa g ON g.codigo = d.categoria
+            LEFT JOIN "condominio-bh".tb_fin_grupo_despesa g ON g.codigo = d.categoria
             WHERE d.id_condominio = :id_condominio
               AND d.situacao != 'cancelado'
               AND (
