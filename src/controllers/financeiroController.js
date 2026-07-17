@@ -436,7 +436,15 @@ class FinanceiroController {
             COALESCE(SUM(CASE WHEN situacao = 'pago' THEN 1 ELSE 0 END), 0)::int AS qtd_pago,
             COALESCE(SUM(CASE WHEN situacao = 'em_aberto' THEN 1 ELSE 0 END), 0)::int AS qtd_em_aberto,
             COALESCE(SUM(CASE WHEN situacao = 'pago' THEN valor_fundo_reserva ELSE 0 END), 0)::numeric AS soma_fundo_reserva_pago,
-            COALESCE(SUM(CASE WHEN situacao = 'em_aberto' THEN valor_fundo_reserva ELSE 0 END), 0)::numeric AS soma_fundo_reserva_em_aberto
+            COALESCE(SUM(CASE WHEN situacao = 'em_aberto' THEN valor_fundo_reserva ELSE 0 END), 0)::numeric AS soma_fundo_reserva_em_aberto,
+            COALESCE(SUM(CASE WHEN situacao = 'pago' AND DATE_TRUNC('month', data_pagamento) = DATE_TRUNC('month', competencia)
+                           THEN valor + COALESCE(valor_fundo_reserva, 0) ELSE 0 END), 0)::numeric AS recebido_no_periodo,
+            COALESCE(SUM(CASE WHEN situacao = 'pago' AND DATE_TRUNC('month', data_pagamento) != DATE_TRUNC('month', competencia)
+                           THEN valor + COALESCE(valor_fundo_reserva, 0) ELSE 0 END), 0)::numeric AS recebido_fora_periodo,
+            COALESCE(SUM(CASE WHEN situacao = 'pago' AND DATE_TRUNC('month', data_pagamento) = DATE_TRUNC('month', competencia)
+                           THEN valor_fundo_reserva ELSE 0 END), 0)::numeric AS recebido_no_periodo_fundo_reserva,
+            COALESCE(SUM(CASE WHEN situacao = 'pago' AND DATE_TRUNC('month', data_pagamento) != DATE_TRUNC('month', competencia)
+                           THEN valor_fundo_reserva ELSE 0 END), 0)::numeric AS recebido_fora_periodo_fundo_reserva
            FROM "condominio-bh".tb_fin_receitas
           WHERE ${whereParts.join(' AND ')}`,
         { replacements, type: QueryTypes.SELECT }
@@ -447,20 +455,27 @@ class FinanceiroController {
       const fundoReservaPago = Number(resumo.soma_fundo_reserva_pago || 0);
       const receitaEmAberto = Number(resumo.soma_em_aberto || 0);
       const fundoReservaEmAberto = Number(resumo.soma_fundo_reserva_em_aberto || 0);
+      const totalPago = receitaPago + fundoReservaPago;
+      const totalEmAberto = receitaEmAberto + fundoReservaEmAberto;
 
       return res.status(200).json({
+        total_lancado: totalPago + totalEmAberto,
         pago: {
           quantidade: Number(resumo.qtd_pago || 0),
           receita: receitaPago,
           fundo_reserva: fundoReservaPago,
-          total: receitaPago + fundoReservaPago,
+          total: totalPago,
           maior_valor: Number(resumo.maior_pago || 0),
+          recebido_no_periodo: Number(resumo.recebido_no_periodo || 0),
+          recebido_no_periodo_fundo_reserva: Number(resumo.recebido_no_periodo_fundo_reserva || 0),
+          recebido_fora_periodo: Number(resumo.recebido_fora_periodo || 0),
+          recebido_fora_periodo_fundo_reserva: Number(resumo.recebido_fora_periodo_fundo_reserva || 0),
         },
         em_aberto: {
           quantidade: Number(resumo.qtd_em_aberto || 0),
           receita: receitaEmAberto,
           fundo_reserva: fundoReservaEmAberto,
-          total: receitaEmAberto + fundoReservaEmAberto,
+          total: totalEmAberto,
           maior_valor: Number(resumo.maior_em_aberto || 0),
         },
       });
@@ -1484,31 +1499,35 @@ class FinanceiroController {
 
       const [recebidoAcumulado, pagoAcumulado, recebidoAcumuladoAnterior, pagoAcumuladoAnterior, receitasAno, despesasAno, balancete, receitas, despesas, ultimaAlteracaoRows] = await Promise.all([
         postgres.query(
-          `SELECT COALESCE(SUM(CASE WHEN situacao = 'pago' THEN valor + COALESCE(valor_fundo_reserva, 0) ELSE 0 END), 0)::numeric AS total
+          `SELECT COALESCE(SUM(valor + COALESCE(valor_fundo_reserva, 0)), 0)::numeric AS total
              FROM "condominio-bh".tb_fin_receitas
             WHERE id_condominio = :id_condominio
-              AND competencia < (TO_DATE(:periodo, 'YYYY-MM') + INTERVAL '1 month')`,
+              AND situacao = 'pago'
+              AND COALESCE(data_pagamento, competencia) < (TO_DATE(:periodo, 'YYYY-MM') + INTERVAL '1 month')`,
           { replacements, type: QueryTypes.SELECT }
         ),
         postgres.query(
-          `SELECT COALESCE(SUM(CASE WHEN situacao = 'pago' THEN valor ELSE 0 END), 0)::numeric AS total
+          `SELECT COALESCE(SUM(valor), 0)::numeric AS total
              FROM "condominio-bh".tb_fin_despesas
             WHERE id_condominio = :id_condominio
-              AND competencia < (TO_DATE(:periodo, 'YYYY-MM') + INTERVAL '1 month')`,
+              AND situacao = 'pago'
+              AND COALESCE(data_pagamento, data_despesa) < (TO_DATE(:periodo, 'YYYY-MM') + INTERVAL '1 month')`,
           { replacements, type: QueryTypes.SELECT }
         ),
         postgres.query(
-          `SELECT COALESCE(SUM(CASE WHEN situacao = 'pago' THEN valor + COALESCE(valor_fundo_reserva, 0) ELSE 0 END), 0)::numeric AS total
+          `SELECT COALESCE(SUM(valor + COALESCE(valor_fundo_reserva, 0)), 0)::numeric AS total
              FROM "condominio-bh".tb_fin_receitas
             WHERE id_condominio = :id_condominio
-              AND competencia < TO_DATE(:periodo, 'YYYY-MM')`,
+              AND situacao = 'pago'
+              AND COALESCE(data_pagamento, competencia) < TO_DATE(:periodo, 'YYYY-MM')`,
           { replacements, type: QueryTypes.SELECT }
         ),
         postgres.query(
-          `SELECT COALESCE(SUM(CASE WHEN situacao = 'pago' THEN valor ELSE 0 END), 0)::numeric AS total
+          `SELECT COALESCE(SUM(valor), 0)::numeric AS total
              FROM "condominio-bh".tb_fin_despesas
             WHERE id_condominio = :id_condominio
-              AND competencia < TO_DATE(:periodo, 'YYYY-MM')`,
+              AND situacao = 'pago'
+              AND COALESCE(data_pagamento, data_despesa) < TO_DATE(:periodo, 'YYYY-MM')`,
           { replacements, type: QueryTypes.SELECT }
         ),
         postgres.query(
@@ -1542,17 +1561,19 @@ class FinanceiroController {
           { replacements, type: QueryTypes.SELECT }
         ),
         postgres.query(
-          `SELECT id, categoria, descricao, valor, valor_fundo_reserva,
-                  (valor + COALESCE(valor_fundo_reserva, 0)) AS valor_total,
-                  competencia, data_vencimento, data_pagamento, situacao, id_unidade
-             FROM "condominio-bh".tb_fin_receitas
-            WHERE id_condominio = :id_condominio
-              AND situacao != 'cancelado'
+          `SELECT r.id, r.categoria, r.descricao, r.valor, r.valor_fundo_reserva,
+                  (r.valor + COALESCE(r.valor_fundo_reserva, 0)) AS valor_total,
+                  r.competencia, r.data_vencimento, r.data_pagamento, r.situacao, r.id_unidade,
+                  g.nome AS grupo_receita_nome
+             FROM "condominio-bh".tb_fin_receitas r
+             LEFT JOIN "condominio-bh".tb_fin_grupo_receita g ON g.id = r.id_grupo_receita
+            WHERE r.id_condominio = :id_condominio
+              AND r.situacao != 'cancelado'
               AND (
-                   (situacao = 'pago' AND TO_CHAR(data_pagamento, 'YYYY-MM') = :periodo)
-                OR (situacao = 'em_aberto' AND TO_CHAR(competencia, 'YYYY-MM') = :periodo)
+                   (r.situacao = 'pago' AND TO_CHAR(r.data_pagamento, 'YYYY-MM') = :periodo)
+                OR (r.situacao = 'em_aberto' AND TO_CHAR(r.competencia, 'YYYY-MM') = :periodo)
               )
-            ORDER BY data_vencimento`,
+            ORDER BY r.data_vencimento`,
           { replacements, type: QueryTypes.SELECT }
         ),
         postgres.query(
@@ -1562,8 +1583,11 @@ class FinanceiroController {
              FROM "condominio-bh".tb_fin_despesas d
             INNER JOIN "condominio-bh".tb_fin_grupo_despesa g ON g.codigo = d.categoria
             WHERE d.id_condominio = :id_condominio
-              AND TO_CHAR(d.competencia, 'YYYY-MM') = :periodo
               AND d.situacao != 'cancelado'
+              AND (
+                   (d.situacao = 'pago' AND TO_CHAR(d.data_pagamento, 'YYYY-MM') = :periodo)
+                OR (d.situacao = 'a_pagar' AND TO_CHAR(d.competencia, 'YYYY-MM') = :periodo)
+              )
             ORDER BY d.data_despesa`,
           { replacements, type: QueryTypes.SELECT }
         ),
