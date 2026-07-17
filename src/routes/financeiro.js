@@ -53,6 +53,8 @@ router.get(
     query('id_grupo_receita').optional({ nullable: true, checkFalsy: true }).isInt({ min: 1 }).withMessage('id_grupo_receita deve ser inteiro positivo.'),
     query('page').optional().isInt({ min: 1 }).withMessage('page deve ser inteiro maior que zero.'),
     query('pageSize').optional().isInt({ min: 1, max: 200 }).withMessage('pageSize deve estar entre 1 e 200.'),
+    query('sort').optional({ nullable: true, checkFalsy: true }).isIn(['id', 'unidade', 'morador', 'categoria', 'situacao', 'valor_total']).withMessage('sort inválido.'),
+    query('order').optional({ nullable: true, checkFalsy: true }).isIn(['asc', 'desc', 'ASC', 'DESC']).withMessage('order deve ser asc ou desc.'),
   ],
   validate,
   controller.listarReceitas.bind(controller)
@@ -163,6 +165,8 @@ router.get(
     query('situacao').optional({ nullable: true, checkFalsy: true }).isIn(['a_pagar', 'pago', 'cancelado']).withMessage('situacao inválida.'),
     query('page').optional().isInt({ min: 1 }).withMessage('page deve ser inteiro maior que zero.'),
     query('pageSize').optional().isInt({ min: 1, max: 200 }).withMessage('pageSize deve estar entre 1 e 200.'),
+    query('sort').optional({ nullable: true, checkFalsy: true }).isIn(['id', 'fornecedor', 'categoria', 'situacao', 'valor']).withMessage('sort inválido.'),
+    query('order').optional({ nullable: true, checkFalsy: true }).isIn(['asc', 'desc', 'ASC', 'DESC']).withMessage('order deve ser asc ou desc.'),
   ],
   validate,
   controller.listarDespesas.bind(controller)

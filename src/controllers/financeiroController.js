@@ -49,6 +49,14 @@ class FinanceiroController {
     return PERFIS_GESTAO.has(req.nomePerfil);
   }
 
+  _clausulaOrdenacao(req, whitelist, desempate, padrao) {
+    const sortKey = req.query.sort;
+    const coluna = whitelist[sortKey];
+    if (!coluna) return padrao;
+    const order = String(req.query.order || 'asc').toLowerCase() === 'desc' ? 'DESC' : 'ASC';
+    return `${coluna} ${order}, ${desempate}`;
+  }
+
   _calcularVencimentoRotina(diaVencimento, ano, mes) {
     const ultimoDiaMes = new Date(ano, mes, 0).getDate();
     const dia = diaVencimento === 'ultimo_dia'
@@ -144,6 +152,21 @@ class FinanceiroController {
 
       const whereClause = whereParts.join(' AND ');
 
+      const receitasSortWhitelist = {
+        id: 'r.id',
+        unidade: 'tcu.unidades_bloco',
+        morador: 'us.nome',
+        categoria: 'r.categoria',
+        situacao: 'r.situacao',
+        valor_total: '(r.valor + COALESCE(r.valor_fundo_reserva, 0))',
+      };
+      const orderByClause = this._clausulaOrdenacao(
+        req,
+        receitasSortWhitelist,
+        'r.id DESC',
+        'r.data_vencimento DESC, r.id DESC'
+      );
+
       const [totalRows, data] = await Promise.all([
         postgres.query(
           `SELECT COUNT(*)::int AS total FROM "condominio-bh".tb_fin_receitas r WHERE ${whereClause}`,
@@ -164,7 +187,7 @@ class FinanceiroController {
                 ORDER BY id_condominio, apartamento, id
              ) us ON us.id_condominio = tcu.id_condominio AND us.apartamento = tcu.unidades_bloco
             WHERE ${whereClause}
-            ORDER BY r.data_vencimento DESC, r.id DESC
+            ORDER BY ${orderByClause}
             LIMIT :limit OFFSET :offset`,
           { replacements, type: QueryTypes.SELECT }
         ),
@@ -596,6 +619,20 @@ class FinanceiroController {
 
       const whereClause = whereParts.join(' AND ');
 
+      const despesasSortWhitelist = {
+        id: 'd.id',
+        fornecedor: 'd.fornecedor',
+        categoria: 'g.nome',
+        situacao: 'd.situacao',
+        valor: 'd.valor',
+      };
+      const orderByClause = this._clausulaOrdenacao(
+        req,
+        despesasSortWhitelist,
+        'd.id DESC',
+        'd.data_despesa DESC, d.id DESC'
+      );
+
       const [totalRows, data] = await Promise.all([
         postgres.query(
           `SELECT COUNT(*)::int AS total
@@ -620,7 +657,7 @@ class FinanceiroController {
              FROM "condominio-bh".tb_fin_despesas d
             LEFT JOIN "condominio-bh".tb_fin_grupo_despesa g ON g.codigo = d.categoria
             WHERE ${whereClause}
-            ORDER BY d.data_despesa DESC, d.id DESC
+            ORDER BY ${orderByClause}
             LIMIT :limit OFFSET :offset`,
           { replacements, type: QueryTypes.SELECT }
         ),
