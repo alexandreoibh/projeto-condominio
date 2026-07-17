@@ -56,7 +56,7 @@ async function gerarReceitasRotina() {
       if (jaGerada[0]) continue;
 
       const modeloRows = await postgres.query(
-        `SELECT id_condominio, id_unidade, id_usuario, id_usuario_cadastro, categoria, descricao, valor,
+        `SELECT id_condominio, id_unidade, id_usuario, id_usuario_cadastro, categoria, descricao, valor, valor_fundo_reserva,
                 situacao, id_grupo_receita, id_categoria, grupo_receita, numero_documento, observacao
            FROM "condominio-bh".tb_fin_receitas
           WHERE id_rotina = :id_rotina
@@ -74,12 +74,12 @@ async function gerarReceitasRotina() {
 
       await postgres.query(
         `INSERT INTO "condominio-bh".tb_fin_receitas (
-            id_condominio, id_unidade, id_usuario, id_usuario_cadastro, categoria, descricao, valor,
+            id_condominio, id_unidade, id_usuario, id_usuario_cadastro, categoria, descricao, valor, valor_fundo_reserva,
             competencia, data_vencimento, data_pagamento, situacao,
             id_grupo_receita, id_categoria, grupo_receita,
             numero_documento, observacao, id_rotina, created_at, updated_at
           ) VALUES (
-            :id_condominio, :id_unidade, :id_usuario, :id_usuario_cadastro, :categoria, :descricao, :valor,
+            :id_condominio, :id_unidade, :id_usuario, :id_usuario_cadastro, :categoria, :descricao, :valor, :valor_fundo_reserva,
             :competencia::date, :data_vencimento::date, NULL, 'em_aberto',
             :id_grupo_receita, :id_categoria, :grupo_receita,
             :numero_documento, :observacao, :id_rotina, now(), now()
@@ -93,6 +93,7 @@ async function gerarReceitasRotina() {
             categoria: modelo.categoria,
             descricao: modelo.descricao,
             valor: modelo.valor,
+            valor_fundo_reserva: modelo.valor_fundo_reserva,
             competencia: primeiroDiaMes,
             data_vencimento: dataVencimento,
             id_grupo_receita: modelo.id_grupo_receita,
