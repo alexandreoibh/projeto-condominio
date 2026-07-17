@@ -923,7 +923,7 @@ class FinanceiroController {
       const nomeArquivo = `${Date.now()}_${Math.random().toString(36).substr(2, 8)}.${ext}`;
       const blobPath = `${ambiente}/condominios/${idCondominio}/financeiro/despesas/${idDespesa}/${nomeArquivo}`;
 
-      const uploadResult = await put(blobPath, arquivo.buffer, { access: 'public', contentType: arquivo.mimetype });
+      const uploadResult = await put(blobPath, arquivo.buffer, { access: 'private', contentType: arquivo.mimetype });
       const caminhoArquivo = uploadResult?.url || blobPath;
 
       const [docRows] = await postgres.query(
@@ -994,6 +994,39 @@ class FinanceiroController {
       return res.status(200).send(buffer);
     } catch (error) {
       return res.status(500).json({ message: 'Falha ao baixar boleto.', detail: error.message });
+    }
+  }
+
+  async downloadDocumentoFinanceiro(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const url = String(req.query.url || '');
+      const baseBlobUrl = process.env.BLOB_STORAGE_URL || '';
+
+      const caminhoValido = url.includes('/financeiro/despesas/') || url.includes('/financeiro/competencias/');
+      if (!url || !baseBlobUrl || !url.startsWith(baseBlobUrl) || !caminhoValido) {
+        return res.status(400).json({ message: 'Parâmetro url inválido.' });
+      }
+
+      const blobResponse = await fetch(url, {
+        headers: { Authorization: `Bearer ${process.env.BLOB_READ_WRITE_TOKEN}` },
+      });
+
+      if (!blobResponse.ok) {
+        return res.status(blobResponse.status).json({ message: 'Falha ao obter o documento.' });
+      }
+
+      const nomeArquivo = url.split('/').pop() || 'documento';
+      const buffer = Buffer.from(await blobResponse.arrayBuffer());
+
+      res.setHeader('Content-Type', blobResponse.headers.get('content-type') || 'application/octet-stream');
+      res.setHeader('Content-Disposition', `inline; filename="${nomeArquivo}"`);
+      return res.status(200).send(buffer);
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao baixar documento.', detail: error.message });
     }
   }
 
@@ -1997,7 +2030,7 @@ class FinanceiroController {
       const nomeArquivo = `${Date.now()}_${Math.random().toString(36).substr(2, 8)}.${ext}`;
       const blobPath = `${ambiente}/condominios/${idCondominio}/financeiro/competencias/${periodo}/${nomeArquivo}`;
 
-      const uploadResult = await put(blobPath, arquivo.buffer, { access: 'public', contentType: arquivo.mimetype });
+      const uploadResult = await put(blobPath, arquivo.buffer, { access: 'private', contentType: arquivo.mimetype });
       const caminhoArquivo = uploadResult?.url || blobPath;
 
       const [docRows] = await postgres.query(

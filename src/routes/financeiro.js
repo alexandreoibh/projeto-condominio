@@ -409,6 +409,12 @@ router.delete(
   controller.excluirDocumentoCompetencia.bind(controller)
 );
 
+router.get(
+  '/documentos/download',
+  auth,
+  controller.downloadDocumentoFinanceiro.bind(controller)
+);
+
 // ── Fornecedores ──────────────────────────────────────────────────────────────
 
 const camposFornecedorValidacao = [
