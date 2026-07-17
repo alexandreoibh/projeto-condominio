@@ -404,6 +404,12 @@ class FinanceiroController {
       if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
       if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
 
+      const periodoInicio = this._normalizarPeriodo(req.query.periodo_inicio);
+      const periodoFim = this._normalizarPeriodo(req.query.periodo_fim);
+      if (periodoInicio && periodoFim) {
+        return this._consolidadoReceitasSerie(req, res, idCondominio, periodoInicio, periodoFim);
+      }
+
       const whereParts = ['id_condominio = :id_condominio'];
       const replacements = { id_condominio: idCondominio };
 
@@ -460,6 +466,66 @@ class FinanceiroController {
       });
     } catch (error) {
       return res.status(500).json({ message: 'Falha ao consolidar receitas.', detail: error.message });
+    }
+  }
+
+  _mesesNoIntervalo(periodoInicio, periodoFim) {
+    const [anoIni, mesIni] = periodoInicio.split('-').map(Number);
+    const [anoFim, mesFim] = periodoFim.split('-').map(Number);
+    return (anoFim - anoIni) * 12 + (mesFim - mesIni) + 1;
+  }
+
+  async _consolidadoReceitasSerie(req, res, idCondominio, periodoInicio, periodoFim) {
+    try {
+      if (periodoInicio > periodoFim) {
+        return res.status(422).json({ message: 'periodo_inicio deve ser anterior ou igual a periodo_fim.' });
+      }
+      if (this._mesesNoIntervalo(periodoInicio, periodoFim) > 36) {
+        return res.status(422).json({ message: 'Intervalo máximo permitido é de 36 meses.' });
+      }
+
+      const filtrosExtra = [];
+      const replacements = { id_condominio: idCondominio, periodo_inicio: periodoInicio, periodo_fim: periodoFim };
+
+      if (req.query.categoria) {
+        filtrosExtra.push('AND r.categoria = :categoria');
+        replacements.categoria = req.query.categoria;
+      }
+      if (req.query.id_grupo_receita) {
+        filtrosExtra.push('AND r.id_grupo_receita = :id_grupo_receita');
+        replacements.id_grupo_receita = this._toInt(req.query.id_grupo_receita, null);
+      }
+
+      const rows = await postgres.query(
+        `SELECT
+            TO_CHAR(meses.mes, 'YYYY-MM') AS mes,
+            COALESCE(SUM(CASE WHEN r.situacao = 'pago' THEN r.valor ELSE 0 END), 0)::numeric AS soma_pago,
+            COALESCE(SUM(CASE WHEN r.situacao = 'em_aberto' THEN r.valor ELSE 0 END), 0)::numeric AS soma_em_aberto,
+            COALESCE(SUM(CASE WHEN r.situacao = 'pago' THEN 1 ELSE 0 END), 0)::int AS qtd_pago,
+            COALESCE(SUM(CASE WHEN r.situacao = 'em_aberto' THEN 1 ELSE 0 END), 0)::int AS qtd_em_aberto
+           FROM generate_series(TO_DATE(:periodo_inicio, 'YYYY-MM'), TO_DATE(:periodo_fim, 'YYYY-MM'), INTERVAL '1 month') AS meses(mes)
+           LEFT JOIN "condominio-bh".tb_fin_receitas r
+             ON DATE_TRUNC('month', r.competencia) = meses.mes
+            AND r.id_condominio = :id_condominio
+            ${filtrosExtra.join(' ')}
+          GROUP BY meses.mes
+          ORDER BY meses.mes`,
+        { replacements, type: QueryTypes.SELECT }
+      );
+
+      return res.status(200).json({
+        periodo_inicio: periodoInicio,
+        periodo_fim: periodoFim,
+        data: rows.map((item) => ({
+          mes: item.mes,
+          soma_pago: Number(item.soma_pago || 0),
+          soma_em_aberto: Number(item.soma_em_aberto || 0),
+          qtd_pago: Number(item.qtd_pago || 0),
+          qtd_em_aberto: Number(item.qtd_em_aberto || 0),
+        })),
+      });
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao consolidar série de receitas.', detail: error.message });
     }
   }
 
@@ -543,6 +609,12 @@ class FinanceiroController {
       if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
       if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
 
+      const periodoInicio = this._normalizarPeriodo(req.query.periodo_inicio);
+      const periodoFim = this._normalizarPeriodo(req.query.periodo_fim);
+      if (periodoInicio && periodoFim) {
+        return this._consolidadoDespesasSerie(req, res, idCondominio, periodoInicio, periodoFim);
+      }
+
       const whereParts = ['d.id_condominio = :id_condominio'];
       const replacements = { id_condominio: idCondominio };
 
@@ -581,6 +653,56 @@ class FinanceiroController {
       });
     } catch (error) {
       return res.status(500).json({ message: 'Falha ao consolidar despesas.', detail: error.message });
+    }
+  }
+
+  async _consolidadoDespesasSerie(req, res, idCondominio, periodoInicio, periodoFim) {
+    try {
+      if (periodoInicio > periodoFim) {
+        return res.status(422).json({ message: 'periodo_inicio deve ser anterior ou igual a periodo_fim.' });
+      }
+      if (this._mesesNoIntervalo(periodoInicio, periodoFim) > 36) {
+        return res.status(422).json({ message: 'Intervalo máximo permitido é de 36 meses.' });
+      }
+
+      const filtrosExtra = [];
+      const replacements = { id_condominio: idCondominio, periodo_inicio: periodoInicio, periodo_fim: periodoFim };
+
+      if (req.query.categoria) {
+        filtrosExtra.push('AND d.categoria = :categoria');
+        replacements.categoria = req.query.categoria;
+      }
+
+      const rows = await postgres.query(
+        `SELECT
+            TO_CHAR(meses.mes, 'YYYY-MM') AS mes,
+            COALESCE(SUM(CASE WHEN d.situacao = 'pago' THEN d.valor ELSE 0 END), 0)::numeric AS soma_pago,
+            COALESCE(SUM(CASE WHEN d.situacao = 'a_pagar' THEN d.valor ELSE 0 END), 0)::numeric AS soma_em_aberto,
+            COALESCE(SUM(CASE WHEN d.situacao = 'pago' THEN 1 ELSE 0 END), 0)::int AS qtd_pago,
+            COALESCE(SUM(CASE WHEN d.situacao = 'a_pagar' THEN 1 ELSE 0 END), 0)::int AS qtd_em_aberto
+           FROM generate_series(TO_DATE(:periodo_inicio, 'YYYY-MM'), TO_DATE(:periodo_fim, 'YYYY-MM'), INTERVAL '1 month') AS meses(mes)
+           LEFT JOIN "condominio-bh".tb_fin_despesas d
+             ON DATE_TRUNC('month', d.competencia) = meses.mes
+            AND d.id_condominio = :id_condominio
+            ${filtrosExtra.join(' ')}
+          GROUP BY meses.mes
+          ORDER BY meses.mes`,
+        { replacements, type: QueryTypes.SELECT }
+      );
+
+      return res.status(200).json({
+        periodo_inicio: periodoInicio,
+        periodo_fim: periodoFim,
+        data: rows.map((item) => ({
+          mes: item.mes,
+          soma_pago: Number(item.soma_pago || 0),
+          soma_em_aberto: Number(item.soma_em_aberto || 0),
+          qtd_pago: Number(item.qtd_pago || 0),
+          qtd_em_aberto: Number(item.qtd_em_aberto || 0),
+        })),
+      });
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao consolidar série de despesas.', detail: error.message });
     }
   }
 
@@ -965,6 +1087,40 @@ class FinanceiroController {
     }
   }
 
+  async listarLancamentosRecentes(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const limit = Math.min(Math.max(this._toInt(req.query.limit, 10), 1), 50);
+
+      const data = await postgres.query(
+        `SELECT * FROM (
+             SELECT 'receita' AS tipo, r.id, r.descricao, r.categoria, r.valor, r.situacao,
+                    COALESCE(r.data_pagamento, r.data_vencimento) AS data_evento,
+                    us.nome AS usuario_nome, us.bloco, us.apartamento
+               FROM "condominio-bh".tb_fin_receitas r
+               LEFT JOIN "condominio-bh"."tb-usuarios" us ON us.id = r.id_usuario
+              WHERE r.id_condominio = :id_condominio AND r.situacao != 'cancelado'
+              UNION ALL
+             SELECT 'despesa' AS tipo, d.id, d.descricao, d.categoria, d.valor, d.situacao,
+                    COALESCE(d.data_pagamento, d.data_despesa) AS data_evento,
+                    d.fornecedor AS usuario_nome, NULL::varchar AS bloco, NULL::varchar AS apartamento
+               FROM "condominio-bh".tb_fin_despesas d
+              WHERE d.id_condominio = :id_condominio AND d.situacao != 'cancelado'
+           ) lancamentos
+          ORDER BY data_evento DESC, id DESC
+          LIMIT :limit`,
+        { replacements: { id_condominio: idCondominio, limit }, type: QueryTypes.SELECT }
+      );
+
+      return res.status(200).json({ data });
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao listar lançamentos recentes.', detail: error.message });
+    }
+  }
+
   // ─── Inadimplência ──────────────────────────────────────────────────────────
 
   async listarInadimplencia(req, res) {
@@ -972,6 +1128,26 @@ class FinanceiroController {
       const idCondominio = this._toInt(req.id_condominio, null);
       if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
       if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      if (String(req.query.resumo) === '1') {
+        const rows = await postgres.query(
+          `SELECT
+              COALESCE(SUM(r.valor), 0)::numeric AS total_valor,
+              COUNT(DISTINCT r.id_unidade)::int AS total_unidades,
+              COUNT(*)::int AS total_pendencias
+             FROM "condominio-bh".tb_fin_receitas r
+            WHERE r.id_condominio = :id_condominio
+              AND r.situacao = 'em_aberto'
+              AND r.data_vencimento < CURRENT_DATE`,
+          { replacements: { id_condominio: idCondominio }, type: QueryTypes.SELECT }
+        );
+        const resumo = rows[0] || {};
+        return res.status(200).json({
+          total_valor: Number(resumo.total_valor || 0),
+          total_unidades: Number(resumo.total_unidades || 0),
+          total_pendencias: Number(resumo.total_pendencias || 0),
+        });
+      }
 
       const page = Math.max(this._toInt(req.query.page, 1), 1);
       const pageSize = Math.min(Math.max(this._toInt(req.query.pageSize, 25), 1), 200);
@@ -1632,6 +1808,120 @@ class FinanceiroController {
       });
     } catch (error) {
       return res.status(500).json({ message: 'Falha ao publicar balancete.', detail: error.message });
+    }
+  }
+
+  // ─── Documentos da competência ─────────────────────────────────────────────
+
+  async listarDocumentosCompetencia(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+
+      const periodo = this._periodoDaQuery(req) || this._periodoAtual();
+      const replacements = { id_condominio: idCondominio, periodo };
+
+      // Moradores só veem documentos de competências com balancete publicado
+      if (!this._isGestor(req)) {
+        const publicado = await postgres.query(
+          `SELECT 1
+             FROM "condominio-bh".tb_fin_balancetes
+            WHERE id_condominio = :id_condominio
+              AND TO_CHAR(competencia, 'YYYY-MM') = :periodo
+              AND publicado = true`,
+          { replacements, type: QueryTypes.SELECT }
+        );
+        if (!publicado[0]) return res.status(404).json({ message: 'Balancete não publicado para este período.' });
+      }
+
+      const data = await postgres.query(
+        `SELECT id, tipo, nome_arquivo, caminho_arquivo, data_envio
+           FROM "condominio-bh".tb_fin_documentos_competencia
+          WHERE id_condominio = :id_condominio
+            AND TO_CHAR(competencia, 'YYYY-MM') = :periodo
+          ORDER BY data_envio DESC`,
+        { replacements, type: QueryTypes.SELECT }
+      );
+
+      return res.status(200).json({ periodo, data });
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao listar documentos da competência.', detail: error.message });
+    }
+  }
+
+  async uploadDocumentoCompetencia(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+      if (!req.file) return res.status(400).json({ message: 'Arquivo não enviado.' });
+
+      const periodo = this._normalizarPeriodo(req.body.competencia);
+      const tipo = req.body.tipo;
+      const arquivo = req.file;
+      const ext = (arquivo.originalname.split('.').pop() || 'bin').toLowerCase();
+      const ambiente = process.env.NODE_ENV === 'production' ? 'prod' : 'dev';
+      const nomeArquivo = `${Date.now()}_${Math.random().toString(36).substr(2, 8)}.${ext}`;
+      const blobPath = `${ambiente}/condominios/${idCondominio}/financeiro/competencias/${periodo}/${nomeArquivo}`;
+
+      const uploadResult = await put(blobPath, arquivo.buffer, { access: 'public', contentType: arquivo.mimetype });
+      const caminhoArquivo = uploadResult?.url || blobPath;
+
+      const [docRows] = await postgres.query(
+        `INSERT INTO "condominio-bh".tb_fin_documentos_competencia
+            (id_condominio, competencia, tipo, nome_arquivo, caminho_arquivo, id_usuario_cadastro, data_envio)
+           VALUES (:id_condominio, :competencia::date, :tipo, :nome_arquivo, :caminho_arquivo, :id_usuario_cadastro, now())
+           RETURNING *`,
+        {
+          replacements: {
+            id_condominio: idCondominio,
+            competencia: `${periodo}-01`,
+            tipo,
+            nome_arquivo: arquivo.originalname,
+            caminho_arquivo: caminhoArquivo,
+            id_usuario_cadastro: this._toInt(req.idcliente, null),
+          },
+        }
+      );
+
+      return res.status(201).json(docRows[0]);
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao fazer upload do documento.', detail: error.message });
+    }
+  }
+
+  async excluirDocumentoCompetencia(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const id = this._toInt(req.params.id, null);
+
+      const docs = await postgres.query(
+        `SELECT id, caminho_arquivo
+           FROM "condominio-bh".tb_fin_documentos_competencia
+          WHERE id = :id AND id_condominio = :id_condominio`,
+        { replacements: { id, id_condominio: idCondominio }, type: QueryTypes.SELECT }
+      );
+
+      if (!docs[0]) return res.status(404).json({ message: 'Documento não encontrado.' });
+
+      try {
+        const { del } = require('@vercel/blob');
+        await del(docs[0].caminho_arquivo);
+      } catch (_) {
+        // remoção do blob é melhor esforço
+      }
+
+      await postgres.query(
+        `DELETE FROM "condominio-bh".tb_fin_documentos_competencia WHERE id = :id`,
+        { replacements: { id } }
+      );
+
+      return res.status(200).json({ message: 'Documento removido.' });
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao remover documento.', detail: error.message });
     }
   }
 

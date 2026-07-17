@@ -129,6 +129,8 @@ router.get(
     query('competencia').optional({ nullable: true, checkFalsy: true }).matches(/^\d{4}-\d{2}(-\d{2})?$/).withMessage('competencia deve estar no formato YYYY-MM ou YYYY-MM-DD.'),
     query('categoria').optional({ nullable: true, checkFalsy: true }).isLength({ max: 60 }).withMessage('categoria deve ter no máximo 60 caracteres.'),
     query('id_grupo_receita').optional({ nullable: true, checkFalsy: true }).isInt({ min: 1 }).withMessage('id_grupo_receita deve ser inteiro positivo.'),
+    query('periodo_inicio').optional({ nullable: true, checkFalsy: true }).matches(/^\d{4}-\d{2}(-\d{2})?$/).withMessage('periodo_inicio deve estar no formato YYYY-MM ou YYYY-MM-DD.'),
+    query('periodo_fim').optional({ nullable: true, checkFalsy: true }).matches(/^\d{4}-\d{2}(-\d{2})?$/).withMessage('periodo_fim deve estar no formato YYYY-MM ou YYYY-MM-DD.'),
   ],
   validate,
   controller.consolidadoReceitas.bind(controller)
@@ -222,6 +224,8 @@ router.get(
     query('periodo').optional({ nullable: true, checkFalsy: true }).matches(/^\d{4}-\d{2}(-\d{2})?$/).withMessage('periodo deve estar no formato YYYY-MM ou YYYY-MM-DD.'),
     query('competencia').optional({ nullable: true, checkFalsy: true }).matches(/^\d{4}-\d{2}(-\d{2})?$/).withMessage('competencia deve estar no formato YYYY-MM ou YYYY-MM-DD.'),
     query('categoria').optional({ nullable: true, checkFalsy: true }).isLength({ max: 60 }).withMessage('categoria deve ter no máximo 60 caracteres.'),
+    query('periodo_inicio').optional({ nullable: true, checkFalsy: true }).matches(/^\d{4}-\d{2}(-\d{2})?$/).withMessage('periodo_inicio deve estar no formato YYYY-MM ou YYYY-MM-DD.'),
+    query('periodo_fim').optional({ nullable: true, checkFalsy: true }).matches(/^\d{4}-\d{2}(-\d{2})?$/).withMessage('periodo_fim deve estar no formato YYYY-MM ou YYYY-MM-DD.'),
   ],
   validate,
   controller.consolidadoDespesas.bind(controller)
@@ -266,6 +270,16 @@ router.get(
   controller.getDashboard.bind(controller)
 );
 
+router.get(
+  '/lancamentos-recentes',
+  auth,
+  [
+    query('limit').optional().isInt({ min: 1, max: 50 }).withMessage('limit deve estar entre 1 e 50.'),
+  ],
+  validate,
+  controller.listarLancamentosRecentes.bind(controller)
+);
+
 // ── Inadimplência ─────────────────────────────────────────────────────────────
 
 router.get(
@@ -274,6 +288,7 @@ router.get(
   [
     query('page').optional().isInt({ min: 1 }).withMessage('page deve ser inteiro maior que zero.'),
     query('pageSize').optional().isInt({ min: 1, max: 200 }).withMessage('pageSize deve estar entre 1 e 200.'),
+    query('resumo').optional({ nullable: true, checkFalsy: true }).isIn(['0', '1']).withMessage('resumo deve ser 0 ou 1.'),
   ],
   validate,
   controller.listarInadimplencia.bind(controller)
@@ -349,6 +364,45 @@ router.post(
   ],
   validate,
   controller.publicarBalancete.bind(controller)
+);
+
+// ── Documentos da competência ─────────────────────────────────────────────────
+
+router.get(
+  '/documentos',
+  auth,
+  [
+    query('periodo').optional({ nullable: true, checkFalsy: true }).matches(/^\d{4}-\d{2}(-\d{2})?$/).withMessage('periodo deve estar no formato YYYY-MM ou YYYY-MM-DD.'),
+    query('competencia').optional({ nullable: true, checkFalsy: true }).matches(/^\d{4}-\d{2}(-\d{2})?$/).withMessage('competencia deve estar no formato YYYY-MM ou YYYY-MM-DD.'),
+  ],
+  validate,
+  controller.listarDocumentosCompetencia.bind(controller)
+);
+
+router.post(
+  '/documentos',
+  auth,
+  uploadDoc.single('arquivo'),
+  [
+    body('competencia')
+      .notEmpty().withMessage('competencia é obrigatório.')
+      .bail()
+      .matches(/^\d{4}-\d{2}(-\d{2})?$/).withMessage('competencia deve estar no formato YYYY-MM ou YYYY-MM-DD.'),
+    body('tipo')
+      .notEmpty().withMessage('tipo é obrigatório.')
+      .bail()
+      .isIn(['extrato_bancario', 'notas_fiscais', 'prestacao_assinada', 'outro']).withMessage('tipo inválido.'),
+  ],
+  validate,
+  controller.uploadDocumentoCompetencia.bind(controller)
+);
+
+router.delete(
+  '/documentos/:id',
+  auth,
+  [param('id').isInt({ min: 1 }).withMessage('id inválido.')],
+  validate,
+  controller.excluirDocumentoCompetencia.bind(controller)
 );
 
 // ── Fornecedores ──────────────────────────────────────────────────────────────
