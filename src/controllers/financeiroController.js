@@ -280,11 +280,11 @@ class FinanceiroController {
 
       const data = await postgres.query(
         `SELECT rot.id, rot.dia_vencimento, rot.data_fim, rot.ativo, rot.created_at,
-                r.categoria, r.descricao, r.valor, r.id_usuario, r.id_unidade, r.id_grupo_receita,
+                r.categoria, r.descricao, r.valor, r.valor_fundo_reserva, r.id_usuario, r.id_unidade, r.id_grupo_receita,
                 us.nome, us.bloco, us.apartamento
            FROM "condominio-bh".tb_fin_receita_rotina rot
            LEFT JOIN (
-             SELECT DISTINCT ON (id_rotina) id_rotina, categoria, descricao, valor, id_usuario, id_unidade, id_grupo_receita
+             SELECT DISTINCT ON (id_rotina) id_rotina, categoria, descricao, valor, valor_fundo_reserva, id_usuario, id_unidade, id_grupo_receita
                FROM "condominio-bh".tb_fin_receitas
               WHERE id_rotina IS NOT NULL
               ORDER BY id_rotina, id DESC
@@ -431,8 +431,8 @@ class FinanceiroController {
         `SELECT
             COALESCE(SUM(CASE WHEN situacao = 'pago' THEN valor ELSE 0 END), 0)::numeric AS soma_pago,
             COALESCE(SUM(CASE WHEN situacao = 'em_aberto' THEN valor ELSE 0 END), 0)::numeric AS soma_em_aberto,
-            COALESCE(MAX(CASE WHEN situacao = 'pago' THEN valor END), 0)::numeric AS maior_pago,
-            COALESCE(MAX(CASE WHEN situacao = 'em_aberto' THEN valor END), 0)::numeric AS maior_em_aberto,
+            COALESCE(MAX(CASE WHEN situacao = 'pago' THEN valor + COALESCE(valor_fundo_reserva, 0) END), 0)::numeric AS maior_pago,
+            COALESCE(MAX(CASE WHEN situacao = 'em_aberto' THEN valor + COALESCE(valor_fundo_reserva, 0) END), 0)::numeric AS maior_em_aberto,
             COALESCE(SUM(CASE WHEN situacao = 'pago' THEN 1 ELSE 0 END), 0)::int AS qtd_pago,
             COALESCE(SUM(CASE WHEN situacao = 'em_aberto' THEN 1 ELSE 0 END), 0)::int AS qtd_em_aberto,
             COALESCE(SUM(CASE WHEN situacao = 'pago' THEN valor_fundo_reserva ELSE 0 END), 0)::numeric AS soma_fundo_reserva_pago,
@@ -499,8 +499,10 @@ class FinanceiroController {
       const rows = await postgres.query(
         `SELECT
             TO_CHAR(meses.mes, 'YYYY-MM') AS mes,
-            COALESCE(SUM(CASE WHEN r.situacao = 'pago' THEN r.valor ELSE 0 END), 0)::numeric AS soma_pago,
-            COALESCE(SUM(CASE WHEN r.situacao = 'em_aberto' THEN r.valor ELSE 0 END), 0)::numeric AS soma_em_aberto,
+            COALESCE(SUM(CASE WHEN r.situacao = 'pago' THEN r.valor + COALESCE(r.valor_fundo_reserva, 0) ELSE 0 END), 0)::numeric AS soma_pago,
+            COALESCE(SUM(CASE WHEN r.situacao = 'em_aberto' THEN r.valor + COALESCE(r.valor_fundo_reserva, 0) ELSE 0 END), 0)::numeric AS soma_em_aberto,
+            COALESCE(SUM(CASE WHEN r.situacao = 'pago' THEN r.valor_fundo_reserva ELSE 0 END), 0)::numeric AS soma_fundo_reserva_pago,
+            COALESCE(SUM(CASE WHEN r.situacao = 'em_aberto' THEN r.valor_fundo_reserva ELSE 0 END), 0)::numeric AS soma_fundo_reserva_em_aberto,
             COALESCE(SUM(CASE WHEN r.situacao = 'pago' THEN 1 ELSE 0 END), 0)::int AS qtd_pago,
             COALESCE(SUM(CASE WHEN r.situacao = 'em_aberto' THEN 1 ELSE 0 END), 0)::int AS qtd_em_aberto
            FROM generate_series(TO_DATE(:periodo_inicio, 'YYYY-MM'), TO_DATE(:periodo_fim, 'YYYY-MM'), INTERVAL '1 month') AS meses(mes)
@@ -520,6 +522,8 @@ class FinanceiroController {
           mes: item.mes,
           soma_pago: Number(item.soma_pago || 0),
           soma_em_aberto: Number(item.soma_em_aberto || 0),
+          soma_fundo_reserva_pago: Number(item.soma_fundo_reserva_pago || 0),
+          soma_fundo_reserva_em_aberto: Number(item.soma_fundo_reserva_em_aberto || 0),
           qtd_pago: Number(item.qtd_pago || 0),
           qtd_em_aberto: Number(item.qtd_em_aberto || 0),
         })),
@@ -969,9 +973,9 @@ class FinanceiroController {
       const [kpisReceitas, kpisDespesas, ultimasDespesas, topInadimplentes, grafico, distribuicaoDespesas] = await Promise.all([
         postgres.query(
           `SELECT
-              COALESCE(SUM(CASE WHEN situacao != 'cancelado' THEN valor ELSE 0 END), 0)::numeric AS total_receitas,
-              COALESCE(SUM(CASE WHEN situacao = 'pago' THEN valor ELSE 0 END), 0)::numeric AS total_recebido,
-              COALESCE(SUM(CASE WHEN situacao = 'em_aberto' AND data_vencimento < CURRENT_DATE THEN valor ELSE 0 END), 0)::numeric AS total_inadimplente
+              COALESCE(SUM(CASE WHEN situacao != 'cancelado' THEN valor + COALESCE(valor_fundo_reserva, 0) ELSE 0 END), 0)::numeric AS total_receitas,
+              COALESCE(SUM(CASE WHEN situacao = 'pago' THEN valor + COALESCE(valor_fundo_reserva, 0) ELSE 0 END), 0)::numeric AS total_recebido,
+              COALESCE(SUM(CASE WHEN situacao = 'em_aberto' AND data_vencimento < CURRENT_DATE THEN valor + COALESCE(valor_fundo_reserva, 0) ELSE 0 END), 0)::numeric AS total_inadimplente
              FROM "condominio-bh".tb_fin_receitas
             WHERE id_condominio = :id_condominio
               AND TO_CHAR(competencia, 'YYYY-MM') = :periodo`,
@@ -1000,7 +1004,9 @@ class FinanceiroController {
           { replacements: rpl, type: QueryTypes.SELECT }
         ),
         postgres.query(
-          `SELECT r.id, r.descricao, r.valor, r.data_vencimento, r.id_unidade, r.id_usuario,
+          `SELECT r.id, r.descricao, r.valor, r.valor_fundo_reserva,
+                  (r.valor + COALESCE(r.valor_fundo_reserva, 0)) AS valor_total,
+                  r.data_vencimento, r.id_unidade, r.id_usuario,
                   (CURRENT_DATE - r.data_vencimento) AS dias_atraso,
                   un.unidades_bloco AS unidade,
                   us.bloco
@@ -1028,8 +1034,8 @@ class FinanceiroController {
                   ) AS meses(mes)
              LEFT JOIN (
                  SELECT DATE_TRUNC('month', competencia) AS mes,
-                        SUM(CASE WHEN situacao != 'cancelado' THEN valor ELSE 0 END) AS total_receitas,
-                        SUM(CASE WHEN situacao = 'pago' THEN valor ELSE 0 END) AS total_recebido
+                        SUM(CASE WHEN situacao != 'cancelado' THEN valor + COALESCE(valor_fundo_reserva, 0) ELSE 0 END) AS total_receitas,
+                        SUM(CASE WHEN situacao = 'pago' THEN valor + COALESCE(valor_fundo_reserva, 0) ELSE 0 END) AS total_recebido
                    FROM "condominio-bh".tb_fin_receitas
                   WHERE id_condominio = :id_condominio
                   GROUP BY DATE_TRUNC('month', competencia)
@@ -1097,14 +1103,16 @@ class FinanceiroController {
 
       const data = await postgres.query(
         `SELECT * FROM (
-             SELECT 'receita' AS tipo, r.id, r.descricao, r.categoria, r.valor, r.situacao,
+             SELECT 'receita' AS tipo, r.id, r.descricao, r.categoria, r.valor, r.valor_fundo_reserva,
+                    (r.valor + COALESCE(r.valor_fundo_reserva, 0)) AS valor_total, r.situacao,
                     COALESCE(r.data_pagamento, r.data_vencimento) AS data_evento,
                     us.nome AS usuario_nome, us.bloco, us.apartamento
                FROM "condominio-bh".tb_fin_receitas r
                LEFT JOIN "condominio-bh"."tb-usuarios" us ON us.id = r.id_usuario
               WHERE r.id_condominio = :id_condominio AND r.situacao != 'cancelado'
               UNION ALL
-             SELECT 'despesa' AS tipo, d.id, d.descricao, d.categoria, d.valor, d.situacao,
+             SELECT 'despesa' AS tipo, d.id, d.descricao, d.categoria, d.valor, NULL::numeric AS valor_fundo_reserva,
+                    d.valor AS valor_total, d.situacao,
                     COALESCE(d.data_pagamento, d.data_despesa) AS data_evento,
                     d.fornecedor AS usuario_nome, NULL::varchar AS bloco, NULL::varchar AS apartamento
                FROM "condominio-bh".tb_fin_despesas d
@@ -1132,7 +1140,7 @@ class FinanceiroController {
       if (String(req.query.resumo) === '1') {
         const rows = await postgres.query(
           `SELECT
-              COALESCE(SUM(r.valor), 0)::numeric AS total_valor,
+              COALESCE(SUM(r.valor + COALESCE(r.valor_fundo_reserva, 0)), 0)::numeric AS total_valor,
               COUNT(DISTINCT r.id_unidade)::int AS total_unidades,
               COUNT(*)::int AS total_pendencias
              FROM "condominio-bh".tb_fin_receitas r
@@ -1166,7 +1174,9 @@ class FinanceiroController {
           { replacements, type: QueryTypes.SELECT }
         ),
         postgres.query(
-          `SELECT r.id, r.descricao, r.categoria, r.valor, r.data_vencimento, r.competencia,
+          `SELECT r.id, r.descricao, r.categoria, r.valor, r.valor_fundo_reserva,
+                  (r.valor + COALESCE(r.valor_fundo_reserva, 0)) AS valor_total,
+                  r.data_vencimento, r.competencia,
                   r.id_unidade, r.id_usuario, r.grupo_receita AS tipo_pendencia,
                   (CURRENT_DATE - r.data_vencimento) AS dias_atraso,
                   i.juros, i.multa, i.valor_atualizado,
@@ -1224,7 +1234,7 @@ class FinanceiroController {
       const idsConsulta = [idReceita, ...outrasPendenciasIds];
 
       const receitasEncontradas = await postgres.query(
-        `SELECT r.id, r.id_unidade, r.descricao, r.valor, r.data_vencimento, r.id_usuario,
+        `SELECT r.id, r.id_unidade, r.descricao, r.valor, r.valor_fundo_reserva, r.data_vencimento, r.id_usuario,
                 u.nome AS usuario_nome, u.email AS usuario_email,
                 c.nome AS condominio_nome,
                 (CURRENT_DATE - r.data_vencimento) AS dias_atraso
@@ -1304,7 +1314,7 @@ class FinanceiroController {
         const emails = [...new Set(pendencias.map((p) => p.usuario_email).filter(Boolean))];
         if (emails.length > 0) {
           try {
-            const valorTotal = pendencias.reduce((soma, p) => soma + Number(p.valor || 0), 0);
+            const valorTotal = pendencias.reduce((soma, p) => soma + Number(p.valor || 0) + Number(p.valor_fundo_reserva || 0), 0);
             const diasAtrasoMax = Math.max(...pendencias.map((p) => Number(p.dias_atraso || 0)));
 
             const mensagemCobranca = consolidado
@@ -1320,7 +1330,7 @@ class FinanceiroController {
             if (boletosParaEmail.length > 0) details['Boletos'] = boletosParaEmail.join('\n');
             if (consolidado) {
               details['Pendências consolidadas'] = pendencias
-                .map((p) => `${p.descricao} — R$ ${Number(p.valor || 0).toFixed(2)} — venceu ${p.data_vencimento}`)
+                .map((p) => `${p.descricao} — R$ ${(Number(p.valor || 0) + Number(p.valor_fundo_reserva || 0)).toFixed(2)} — venceu ${p.data_vencimento}`)
                 .join('\n');
             }
 
@@ -1422,7 +1432,8 @@ class FinanceiroController {
                   cl.observacao, cl.enviou_anexo, cl.path_anexo,
                   cl.id_usuario, u.nome AS usuario_nome,
                   cl.id_usuario_solicitante, us.nome AS solicitante_nome,
-                  r.descricao AS receita_descricao, r.valor AS receita_valor
+                  r.descricao AS receita_descricao, r.valor AS receita_valor, r.valor_fundo_reserva AS receita_valor_fundo_reserva,
+                  (r.valor + COALESCE(r.valor_fundo_reserva, 0)) AS receita_valor_total
              FROM "condominio-bh".tb_fin_cobranca_log cl
              LEFT JOIN "condominio-bh"."tb-usuarios" u ON u.id = cl.id_usuario
              LEFT JOIN "condominio-bh"."tb-usuarios" us ON us.id = cl.id_usuario_solicitante
@@ -1607,6 +1618,8 @@ class FinanceiroController {
               pendente: Number(receitasAno[0]?.fundo_reserva_pendente || 0),
             },
             total_com_fundo_reserva: Number(receitasAno[0]?.total || 0) + Number(receitasAno[0]?.fundo_reserva_total || 0),
+            pago_com_fundo_reserva: Number(receitasAno[0]?.pago || 0) + Number(receitasAno[0]?.fundo_reserva_pago || 0),
+            pendente_com_fundo_reserva: Number(receitasAno[0]?.pendente || 0) + Number(receitasAno[0]?.fundo_reserva_pendente || 0),
           },
           despesas: {
             total: Number(despesasAno[0]?.total || 0),
@@ -1635,7 +1648,7 @@ class FinanceiroController {
 
       const [totaisReceitas, totaisDespesas] = await Promise.all([
         postgres.query(
-          `SELECT COALESCE(SUM(valor), 0)::numeric AS total
+          `SELECT COALESCE(SUM(valor + COALESCE(valor_fundo_reserva, 0)), 0)::numeric AS total
              FROM "condominio-bh".tb_fin_receitas
             WHERE id_condominio = :id_condominio
               AND TO_CHAR(competencia, 'YYYY-MM') = :periodo
