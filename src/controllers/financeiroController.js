@@ -1234,6 +1234,361 @@ class FinanceiroController {
     }
   }
 
+  async getOrcamentoDashboard(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const periodo = this._periodoDaQuery(req) || this._periodoAtual();
+      const rpl = { id_condominio: idCondominio, periodo };
+
+      const [previstoReceitas, previstoDespesas, realizadoReceitas, realizadoDespesas] = await Promise.all([
+        postgres.query(
+          `SELECT COALESCE(AVG(total_mes), 0)::numeric AS media, COUNT(*)::int AS meses_base
+             FROM (
+               SELECT DATE_TRUNC('month', competencia) AS mes,
+                      SUM(CASE WHEN situacao != 'cancelado' THEN valor + COALESCE(valor_fundo_reserva, 0) ELSE 0 END) AS total_mes
+                 FROM "condominio-bh".tb_fin_receitas
+                WHERE id_condominio = :id_condominio
+                  AND competencia >= TO_DATE(:periodo, 'YYYY-MM') - INTERVAL '12 months'
+                  AND competencia < TO_DATE(:periodo, 'YYYY-MM')
+                GROUP BY DATE_TRUNC('month', competencia)
+             ) t`,
+          { replacements: rpl, type: QueryTypes.SELECT }
+        ),
+        postgres.query(
+          `SELECT COALESCE(AVG(total_mes), 0)::numeric AS media, COUNT(*)::int AS meses_base
+             FROM (
+               SELECT DATE_TRUNC('month', competencia) AS mes,
+                      SUM(CASE WHEN situacao != 'cancelado' THEN valor ELSE 0 END) AS total_mes
+                 FROM "condominio-bh".tb_fin_despesas
+                WHERE id_condominio = :id_condominio
+                  AND competencia >= TO_DATE(:periodo, 'YYYY-MM') - INTERVAL '12 months'
+                  AND competencia < TO_DATE(:periodo, 'YYYY-MM')
+                GROUP BY DATE_TRUNC('month', competencia)
+             ) t`,
+          { replacements: rpl, type: QueryTypes.SELECT }
+        ),
+        postgres.query(
+          `SELECT COALESCE(SUM(CASE WHEN situacao != 'cancelado' THEN valor + COALESCE(valor_fundo_reserva, 0) ELSE 0 END), 0)::numeric AS total
+             FROM "condominio-bh".tb_fin_receitas
+            WHERE id_condominio = :id_condominio
+              AND TO_CHAR(competencia, 'YYYY-MM') = :periodo`,
+          { replacements: rpl, type: QueryTypes.SELECT }
+        ),
+        postgres.query(
+          `SELECT COALESCE(SUM(CASE WHEN situacao != 'cancelado' THEN valor ELSE 0 END), 0)::numeric AS total
+             FROM "condominio-bh".tb_fin_despesas
+            WHERE id_condominio = :id_condominio
+              AND TO_CHAR(competencia, 'YYYY-MM') = :periodo`,
+          { replacements: rpl, type: QueryTypes.SELECT }
+        ),
+      ]);
+
+      const receitasPrevisto = Number(previstoReceitas[0]?.media || 0);
+      const despesasPrevisto = Number(previstoDespesas[0]?.media || 0);
+      const receitasRealizado = Number(realizadoReceitas[0]?.total || 0);
+      const despesasRealizado = Number(realizadoDespesas[0]?.total || 0);
+      const mesesBaseCalculo = Math.min(
+        Number(previstoReceitas[0]?.meses_base || 0),
+        Number(previstoDespesas[0]?.meses_base || 0)
+      );
+
+      return res.status(200).json({
+        periodo,
+        orcamento: {
+          total_receitas_previsto: receitasPrevisto,
+          total_despesas_previsto: despesasPrevisto,
+          total_receitas_realizado: receitasRealizado,
+          total_despesas_realizado: despesasRealizado,
+          percentual_realizado_receitas: receitasPrevisto > 0 ? (receitasRealizado / receitasPrevisto) * 100 : 0,
+          percentual_realizado_despesas: despesasPrevisto > 0 ? (despesasRealizado / despesasPrevisto) * 100 : 0,
+          meses_base_calculo: mesesBaseCalculo,
+        },
+      });
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao carregar orçamento.', detail: error.message });
+    }
+  }
+
+  async getFundoReserva(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const [metaRows, arrecadadoRows] = await Promise.all([
+        postgres.query(
+          `SELECT valor_meta
+             FROM "condominio-bh".tb_fin_meta_fundo_reserva
+            WHERE id_condominio = :id_condominio`,
+          { replacements: { id_condominio: idCondominio }, type: QueryTypes.SELECT }
+        ),
+        postgres.query(
+          `SELECT COALESCE(SUM(CASE WHEN situacao = 'pago' THEN valor_fundo_reserva ELSE 0 END), 0)::numeric AS arrecadado
+             FROM "condominio-bh".tb_fin_receitas
+            WHERE id_condominio = :id_condominio`,
+          { replacements: { id_condominio: idCondominio }, type: QueryTypes.SELECT }
+        ),
+      ]);
+
+      const valorMeta = metaRows[0]?.valor_meta !== undefined ? Number(metaRows[0].valor_meta) : null;
+      const valorArrecadado = Number(arrecadadoRows[0]?.arrecadado || 0);
+
+      return res.status(200).json({
+        valor_meta: valorMeta,
+        valor_arrecadado: valorArrecadado,
+        percentual_atingido: valorMeta ? (valorArrecadado / valorMeta) * 100 : 0,
+      });
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao carregar fundo de reserva.', detail: error.message });
+    }
+  }
+
+  async atualizarMetaFundoReserva(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!['Admin', 'Sindico'].includes(req.nomePerfil)) return res.status(403).json({ message: 'Apenas Admin ou Síndico podem atualizar a meta do fundo de reserva.' });
+
+      const valorMeta = this._parseDecimalOuNull(req.body.valor_meta);
+      if (valorMeta === null || valorMeta < 0) return res.status(422).json({ message: 'valor_meta é obrigatório e deve ser um número maior ou igual a zero.' });
+
+      const idUsuario = this._toInt(req.idcliente, null);
+
+      await postgres.query(
+        `INSERT INTO "condominio-bh".tb_fin_meta_fundo_reserva (id_condominio, valor_meta, atualizado_por, created_at, updated_at)
+         VALUES (:id_condominio, :valor_meta, :atualizado_por, NOW(), NOW())
+         ON CONFLICT (id_condominio) DO UPDATE
+           SET valor_meta = :valor_meta, atualizado_por = :atualizado_por, updated_at = NOW()`,
+        { replacements: { id_condominio: idCondominio, valor_meta: valorMeta, atualizado_por: idUsuario } }
+      );
+
+      return res.status(200).json({ message: 'Meta do fundo de reserva atualizada.', valor_meta: valorMeta });
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao atualizar meta do fundo de reserva.', detail: error.message });
+    }
+  }
+
+  async getScoreFinanceiro(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const periodo = this._periodoDaQuery(req) || this._periodoAtual();
+      const rpl = { id_condominio: idCondominio, periodo };
+
+      const [kpisReceitas, kpisDespesas, saldoRows, despesasVencidasRows, metaRows, arrecadadoRows, pagamentosRows] = await Promise.all([
+        postgres.query(
+          `SELECT
+              COALESCE(SUM(CASE WHEN situacao != 'cancelado' THEN valor + COALESCE(valor_fundo_reserva, 0) ELSE 0 END), 0)::numeric AS total_receitas,
+              COALESCE(SUM(CASE WHEN situacao = 'pago' THEN valor + COALESCE(valor_fundo_reserva, 0) ELSE 0 END), 0)::numeric AS total_recebido,
+              COALESCE(SUM(CASE WHEN situacao = 'em_aberto' AND data_vencimento < CURRENT_DATE THEN valor + COALESCE(valor_fundo_reserva, 0) ELSE 0 END), 0)::numeric AS total_inadimplente
+             FROM "condominio-bh".tb_fin_receitas
+            WHERE id_condominio = :id_condominio
+              AND TO_CHAR(competencia, 'YYYY-MM') = :periodo`,
+          { replacements: rpl, type: QueryTypes.SELECT }
+        ),
+        postgres.query(
+          `SELECT
+              COALESCE(SUM(CASE WHEN situacao != 'cancelado' THEN valor ELSE 0 END), 0)::numeric AS total_despesas,
+              COALESCE(SUM(CASE WHEN situacao = 'pago' THEN valor ELSE 0 END), 0)::numeric AS total_pago,
+              COUNT(*) FILTER (WHERE situacao != 'cancelado')::int AS qtd_total,
+              COUNT(*) FILTER (WHERE situacao = 'pago' AND data_pagamento <= data_despesa)::int AS qtd_pagas_no_prazo
+             FROM "condominio-bh".tb_fin_despesas
+            WHERE id_condominio = :id_condominio
+              AND TO_CHAR(competencia, 'YYYY-MM') = :periodo`,
+          { replacements: rpl, type: QueryTypes.SELECT }
+        ),
+        postgres.query(
+          `SELECT
+              COALESCE(SUM(CASE WHEN situacao = 'pago' THEN valor + COALESCE(valor_fundo_reserva, 0) ELSE 0 END), 0)::numeric AS recebido_acumulado,
+              (SELECT COALESCE(SUM(valor), 0) FROM "condominio-bh".tb_fin_despesas
+                WHERE id_condominio = :id_condominio AND situacao = 'pago'
+                  AND COALESCE(data_pagamento, data_despesa) < (TO_DATE(:periodo, 'YYYY-MM') + INTERVAL '1 month'))::numeric AS pago_acumulado
+             FROM "condominio-bh".tb_fin_receitas
+            WHERE id_condominio = :id_condominio
+              AND COALESCE(data_pagamento, competencia) < (TO_DATE(:periodo, 'YYYY-MM') + INTERVAL '1 month')`,
+          { replacements: rpl, type: QueryTypes.SELECT }
+        ),
+        postgres.query(
+          `SELECT COALESCE(SUM(valor), 0)::numeric AS total
+             FROM "condominio-bh".tb_fin_despesas
+            WHERE id_condominio = :id_condominio
+              AND situacao = 'a_pagar'
+              AND data_despesa < CURRENT_DATE`,
+          { replacements: rpl, type: QueryTypes.SELECT }
+        ),
+        postgres.query(
+          `SELECT valor_meta
+             FROM "condominio-bh".tb_fin_meta_fundo_reserva
+            WHERE id_condominio = :id_condominio`,
+          { replacements: rpl, type: QueryTypes.SELECT }
+        ),
+        postgres.query(
+          `SELECT COALESCE(SUM(CASE WHEN situacao = 'pago' THEN valor_fundo_reserva ELSE 0 END), 0)::numeric AS arrecadado
+             FROM "condominio-bh".tb_fin_receitas
+            WHERE id_condominio = :id_condominio`,
+          { replacements: rpl, type: QueryTypes.SELECT }
+        ),
+        postgres.query(
+          `SELECT COUNT(*)::int AS qtd_total,
+                  COUNT(*) FILTER (WHERE situacao = 'pago' AND data_pagamento <= data_despesa)::int AS qtd_pagas_no_prazo
+             FROM "condominio-bh".tb_fin_despesas
+            WHERE id_condominio = :id_condominio
+              AND situacao != 'cancelado'
+              AND TO_CHAR(competencia, 'YYYY-MM') = :periodo`,
+          { replacements: rpl, type: QueryTypes.SELECT }
+        ),
+      ]);
+
+      const kr = kpisReceitas[0] || {};
+      const kd = kpisDespesas[0] || {};
+      const totalReceitas = Number(kr.total_receitas || 0);
+      const totalRecebido = Number(kr.total_recebido || 0);
+      const totalInadimplente = Number(kr.total_inadimplente || 0);
+      const totalDespesas = Number(kd.total_despesas || 0);
+      const totalPago = Number(kd.total_pago || 0);
+
+      const saldoCaixa = Number(saldoRows[0]?.recebido_acumulado || 0) - Number(saldoRows[0]?.pago_acumulado || 0);
+      const despesasVencidas = Number(despesasVencidasRows[0]?.total || 0);
+      const valorMeta = metaRows[0]?.valor_meta !== undefined && metaRows[0]?.valor_meta !== null ? Number(metaRows[0].valor_meta) : null;
+      const valorArrecadado = Number(arrecadadoRows[0]?.arrecadado || 0);
+      const percentualMeta = valorMeta ? (valorArrecadado / valorMeta) * 100 : 0;
+      const qtdTotalPagamentos = Number(pagamentosRows[0]?.qtd_total || 0);
+      const qtdPagasNoPrazo = Number(pagamentosRows[0]?.qtd_pagas_no_prazo || 0);
+
+      const mesesCobertura = totalDespesas > 0 ? saldoCaixa / totalDespesas : 5;
+      const liquidez = Math.max(0, Math.min(10, mesesCobertura * 2));
+      const endividamento = 10 - Math.max(0, Math.min(10, totalReceitas > 0 ? (despesasVencidas / totalReceitas) * 10 : 0));
+      const inadimplencia = 10 - Math.max(0, Math.min(10, totalReceitas > 0 ? (totalInadimplente / totalReceitas) * 10 : 0));
+      const fundoReserva = Math.max(0, Math.min(10, percentualMeta / 10));
+      const receitaDespesa = totalPago > 0 ? Math.max(0, Math.min(10, (totalRecebido / totalPago) * 5)) : 10;
+      const pagamentosEmDia = qtdTotalPagamentos > 0 ? (qtdPagasNoPrazo / qtdTotalPagamentos) * 10 : 10;
+
+      const subIndicadores = {
+        liquidez,
+        endividamento,
+        inadimplencia,
+        fundo_reserva: fundoReserva,
+        receita_despesa: receitaDespesa,
+        pagamentos_em_dia: pagamentosEmDia,
+      };
+      const valores = Object.values(subIndicadores);
+      const notaGeral = valores.reduce((acc, v) => acc + v, 0) / valores.length;
+
+      return res.status(200).json({
+        periodo,
+        nota_geral: notaGeral,
+        sub_indicadores: subIndicadores,
+      });
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao calcular score financeiro.', detail: error.message });
+    }
+  }
+
+  async getInadimplenciaSerie(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const meses = Math.min(Math.max(this._toInt(req.query.meses, 12), 1), 24);
+
+      const serie = await postgres.query(
+        `SELECT
+            TO_CHAR(meses.mes, 'YYYY-MM') AS mes,
+            COALESCE(i.total_inadimplente, 0)::numeric AS total_inadimplente,
+            COALESCE(i.qtd_unidades, 0)::int AS qtd_unidades
+           FROM generate_series(
+                  DATE_TRUNC('month', CURRENT_DATE) - (:meses || ' months')::interval,
+                  DATE_TRUNC('month', CURRENT_DATE),
+                  INTERVAL '1 month'
+                ) AS meses(mes)
+           LEFT JOIN LATERAL (
+             SELECT SUM(r.valor + COALESCE(r.valor_fundo_reserva, 0)) AS total_inadimplente,
+                    COUNT(DISTINCT r.id_unidade) AS qtd_unidades
+               FROM "condominio-bh".tb_fin_receitas r
+              WHERE r.id_condominio = :id_condominio
+                AND r.situacao = 'em_aberto'
+                AND r.data_vencimento < (meses.mes + INTERVAL '1 month')
+                AND r.data_vencimento < CURRENT_DATE
+           ) i ON true
+          ORDER BY meses.mes`,
+        { replacements: { id_condominio: idCondominio, meses }, type: QueryTypes.SELECT }
+      );
+
+      return res.status(200).json({
+        serie: serie.map((item) => ({
+          mes: item.mes,
+          total_inadimplente: Number(item.total_inadimplente || 0),
+          qtd_unidades: Number(item.qtd_unidades || 0),
+        })),
+      });
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao carregar série histórica de inadimplência.', detail: error.message });
+    }
+  }
+
+  async getConsumoUtilidades(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const periodo = this._periodoDaQuery(req) || this._periodoAtual();
+      const meses = Math.min(Math.max(this._toInt(req.query.meses, 6), 1), 24);
+      const rpl = { id_condominio: idCondominio, periodo, meses };
+
+      const [totais, serieHistorica] = await Promise.all([
+        postgres.query(
+          `SELECT g.codigo AS categoria, g.nome AS grupo_despesa_nome,
+                  COALESCE(SUM(d.valor), 0)::numeric AS total
+             FROM "condominio-bh".tb_fin_despesas d
+             LEFT JOIN "condominio-bh".tb_fin_grupo_despesa g ON g.codigo = d.categoria
+            WHERE d.id_condominio = :id_condominio
+              AND d.categoria IN ('UT001', 'UT002')
+              AND TO_CHAR(d.competencia, 'YYYY-MM') = :periodo
+              AND d.situacao != 'cancelado'
+            GROUP BY g.codigo, g.nome
+            ORDER BY g.codigo`,
+          { replacements: rpl, type: QueryTypes.SELECT }
+        ),
+        postgres.query(
+          `SELECT TO_CHAR(meses.mes, 'YYYY-MM') AS mes, cat.categoria,
+                  COALESCE(d.total, 0)::numeric AS total
+             FROM generate_series(
+                    DATE_TRUNC('month', CURRENT_DATE) - (:meses || ' months')::interval,
+                    DATE_TRUNC('month', CURRENT_DATE),
+                    INTERVAL '1 month'
+                  ) AS meses(mes)
+             CROSS JOIN (VALUES ('UT001'), ('UT002')) AS cat(categoria)
+             LEFT JOIN (
+               SELECT DATE_TRUNC('month', competencia) AS mes, categoria,
+                      SUM(valor) AS total
+                 FROM "condominio-bh".tb_fin_despesas
+                WHERE id_condominio = :id_condominio
+                  AND categoria IN ('UT001', 'UT002')
+                  AND situacao != 'cancelado'
+                GROUP BY DATE_TRUNC('month', competencia), categoria
+             ) d ON d.mes = meses.mes AND d.categoria = cat.categoria
+            ORDER BY meses.mes, cat.categoria`,
+          { replacements: rpl, type: QueryTypes.SELECT }
+        ),
+      ]);
+
+      return res.status(200).json({
+        periodo,
+        totais: totais.map((item) => ({ ...item, total: Number(item.total || 0) })),
+        serie_historica: serieHistorica.map((item) => ({ ...item, total: Number(item.total || 0) })),
+      });
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao carregar consumo de utilidades.', detail: error.message });
+    }
+  }
+
   async listarLancamentosRecentes(req, res) {
     try {
       const idCondominio = this._toInt(req.id_condominio, null);

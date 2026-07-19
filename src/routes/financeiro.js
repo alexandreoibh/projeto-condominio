@@ -283,6 +283,67 @@ router.get(
 );
 
 router.get(
+  '/dashboard/orcamento',
+  auth,
+  [
+    query('periodo').optional({ nullable: true, checkFalsy: true }).matches(/^\d{4}-\d{2}(-\d{2})?$/).withMessage('periodo deve estar no formato YYYY-MM ou YYYY-MM-DD.'),
+    query('competencia').optional({ nullable: true, checkFalsy: true }).matches(/^\d{4}-\d{2}(-\d{2})?$/).withMessage('competencia deve estar no formato YYYY-MM ou YYYY-MM-DD.'),
+  ],
+  validate,
+  controller.getOrcamentoDashboard.bind(controller)
+);
+
+router.get(
+  '/dashboard/fundo-reserva',
+  auth,
+  validate,
+  controller.getFundoReserva.bind(controller)
+);
+
+router.put(
+  '/dashboard/fundo-reserva/meta',
+  auth,
+  [
+    body('valor_meta').isFloat({ min: 0 }).withMessage('valor_meta é obrigatório e deve ser maior ou igual a zero.'),
+  ],
+  validate,
+  controller.atualizarMetaFundoReserva.bind(controller)
+);
+
+router.get(
+  '/dashboard/score',
+  auth,
+  [
+    query('periodo').optional({ nullable: true, checkFalsy: true }).matches(/^\d{4}-\d{2}(-\d{2})?$/).withMessage('periodo deve estar no formato YYYY-MM ou YYYY-MM-DD.'),
+    query('competencia').optional({ nullable: true, checkFalsy: true }).matches(/^\d{4}-\d{2}(-\d{2})?$/).withMessage('competencia deve estar no formato YYYY-MM ou YYYY-MM-DD.'),
+  ],
+  validate,
+  controller.getScoreFinanceiro.bind(controller)
+);
+
+router.get(
+  '/dashboard/inadimplencia-serie',
+  auth,
+  [
+    query('meses').optional().isInt({ min: 1, max: 24 }).withMessage('meses deve estar entre 1 e 24.'),
+  ],
+  validate,
+  controller.getInadimplenciaSerie.bind(controller)
+);
+
+router.get(
+  '/dashboard/consumo-utilidades',
+  auth,
+  [
+    query('periodo').optional({ nullable: true, checkFalsy: true }).matches(/^\d{4}-\d{2}(-\d{2})?$/).withMessage('periodo deve estar no formato YYYY-MM ou YYYY-MM-DD.'),
+    query('competencia').optional({ nullable: true, checkFalsy: true }).matches(/^\d{4}-\d{2}(-\d{2})?$/).withMessage('competencia deve estar no formato YYYY-MM ou YYYY-MM-DD.'),
+    query('meses').optional().isInt({ min: 1, max: 24 }).withMessage('meses deve estar entre 1 e 24.'),
+  ],
+  validate,
+  controller.getConsumoUtilidades.bind(controller)
+);
+
+router.get(
   '/lancamentos-recentes',
   auth,
   [
