@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx sequelize-cli *)",
+      "Bash(node -e ' *)",
+      "Bash(node \"C:\\\\Users\\\\ALEXAN~1\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\d--09-Dev-28-ProjetoBackCondominio\\\\24d2d51f-bd5b-4642-a460-aaf462707350\\\\scratchpad\\\\test_inadimplencia_serie.js\")",
+      "Bash(node _tmp_test_inadimplencia_serie.js)"
+    ]
+  }
+}

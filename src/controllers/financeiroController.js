@@ -1395,8 +1395,8 @@ class FinanceiroController {
           `SELECT
               COALESCE(SUM(CASE WHEN situacao != 'cancelado' THEN valor ELSE 0 END), 0)::numeric AS total_despesas,
               COALESCE(SUM(CASE WHEN situacao = 'pago' THEN valor ELSE 0 END), 0)::numeric AS total_pago,
-              COUNT(*) FILTER (WHERE situacao != 'cancelado')::int AS qtd_total,
-              COUNT(*) FILTER (WHERE situacao = 'pago' AND data_pagamento <= data_despesa)::int AS qtd_pagas_no_prazo
+              COUNT(CASE WHEN situacao != 'cancelado' THEN 1 END)::int AS qtd_total,
+              COUNT(CASE WHEN situacao = 'pago' AND data_pagamento <= data_despesa THEN 1 END)::int AS qtd_pagas_no_prazo
              FROM "condominio-bh".tb_fin_despesas
             WHERE id_condominio = :id_condominio
               AND TO_CHAR(competencia, 'YYYY-MM') = :periodo`,
@@ -1435,7 +1435,7 @@ class FinanceiroController {
         ),
         postgres.query(
           `SELECT COUNT(*)::int AS qtd_total,
-                  COUNT(*) FILTER (WHERE situacao = 'pago' AND data_pagamento <= data_despesa)::int AS qtd_pagas_no_prazo
+                  COUNT(CASE WHEN situacao = 'pago' AND data_pagamento <= data_despesa THEN 1 END)::int AS qtd_pagas_no_prazo
              FROM "condominio-bh".tb_fin_despesas
             WHERE id_condominio = :id_condominio
               AND situacao != 'cancelado'
@@ -1500,22 +1500,19 @@ class FinanceiroController {
       const serie = await postgres.query(
         `SELECT
             TO_CHAR(meses.mes, 'YYYY-MM') AS mes,
-            COALESCE(i.total_inadimplente, 0)::numeric AS total_inadimplente,
-            COALESCE(i.qtd_unidades, 0)::int AS qtd_unidades
+            COALESCE(SUM(r.valor + COALESCE(r.valor_fundo_reserva, 0)), 0)::numeric AS total_inadimplente,
+            COUNT(DISTINCT r.id_unidade)::int AS qtd_unidades
            FROM generate_series(
                   DATE_TRUNC('month', CURRENT_DATE) - (:meses || ' months')::interval,
                   DATE_TRUNC('month', CURRENT_DATE),
                   INTERVAL '1 month'
                 ) AS meses(mes)
-           LEFT JOIN LATERAL (
-             SELECT SUM(r.valor + COALESCE(r.valor_fundo_reserva, 0)) AS total_inadimplente,
-                    COUNT(DISTINCT r.id_unidade) AS qtd_unidades
-               FROM "condominio-bh".tb_fin_receitas r
-              WHERE r.id_condominio = :id_condominio
-                AND r.situacao = 'em_aberto'
-                AND r.data_vencimento < (meses.mes + INTERVAL '1 month')
-                AND r.data_vencimento < CURRENT_DATE
-           ) i ON true
+           LEFT JOIN "condominio-bh".tb_fin_receitas r
+             ON r.id_condominio = :id_condominio
+            AND r.situacao = 'em_aberto'
+            AND r.data_vencimento < (meses.mes + INTERVAL '1 month')
+            AND r.data_vencimento < CURRENT_DATE
+          GROUP BY meses.mes
           ORDER BY meses.mes`,
         { replacements: { id_condominio: idCondominio, meses }, type: QueryTypes.SELECT }
       );
@@ -1581,6 +1578,7 @@ class FinanceiroController {
 
       return res.status(200).json({
         periodo,
+        tem_dados_periodo: totais.length > 0,
         totais: totais.map((item) => ({ ...item, total: Number(item.total || 0) })),
         serie_historica: serieHistorica.map((item) => ({ ...item, total: Number(item.total || 0) })),
       });
