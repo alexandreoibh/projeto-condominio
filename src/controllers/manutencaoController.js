@@ -30,6 +30,42 @@ class ManutencaoController {
     return Number.isNaN(parsed) ? null : parsed;
   }
 
+  _normalizeUpper(value) {
+    if (value === undefined || value === null) return null;
+    return String(value).trim().toUpperCase();
+  }
+
+  _normalizeUnidadeTempo(value) {
+    const normalized = this._normalizeUpper(value);
+    if (!normalized) return null;
+    const aliases = {
+      DIAS: 'DIA',
+      SEMANAS: 'SEMANA',
+      MESES: 'MES',
+      ANOS: 'ANO',
+      DIA: 'DIA',
+      SEMANA: 'SEMANA',
+      MES: 'MES',
+      ANO: 'ANO',
+    };
+    return aliases[normalized] || null;
+  }
+
+  _normalizeFrequencia(value) {
+    const normalized = this._normalizeUpper(value);
+    const valid = new Set(['DIARIA', 'SEMANAL', 'QUINZENAL', 'MENSAL', 'BIMESTRAL', 'TRIMESTRAL', 'SEMESTRAL', 'ANUAL']);
+    return valid.has(normalized) ? normalized : null;
+  }
+
+  _normalizeAtivo(value) {
+    if (value === undefined || value === null) return null;
+    if (typeof value === 'boolean') return value ? 'S' : 'N';
+    const normalized = this._normalizeUpper(value);
+    if (['S', 'SIM', 'TRUE', '1'].includes(normalized)) return 'S';
+    if (['N', 'NAO', 'NÃO', 'FALSE', '0'].includes(normalized)) return 'N';
+    return null;
+  }
+
   _isGestor(req) {
     return PERFIS_GESTAO.has(req.nomePerfil);
   }
@@ -120,48 +156,55 @@ class ManutencaoController {
       if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
 
       const {
-        id_tipo_rotina, id_fornecedor, nome_rotina, descricao, local_rotina,
-        frequencia, intervalo_execucao, unidade_tempo, data_inicio,
-        custo_estimado, observacao,
+        id_tipo_rotina, tipo, id_fornecedor, nome_rotina, nome, descricao, local_rotina,
+        frequencia, intervalo_execucao, unidade_tempo, data_inicio, proxima_execucao,
+        custo_estimado, observacao, ativo,
       } = req.body;
 
-      const idTipoRotina = this._toInt(id_tipo_rotina, null);
+      const idTipoRotina = this._toInt(id_tipo_rotina ?? tipo, null);
       const tipoRows = await postgres.query(
-        `SELECT id_tipo_rotina FROM "condominio-bh".tb_manutencao_tipo_rotina WHERE id_tipo_rotina = :id LIMIT 1`,
+        `SELECT id_tipo_rotina, descricao FROM "condominio-bh".tb_manutencao_tipo_rotina WHERE id_tipo_rotina = :id LIMIT 1`,
         { replacements: { id: idTipoRotina }, type: QueryTypes.SELECT }
       );
       if (!tipoRows[0]) return res.status(422).json({ message: 'id_tipo_rotina não encontrado.' });
 
       const intervaloExecucao = this._toInt(intervalo_execucao, 1);
-      const unidadeTempo = unidade_tempo || 'MES';
+      const unidadeTempo = this._normalizeUnidadeTempo(unidade_tempo) || 'MES';
       const unidadeSql = UNIDADE_TEMPO_SQL[unidadeTempo];
+      const frequenciaNormalized = this._normalizeFrequencia(frequencia) || 'MENSAL';
+      const dataInicio = this._normalizarTextoOuNull(data_inicio || proxima_execucao);
+      const proximaExecucao = this._normalizarTextoOuNull(proxima_execucao);
+      const nomeRotinaFinal = this._normalizarTextoOuNull(tipoRows[0].descricao) || this._normalizarTextoOuNull(nome_rotina ?? nome);
+      const ativoFinal = this._normalizeAtivo(ativo) ?? 'S';
 
       const [rows] = await postgres.query(
         `INSERT INTO "condominio-bh".tb_manutencao_rotina (
             id_condominio, id_tipo_rotina, id_fornecedor, nome_rotina, descricao, local_rotina,
             frequencia, intervalo_execucao, unidade_tempo, data_inicio, proxima_execucao,
-            custo_estimado, observacao, criado_por, data_criacao, data_atualizacao
+            custo_estimado, observacao, ativo, criado_por, data_criacao, data_atualizacao
           ) VALUES (
             :id_condominio, :id_tipo_rotina, :id_fornecedor, :nome_rotina, :descricao, :local_rotina,
             :frequencia, :intervalo_execucao, :unidade_tempo, :data_inicio::date,
-            (:data_inicio::date + (:intervalo_execucao || ' ' || :unidade_sql)::interval)::date,
-            :custo_estimado, :observacao, :criado_por, now(), now()
+            COALESCE(:proxima_execucao::date, (:data_inicio::date + (:intervalo_execucao || ' ' || :unidade_sql)::interval)::date),
+            :custo_estimado, :observacao, :ativo, :criado_por, now(), now()
           ) RETURNING *`,
         {
           replacements: {
             id_condominio: idCondominio,
             id_tipo_rotina: idTipoRotina,
             id_fornecedor: this._toInt(id_fornecedor, null),
-            nome_rotina: this._normalizarTextoOuNull(nome_rotina),
+            nome_rotina: nomeRotinaFinal,
             descricao: this._normalizarTextoOuNull(descricao),
             local_rotina: this._normalizarTextoOuNull(local_rotina),
-            frequencia,
+            frequencia: frequenciaNormalized,
             intervalo_execucao: intervaloExecucao,
             unidade_tempo: unidadeTempo,
             unidade_sql: unidadeSql,
-            data_inicio,
+            data_inicio: dataInicio,
+            proxima_execucao: proximaExecucao,
             custo_estimado: this._parseDecimalOuNull(custo_estimado),
             observacao: this._normalizarTextoOuNull(observacao),
+            ativo: ativoFinal,
             criado_por: this._toInt(req.idcliente, null),
           },
         }
@@ -192,6 +235,17 @@ class ManutencaoController {
         'ultima_execucao', 'custo_estimado', 'ativo', 'status_rotina', 'observacao',
       ];
 
+      const tipoRotinaId = this._toInt(req.body.id_tipo_rotina ?? req.body.tipo, null);
+      let nomeRotinaFromTipo = null;
+      if (tipoRotinaId !== null) {
+        const tipoRows = await postgres.query(
+          `SELECT id_tipo_rotina, descricao FROM "condominio-bh".tb_manutencao_tipo_rotina WHERE id_tipo_rotina = :id LIMIT 1`,
+          { replacements: { id: tipoRotinaId }, type: QueryTypes.SELECT }
+        );
+        if (!tipoRows[0]) return res.status(422).json({ message: 'id_tipo_rotina não encontrado.' });
+        nomeRotinaFromTipo = this._normalizarTextoOuNull(tipoRows[0].descricao);
+      }
+
       for (const campo of camposPermitidos) {
         if (req.body[campo] !== undefined) {
           if (camposDatas.has(campo)) {
@@ -203,11 +257,34 @@ class ManutencaoController {
           } else if (camposInt.has(campo)) {
             campos.push(`${campo} = :${campo}`);
             replacements[campo] = this._toInt(req.body[campo], null);
+          } else if (campo === 'frequencia') {
+            campos.push(`${campo} = :${campo}`);
+            replacements[campo] = this._normalizeFrequencia(req.body[campo]);
+          } else if (campo === 'unidade_tempo') {
+            campos.push(`${campo} = :${campo}`);
+            replacements[campo] = this._normalizeUnidadeTempo(req.body[campo]);
+          } else if (campo === 'ativo') {
+            campos.push(`${campo} = :${campo}`);
+            replacements[campo] = this._normalizeAtivo(req.body[campo]);
           } else {
             campos.push(`${campo} = :${campo}`);
             replacements[campo] = this._normalizarTextoOuNull(req.body[campo]);
           }
         }
+      }
+
+      if (nomeRotinaFromTipo !== null) {
+        if (!campos.includes('nome_rotina = :nome_rotina')) {
+          campos.push('nome_rotina = :nome_rotina');
+        }
+        replacements.nome_rotina = nomeRotinaFromTipo;
+      }
+
+      if (req.body.nome !== undefined && req.body.nome !== null && nomeRotinaFromTipo === null) {
+        if (!campos.includes('nome_rotina = :nome_rotina')) {
+          campos.push('nome_rotina = :nome_rotina');
+        }
+        replacements.nome_rotina = this._normalizarTextoOuNull(req.body.nome);
       }
 
       const [rows] = await postgres.query(
@@ -235,17 +312,38 @@ class ManutencaoController {
       const campos = ['atualizado_por = :atualizado_por', 'data_atualizacao = now()'];
       const replacements = { id, id_condominio: idCondominio, atualizado_por: this._toInt(req.idcliente, null) };
 
+      const tipoRotinaId = this._toInt(req.body.id_tipo_rotina ?? req.body.tipo, null);
+      if (tipoRotinaId !== null) {
+        const tipoRows = await postgres.query(
+          `SELECT id_tipo_rotina, descricao FROM "condominio-bh".tb_manutencao_tipo_rotina WHERE id_tipo_rotina = :id LIMIT 1`,
+          { replacements: { id: tipoRotinaId }, type: QueryTypes.SELECT }
+        );
+        if (!tipoRows[0]) return res.status(422).json({ message: 'id_tipo_rotina não encontrado.' });
+        campos.push('id_tipo_rotina = :id_tipo_rotina');
+        replacements.id_tipo_rotina = tipoRotinaId;
+        campos.push('nome_rotina = :nome_rotina');
+        replacements.nome_rotina = this._normalizarTextoOuNull(tipoRows[0].descricao);
+      }
+
+      if (req.body.nome_rotina !== undefined) {
+        campos.push('nome_rotina = :nome_rotina');
+        replacements.nome_rotina = this._normalizarTextoOuNull(req.body.nome_rotina);
+      }
+      if (req.body.nome !== undefined && tipoRotinaId === null) {
+        campos.push('nome_rotina = :nome_rotina');
+        replacements.nome_rotina = this._normalizarTextoOuNull(req.body.nome);
+      }
       if (req.body.status_rotina !== undefined) {
         campos.push('status_rotina = :status_rotina');
         replacements.status_rotina = req.body.status_rotina;
       }
       if (req.body.ativo !== undefined) {
         campos.push('ativo = :ativo');
-        replacements.ativo = req.body.ativo;
+        replacements.ativo = this._normalizeAtivo(req.body.ativo);
       }
 
       if (campos.length === 2) {
-        return res.status(422).json({ message: 'Informe ao menos status_rotina ou ativo.' });
+        return res.status(422).json({ message: 'Informe ao menos status_rotina, ativo ou tipo/id_tipo_rotina.' });
       }
 
       const [rows] = await postgres.query(

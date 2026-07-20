@@ -15,6 +15,33 @@ const UNIDADES_TEMPO = ['DIA', 'SEMANA', 'MES', 'ANO'];
 const STATUS_ROTINA = ['EM_DIA', 'PENDENTE', 'ATRASADA', 'EM_EXECUCAO', 'CONCLUIDA', 'CANCELADA'];
 const STATUS_EXECUCAO = ['CONCLUIDA', 'PENDENTE', 'ATRASADA', 'EM_EXECUCAO', 'CANCELADA'];
 
+const UNIDADES_TEMPO_ALIASES = {
+  DIAS: 'DIA',
+  SEMANAS: 'SEMANA',
+  MESES: 'MES',
+  ANOS: 'ANO',
+};
+
+function normalizeUpper(value) {
+  if (value === undefined || value === null) return '';
+  return String(value).trim().toUpperCase();
+}
+
+function isValidFrequencia(value) {
+  return FREQUENCIAS.includes(normalizeUpper(value));
+}
+
+function isValidUnidadeTempo(value) {
+  const normalized = normalizeUpper(value);
+  return UNIDADES_TEMPO.includes(normalized) || Object.keys(UNIDADES_TEMPO_ALIASES).includes(normalized);
+}
+
+function isValidAtivo(value) {
+  if (typeof value === 'boolean') return true;
+  const normalized = normalizeUpper(value);
+  return ['S', 'N', 'TRUE', 'FALSE', '1', '0', 'SIM', 'NAO', 'NÃO'].includes(normalized);
+}
+
 // ── Tipos de Rotina ────────────────────────────────────────────────────────────
 
 router.get(
@@ -47,17 +74,30 @@ router.post(
   '/rotinas',
   auth,
   [
-    body('id_tipo_rotina').notEmpty().withMessage('id_tipo_rotina é obrigatório.').bail().isInt({ min: 1 }).withMessage('id_tipo_rotina deve ser inteiro positivo.'),
+    body('id_tipo_rotina').optional({ nullable: true, checkFalsy: true }).isInt({ min: 1 }).withMessage('id_tipo_rotina deve ser inteiro positivo.'),
+    body('tipo').optional({ nullable: true, checkFalsy: true }).isInt({ min: 1 }).withMessage('tipo deve ser inteiro positivo.'),
     body('id_fornecedor').optional({ nullable: true, checkFalsy: true }).isInt({ min: 1 }).withMessage('id_fornecedor deve ser inteiro positivo.'),
-    body('nome_rotina').notEmpty().withMessage('nome_rotina é obrigatório.').bail().isLength({ max: 150 }).withMessage('nome_rotina deve ter no máximo 150 caracteres.'),
+    body('nome_rotina').optional().isLength({ max: 150 }).withMessage('nome_rotina deve ter no máximo 150 caracteres.'),
+    body('nome').optional().isLength({ max: 150 }).withMessage('nome deve ter no máximo 150 caracteres.'),
     body('descricao').optional({ nullable: true }),
     body('local_rotina').optional({ nullable: true, checkFalsy: true }).isLength({ max: 150 }).withMessage('local_rotina deve ter no máximo 150 caracteres.'),
-    body('frequencia').notEmpty().withMessage('frequencia é obrigatório.').bail().isIn(FREQUENCIAS).withMessage('frequencia inválida.'),
+    body('frequencia').optional({ nullable: true, checkFalsy: true }).custom((value) => isValidFrequencia(value)).withMessage('frequencia inválida.'),
     body('intervalo_execucao').optional({ nullable: true, checkFalsy: true }).isInt({ min: 1 }).withMessage('intervalo_execucao deve ser inteiro positivo.'),
-    body('unidade_tempo').optional({ nullable: true, checkFalsy: true }).isIn(UNIDADES_TEMPO).withMessage('unidade_tempo inválida.'),
-    body('data_inicio').notEmpty().withMessage('data_inicio é obrigatório.').bail().isISO8601().withMessage('data_inicio deve ser data válida.'),
+    body('unidade_tempo').optional({ nullable: true, checkFalsy: true }).custom((value) => isValidUnidadeTempo(value)).withMessage('unidade_tempo inválida.'),
+    body('data_inicio').optional({ nullable: true, checkFalsy: true }).isISO8601().withMessage('data_inicio deve ser data válida.'),
+    body('proxima_execucao').optional({ nullable: true, checkFalsy: true }).isISO8601().withMessage('proxima_execucao deve ser data válida.'),
     body('custo_estimado').optional({ nullable: true, checkFalsy: true }).isNumeric().withMessage('custo_estimado deve ser numérico.'),
+    body('ativo').optional().custom((value) => isValidAtivo(value)).withMessage('ativo inválido.'),
     body('observacao').optional({ nullable: true }),
+    body().custom((_, { req }) => {
+      if (!req.body.id_tipo_rotina && !req.body.tipo) {
+        throw new Error('id_tipo_rotina ou tipo é obrigatório.');
+      }
+      if (!req.body.data_inicio && !req.body.proxima_execucao) {
+        throw new Error('data_inicio ou proxima_execucao é obrigatório.');
+      }
+      return true;
+    }),
   ],
   validate,
   controller.criarRotina.bind(controller)
@@ -69,18 +109,20 @@ router.put(
   [
     param('id').isInt({ min: 1 }).withMessage('id inválido.'),
     body('id_tipo_rotina').optional({ nullable: true, checkFalsy: true }).isInt({ min: 1 }).withMessage('id_tipo_rotina deve ser inteiro positivo.'),
+    body('tipo').optional({ nullable: true, checkFalsy: true }).isInt({ min: 1 }).withMessage('tipo deve ser inteiro positivo.'),
     body('id_fornecedor').optional({ nullable: true, checkFalsy: true }).isInt({ min: 1 }).withMessage('id_fornecedor deve ser inteiro positivo.'),
     body('nome_rotina').optional().isLength({ max: 150 }).withMessage('nome_rotina deve ter no máximo 150 caracteres.'),
+    body('nome').optional().isLength({ max: 150 }).withMessage('nome deve ter no máximo 150 caracteres.'),
     body('descricao').optional({ nullable: true }),
     body('local_rotina').optional({ nullable: true, checkFalsy: true }).isLength({ max: 150 }).withMessage('local_rotina deve ter no máximo 150 caracteres.'),
-    body('frequencia').optional().isIn(FREQUENCIAS).withMessage('frequencia inválida.'),
+    body('frequencia').optional().custom((value) => isValidFrequencia(value)).withMessage('frequencia inválida.'),
     body('intervalo_execucao').optional({ nullable: true, checkFalsy: true }).isInt({ min: 1 }).withMessage('intervalo_execucao deve ser inteiro positivo.'),
-    body('unidade_tempo').optional({ nullable: true, checkFalsy: true }).isIn(UNIDADES_TEMPO).withMessage('unidade_tempo inválida.'),
+    body('unidade_tempo').optional({ nullable: true, checkFalsy: true }).custom((value) => isValidUnidadeTempo(value)).withMessage('unidade_tempo inválida.'),
     body('data_inicio').optional().isISO8601().withMessage('data_inicio deve ser data válida.'),
     body('proxima_execucao').optional({ nullable: true, checkFalsy: true }).isISO8601().withMessage('proxima_execucao deve ser data válida.'),
     body('ultima_execucao').optional({ nullable: true, checkFalsy: true }).isISO8601().withMessage('ultima_execucao deve ser data válida.'),
     body('custo_estimado').optional({ nullable: true, checkFalsy: true }).isNumeric().withMessage('custo_estimado deve ser numérico.'),
-    body('ativo').optional().isIn(['S', 'N']).withMessage('ativo deve ser S ou N.'),
+    body('ativo').optional().custom((value) => isValidAtivo(value)).withMessage('ativo inválido.'),
     body('status_rotina').optional().isIn(STATUS_ROTINA).withMessage('status_rotina inválido.'),
     body('observacao').optional({ nullable: true }),
   ],
@@ -93,8 +135,12 @@ router.patch(
   auth,
   [
     param('id').isInt({ min: 1 }).withMessage('id inválido.'),
+    body('tipo').optional({ nullable: true, checkFalsy: true }).isInt({ min: 1 }).withMessage('tipo deve ser inteiro positivo.'),
+    body('id_tipo_rotina').optional({ nullable: true, checkFalsy: true }).isInt({ min: 1 }).withMessage('id_tipo_rotina deve ser inteiro positivo.'),
+    body('nome_rotina').optional().isLength({ max: 150 }).withMessage('nome_rotina deve ter no máximo 150 caracteres.'),
+    body('nome').optional().isLength({ max: 150 }).withMessage('nome deve ter no máximo 150 caracteres.'),
     body('status_rotina').optional().isIn(STATUS_ROTINA).withMessage('status_rotina inválido.'),
-    body('ativo').optional().isIn(['S', 'N']).withMessage('ativo deve ser S ou N.'),
+    body('ativo').optional().custom((value) => isValidAtivo(value)).withMessage('ativo inválido.'),
   ],
   validate,
   controller.atualizarStatusRotina.bind(controller)
