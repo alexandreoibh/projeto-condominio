@@ -127,7 +127,7 @@ router.put(
     body('nome').optional().isLength({ max: 150 }).withMessage('nome deve ter no máximo 150 caracteres.'),
     body('descricao').optional({ nullable: true }),
     body('local_rotina').optional({ nullable: true, checkFalsy: true }).isLength({ max: 150 }).withMessage('local_rotina deve ter no máximo 150 caracteres.'),
-    body('frequencia').optional().custom((value) => isValidFrequencia(value)).withMessage('frequencia inválida.'),
+    body('frequencia').optional({ nullable: true, checkFalsy: true }).custom((value) => isValidFrequencia(value)).withMessage('frequencia inválida.'),
     body('intervalo_execucao').optional({ nullable: true, checkFalsy: true }).isInt({ min: 1 }).withMessage('intervalo_execucao deve ser inteiro positivo.'),
     body('unidade_tempo').optional({ nullable: true, checkFalsy: true }).custom((value) => isValidUnidadeTempo(value)).withMessage('unidade_tempo inválida.'),
     body('data_inicio').optional().isISO8601().withMessage('data_inicio deve ser data válida.'),
