@@ -164,6 +164,58 @@ class ManutencaoController {
     }
   }
 
+  async listarProximasManutencoes(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+
+      const dias = this._toInt(req.query.dias, 30);
+      const page = Math.max(this._toInt(req.query.page, 1), 1);
+      const pageSize = Math.min(Math.max(this._toInt(req.query.pageSize, 25), 1), 200);
+      const offset = (page - 1) * pageSize;
+
+      const replacements = { id_condominio: idCondominio, dias, limit: pageSize, offset };
+
+      const whereClause = `
+        r.id_condominio = :id_condominio
+        AND r.ativo = 'S'
+        AND r.status_rotina NOT IN ('CONCLUIDA', 'CANCELADA')
+        AND r.proxima_execucao BETWEEN CURRENT_DATE AND (CURRENT_DATE + (:dias || ' day')::interval)
+      `;
+
+      const [totalRows, data] = await Promise.all([
+        postgres.query(
+          `SELECT COUNT(*)::int AS total FROM "condominio-bh".tb_manutencao_rotina r WHERE ${whereClause}`,
+          { replacements, type: QueryTypes.SELECT }
+        ),
+        postgres.query(
+          `SELECT r.*, t.nome_tipo, t.descricao AS tipo_descricao, ff.nome as nome_fornecedor
+             FROM "condominio-bh".tb_manutencao_rotina r
+             LEFT JOIN "condominio-bh".tb_manutencao_tipo_rotina t
+              ON t.id_tipo_rotina = r.id_tipo_rotina
+             LEFT JOIN "condominio-bh".tb_fin_fornecedor ff
+              ON ff.id = r.id_fornecedor
+            WHERE ${whereClause}
+            ORDER BY r.proxima_execucao ASC, r.id_rotina_manutencao DESC
+            LIMIT :limit OFFSET :offset`,
+          { replacements, type: QueryTypes.SELECT }
+        ),
+      ]);
+
+      const total = totalRows[0]?.total || 0;
+      return res.status(200).json({
+        dias,
+        page,
+        pageSize,
+        total,
+        totalPages: total === 0 ? 0 : Math.ceil(total / pageSize),
+        data,
+      });
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao listar próximas manutenções.', detail: error.message });
+    }
+  }
+
   async criarRotina(req, res) {
     try {
       const idCondominio = this._toInt(req.id_condominio, null);

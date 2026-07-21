@@ -57,6 +57,18 @@ router.get(
 // ── Rotinas de Manutenção ──────────────────────────────────────────────────────
 
 router.get(
+  '/rotinas/proximas',
+  auth,
+  [
+    query('dias').optional().isInt({ min: 1, max: 365 }).withMessage('dias deve ser inteiro entre 1 e 365.'),
+    query('page').optional().isInt({ min: 1 }).withMessage('page deve ser inteiro maior que zero.'),
+    query('pageSize').optional().isInt({ min: 1, max: 200 }).withMessage('pageSize deve estar entre 1 e 200.'),
+  ],
+  validate,
+  controller.listarProximasManutencoes.bind(controller)
+);
+
+router.get(
   '/rotinas',
   auth,
   [
