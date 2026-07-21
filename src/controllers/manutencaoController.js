@@ -12,6 +12,13 @@ const UNIDADE_TEMPO_SQL = {
   ANO: 'year',
 };
 
+const UNIDADE_TEMPO_FREQUENCIA = {
+  DIA: 'DIARIA',
+  SEMANA: 'SEMANAL',
+  MES: 'MENSAL',
+  ANO: 'ANUAL',
+};
+
 class ManutencaoController {
   _toInt(value, fallback) {
     const parsed = Number.parseInt(value, 10);
@@ -238,7 +245,7 @@ class ManutencaoController {
       const intervaloExecucao = this._toInt(intervalo_execucao, 1);
       const unidadeTempo = this._normalizeUnidadeTempo(unidade_tempo) || 'MES';
       const unidadeSql = UNIDADE_TEMPO_SQL[unidadeTempo];
-      const frequenciaNormalized = this._normalizeFrequencia(frequencia) || 'MENSAL';
+      const frequenciaNormalized = this._normalizeFrequencia(frequencia) || UNIDADE_TEMPO_FREQUENCIA[unidadeTempo];
       const dataInicio = this._normalizarTextoOuNull(data_inicio || proxima_execucao);
       const proximaExecucao = this._normalizarTextoOuNull(proxima_execucao);
       const nomeRotinaFinal = this._normalizarTextoOuNull(tipoRows[0].descricao) || this._normalizarTextoOuNull(nome_rotina ?? nome);
@@ -315,6 +322,10 @@ class ManutencaoController {
         nomeRotinaFromTipo = this._normalizarTextoOuNull(tipoRows[0].descricao);
       }
 
+      const unidadeTempoBody = req.body.unidade_tempo !== undefined
+        ? this._normalizeUnidadeTempo(req.body.unidade_tempo)
+        : null;
+
       for (const campo of camposPermitidos) {
         if (req.body[campo] !== undefined) {
           if (camposDatas.has(campo)) {
@@ -328,7 +339,8 @@ class ManutencaoController {
             replacements[campo] = this._toInt(req.body[campo], null);
           } else if (campo === 'frequencia') {
             campos.push(`${campo} = :${campo}`);
-            replacements[campo] = this._normalizeFrequencia(req.body[campo]);
+            replacements[campo] = this._normalizeFrequencia(req.body[campo])
+              || (unidadeTempoBody ? UNIDADE_TEMPO_FREQUENCIA[unidadeTempoBody] : null);
           } else if (campo === 'unidade_tempo') {
             campos.push(`${campo} = :${campo}`);
             replacements[campo] = this._normalizeUnidadeTempo(req.body[campo]);
