@@ -70,6 +70,18 @@ class ManutencaoController {
     return PERFIS_GESTAO.has(req.nomePerfil);
   }
 
+  async _registrarLogCadastro(idRotina, observacao, idUsuario) {
+    await postgres.query(
+      `INSERT INTO "condominio-bh".tb_manutencao_execucao_log (
+          id_rotina_manutencao, data_execucao, status_execucao,
+          observacao_execucao, executado_por, data_registro
+        ) VALUES (
+          :id_rotina, CURRENT_DATE, 'PENDENTE', :observacao, :executado_por, now()
+        )`,
+      { replacements: { id_rotina: idRotina, observacao, executado_por: idUsuario } }
+    );
+  }
+
   // ─── Tipos de Rotina ─────────────────────────────────────────────────────────
 
   async listarTiposRotina(req, res) {
@@ -213,6 +225,8 @@ class ManutencaoController {
         }
       );
 
+      await this._registrarLogCadastro(rows[0].id_rotina_manutencao, 'Rotina de manutenção criada.', this._toInt(req.idcliente, null));
+
       return res.status(201).json(rows[0]);
     } catch (error) {
       return res.status(500).json({ message: 'Falha ao criar rotina de manutenção.', detail: error.message });
@@ -299,6 +313,9 @@ class ManutencaoController {
       );
 
       if (!rows[0]) return res.status(404).json({ message: 'Rotina de manutenção não encontrada.' });
+
+      await this._registrarLogCadastro(rows[0].id_rotina_manutencao, 'Rotina de manutenção atualizada.', this._toInt(req.idcliente, null));
+
       return res.status(200).json(rows[0]);
     } catch (error) {
       return res.status(500).json({ message: 'Falha ao atualizar rotina de manutenção.', detail: error.message });
@@ -358,6 +375,13 @@ class ManutencaoController {
       );
 
       if (!rows[0]) return res.status(404).json({ message: 'Rotina de manutenção não encontrada.' });
+
+      await this._registrarLogCadastro(
+        rows[0].id_rotina_manutencao,
+        `Status/ativo atualizado (status_rotina=${rows[0].status_rotina}, ativo=${rows[0].ativo}).`,
+        this._toInt(req.idcliente, null)
+      );
+
       return res.status(200).json(rows[0]);
     } catch (error) {
       return res.status(500).json({ message: 'Falha ao atualizar status da rotina.', detail: error.message });
