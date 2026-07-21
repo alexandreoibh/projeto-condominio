@@ -126,9 +126,12 @@ class ManutencaoController {
           { replacements, type: QueryTypes.SELECT }
         ),
         postgres.query(
-          `SELECT r.*, t.nome_tipo, t.descricao AS tipo_descricao
+          `SELECT r.*, t.nome_tipo, t.descricao AS tipo_descricao,ff.nome as nome_fornecedor
              FROM "condominio-bh".tb_manutencao_rotina r
-             LEFT JOIN "condominio-bh".tb_manutencao_tipo_rotina t ON t.id_tipo_rotina = r.id_tipo_rotina
+             LEFT JOIN "condominio-bh".tb_manutencao_tipo_rotina t 
+              ON t.id_tipo_rotina = r.id_tipo_rotina
+             LEFT JOIN "condominio-bh".tb_fin_fornecedor ff 
+              ON ff.id = r.id_fornecedor 
             WHERE ${whereClause}
             ORDER BY r.proxima_execucao ASC, r.id_rotina_manutencao DESC
             LIMIT :limit OFFSET :offset`,
