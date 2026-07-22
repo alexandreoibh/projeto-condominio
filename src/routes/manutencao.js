@@ -1,6 +1,7 @@
 'use strict';
 
 const express = require('express');
+const multer = require('multer');
 const router = express.Router();
 const { body, param, query } = require('express-validator');
 
@@ -9,6 +10,11 @@ const auth = require('../helpers/auth');
 const validate = require('../helpers/validate');
 
 const controller = new ManutencaoController();
+
+const uploadFotos = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024 },
+});
 
 const FREQUENCIAS = ['DIARIA', 'SEMANAL', 'QUINZENAL', 'MENSAL', 'BIMESTRAL', 'TRIMESTRAL', 'SEMESTRAL', 'ANUAL'];
 const UNIDADES_TEMPO = ['DIA', 'SEMANA', 'MES', 'ANO'];
@@ -175,10 +181,12 @@ router.get(
 router.post(
   '/rotinas/:id/execucoes',
   auth,
+  uploadFotos.array('fotos', 10),
   [
     param('id').isInt({ min: 1 }).withMessage('id inválido.'),
     body('data_execucao').optional({ nullable: true, checkFalsy: true }).isISO8601().withMessage('data_execucao deve ser data válida.'),
     body('status_execucao').optional().isIn(STATUS_EXECUCAO).withMessage('status_execucao inválido.'),
+    body('id_fornecedor').optional({ nullable: true, checkFalsy: true }).isInt({ min: 1 }).withMessage('id_fornecedor deve ser inteiro positivo.'),
     body('custo_real').optional({ nullable: true, checkFalsy: true }).isNumeric().withMessage('custo_real deve ser numérico.'),
     body('observacao_execucao').optional({ nullable: true }),
     body('anexo_execucao').optional({ nullable: true, checkFalsy: true }).isLength({ max: 255 }).withMessage('anexo_execucao deve ter no máximo 255 caracteres.'),

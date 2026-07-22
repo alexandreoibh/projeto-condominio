@@ -1,6 +1,7 @@
 'use strict';
 
 const { QueryTypes } = require('sequelize');
+const { put } = require('@vercel/blob');
 const postgres = require('../database/postgres');
 
 const PERFIS_GESTAO = new Set(['Admin', 'Sindico', 'Sub-Sindico']);
@@ -472,9 +473,12 @@ class ManutencaoController {
           { replacements, type: QueryTypes.SELECT }
         ),
         postgres.query(
-          `SELECT * FROM "condominio-bh".tb_manutencao_execucao_log
-            WHERE id_rotina_manutencao = :id_rotina
-            ORDER BY data_execucao DESC, id_execucao_rotina DESC
+          `SELECT log.*, ff.nome AS nome_fornecedor
+             FROM "condominio-bh".tb_manutencao_execucao_log log
+             LEFT JOIN "condominio-bh".tb_fin_fornecedor ff
+              ON ff.id = log.id_fornecedor
+            WHERE log.id_rotina_manutencao = :id_rotina
+            ORDER BY log.data_execucao DESC, log.id_execucao_rotina DESC
             LIMIT :limit OFFSET :offset`,
           { replacements, type: QueryTypes.SELECT }
         ),
@@ -500,7 +504,7 @@ class ManutencaoController {
       if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
 
       const idRotina = this._toInt(req.params.id, null);
-      const { data_execucao, status_execucao, custo_real, observacao_execucao, anexo_execucao } = req.body;
+      const { data_execucao, status_execucao, id_fornecedor, custo_real, observacao_execucao, anexo_execucao } = req.body;
 
       const rotinaRows = await postgres.query(
         `SELECT id_rotina_manutencao, intervalo_execucao, unidade_tempo
@@ -514,14 +518,27 @@ class ManutencaoController {
       const unidadeSql = UNIDADE_TEMPO_SQL[rotina.unidade_tempo];
       const dataExecucao = data_execucao || new Date().toISOString().slice(0, 10);
 
+      const arquivos = Array.isArray(req.files) ? req.files : [];
+      const ambiente = process.env.NODE_ENV === 'production' ? 'prod' : 'dev';
+      const urlsFotos = [];
+      for (const arquivo of arquivos) {
+        const ext = (arquivo.originalname.split('.').pop() || 'bin').toLowerCase();
+        const nomeArquivo = `${Date.now()}_${Math.random().toString(36).substr(2, 8)}.${ext}`;
+        const blobPath = `${ambiente}/condominios/${idCondominio}/manutencao/rotinas/${idRotina}/execucoes/${nomeArquivo}`;
+        const uploadResult = await put(blobPath, arquivo.buffer, { access: 'private', contentType: arquivo.mimetype });
+        urlsFotos.push(uploadResult?.url || blobPath);
+      }
+
       const [logRows] = await postgres.query(
         `INSERT INTO "condominio-bh".tb_manutencao_execucao_log (
             id_rotina_manutencao, data_execucao, data_proxima_execucao, status_execucao,
-            custo_real, observacao_execucao, anexo_execucao, executado_por, data_registro
+            id_fornecedor, custo_real, observacao_execucao, anexo_execucao, anexos_execucao,
+            executado_por, data_registro
           ) VALUES (
             :id_rotina, :data_execucao::date,
             (:data_execucao::date + (:intervalo || ' ' || :unidade_sql)::interval)::date,
-            :status_execucao, :custo_real, :observacao_execucao, :anexo_execucao, :executado_por, now()
+            :status_execucao, :id_fornecedor, :custo_real, :observacao_execucao, :anexo_execucao,
+            :anexos_execucao, :executado_por, now()
           ) RETURNING *`,
         {
           replacements: {
@@ -530,9 +547,11 @@ class ManutencaoController {
             intervalo: rotina.intervalo_execucao,
             unidade_sql: unidadeSql,
             status_execucao: status_execucao || 'CONCLUIDA',
+            id_fornecedor: this._toInt(id_fornecedor, null),
             custo_real: this._parseDecimalOuNull(custo_real),
             observacao_execucao: this._normalizarTextoOuNull(observacao_execucao),
             anexo_execucao: this._normalizarTextoOuNull(anexo_execucao),
+            anexos_execucao: JSON.stringify(urlsFotos),
             executado_por: this._toInt(req.idcliente, null),
           },
         }
