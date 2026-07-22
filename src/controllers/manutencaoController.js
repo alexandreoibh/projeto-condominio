@@ -77,18 +77,6 @@ class ManutencaoController {
     return PERFIS_GESTAO.has(req.nomePerfil);
   }
 
-  async _registrarLogCadastro(idRotina, observacao, idUsuario) {
-    await postgres.query(
-      `INSERT INTO "condominio-bh".tb_manutencao_execucao_log (
-          id_rotina_manutencao, data_execucao, status_execucao,
-          observacao_execucao, executado_por, data_registro
-        ) VALUES (
-          :id_rotina, CURRENT_DATE, 'PENDENTE', :observacao, :executado_por, now()
-        )`,
-      { replacements: { id_rotina: idRotina, observacao, executado_por: idUsuario } }
-    );
-  }
-
   // ─── Tipos de Rotina ─────────────────────────────────────────────────────────
 
   async listarTiposRotina(req, res) {
@@ -242,6 +230,20 @@ class ManutencaoController {
       );
       if (!tipoRows[0]) return res.status(422).json({ message: 'id_tipo_rotina não encontrado.' });
 
+      const existenteRows = await postgres.query(
+        `SELECT id_rotina_manutencao FROM "condominio-bh".tb_manutencao_rotina
+          WHERE id_condominio = :id_condominio AND id_tipo_rotina = :id_tipo_rotina
+            AND ativo = 'S' AND status_rotina <> 'CANCELADA'
+          LIMIT 1`,
+        { replacements: { id_condominio: idCondominio, id_tipo_rotina: idTipoRotina }, type: QueryTypes.SELECT }
+      );
+      if (existenteRows[0]) {
+        return res.status(409).json({
+          message: 'Já existe uma rotina cadastrada para este tipo de manutenção. Edite a rotina existente em vez de criar uma nova.',
+          id_rotina_manutencao: existenteRows[0].id_rotina_manutencao,
+        });
+      }
+
       const intervaloExecucao = this._toInt(intervalo_execucao, 1);
       const unidadeTempo = this._normalizeUnidadeTempo(unidade_tempo) || 'MES';
       const unidadeSql = UNIDADE_TEMPO_SQL[unidadeTempo];
@@ -283,8 +285,6 @@ class ManutencaoController {
           },
         }
       );
-
-      await this._registrarLogCadastro(rows[0].id_rotina_manutencao, 'Rotina de manutenção criada.', this._toInt(req.idcliente, null));
 
       return res.status(201).json(rows[0]);
     } catch (error) {
