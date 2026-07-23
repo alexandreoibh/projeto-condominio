@@ -161,8 +161,8 @@ class FinanceiroController {
         valor_total: '(r.valor + COALESCE(r.valor_fundo_reserva, 0))',
       };
       const desempate = req.query.sort === 'categoria'
-        ? 'tcu.unidades_bloco ASC, r.id DESC'
-        : 'r.id DESC';
+        ? 'tcu.unidades_bloco ASC'
+        : 'tcu.unidades_bloco DESC';
       const orderByClause = this._clausulaOrdenacao(
         req,
         receitasSortWhitelist,
