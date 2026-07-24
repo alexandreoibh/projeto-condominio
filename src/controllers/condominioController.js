@@ -6862,11 +6862,28 @@ class CondominioController {
 
   async listarUsuariosPorPerfis(req, res) {
     try {
+      const idPerfilToken = this._toInt(req.IdPerfil, null);
       const idCondominioToken = this._toInt(req.id_condominio, null);
       const idUsuarioToken = this._toInt(req.idcliente, null);
-      if (!idCondominioToken) {
+      const ehAdmin = idPerfilToken === 1;
+
+      if (!ehAdmin && !idCondominioToken) {
         return res.status(403).json({
           message: 'Token sem id_condominio para listar usuários por perfil.'
+        });
+      }
+
+      const idCondominioFiltro = this._toInt(req.query.id_condominio, null);
+      if (idCondominioFiltro && !ehAdmin && idCondominioFiltro !== idCondominioToken) {
+        return res.status(403).json({
+          message: 'Sem permissão para listar usuários de outro condomínio.'
+        });
+      }
+
+      const idCondominioRef = idCondominioFiltro || idCondominioToken;
+      if (!idCondominioRef) {
+        return res.status(400).json({
+          message: 'Informe id_condominio na query string (obrigatório para Admin).'
         });
       }
 
@@ -6918,7 +6935,7 @@ class CondominioController {
           ORDER BY tu.nome ASC, tu.id ASC`,
         {
           replacements: {
-            id_condominio: idCondominioToken,
+            id_condominio: idCondominioRef,
             perfil_ids: perfilIdsTexto
           },
           type: QueryTypes.SELECT
@@ -6964,7 +6981,7 @@ class CondominioController {
       return res.status(200).json({
         total: data.length,
         filtros: {
-          id_condominio: idCondominioToken,
+          id_condominio: idCondominioRef,
           perfil_ids: perfilIdsUnicos
         },
         usuario_logado: usuarioLogado,
@@ -9027,9 +9044,15 @@ class CondominioController {
       const whereParts = ['1 = 1'];
       const baseReplacements = {};
 
-      if (!ehAdmin) {
+      const idCondominioFiltro = this._toInt(req.query.id_condominio, null);
+      if (idCondominioFiltro && !ehAdmin && idCondominioFiltro !== idCondominioToken) {
+        return res.status(403).json({
+          message: 'Sem permissão para consultar reservas de outro condomínio.'
+        });
+      }
+      if (!ehAdmin || idCondominioFiltro) {
         whereParts.push('ea.id_condominio = :idCondominio');
-        baseReplacements.idCondominio = idCondominioToken;
+        baseReplacements.idCondominio = idCondominioFiltro || idCondominioToken;
       }
 
       // Para calendário por período, morador precisa enxergar a ocupação do espaço.
@@ -9164,8 +9187,8 @@ class CondominioController {
             on tuc.id::text = ea.id_usuario_cadastro::text
           left join "condominio-bh"."tb-condominios" c
             on c.id = ea.id_condominio
-          inner join  "condominio-bh"."tb_status_tratamento" tt
-            on ea.status = tt.id    
+          LEFT JOIN "condominio-bh".tb_status_tratamento tt
+            ON ea.status = tt.id
           WHERE ${whereClause}
           ORDER BY COALESCE(ea.data_agendamento, ea.created_at) DESC, ea.id DESC`;
 

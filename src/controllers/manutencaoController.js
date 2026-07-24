@@ -108,15 +108,20 @@ class ManutencaoController {
       const ehAdmin = idPerfilToken === 1;
       if (!ehAdmin && !idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
 
+      const idCondominioFiltro = this._toInt(req.query.id_condominio, null);
+      if (idCondominioFiltro && !ehAdmin && idCondominioFiltro !== idCondominio) {
+        return res.status(403).json({ message: 'Sem permissão para consultar rotinas de outro condomínio.' });
+      }
+
       const page = Math.max(this._toInt(req.query.page, 1), 1);
       const pageSize = Math.min(Math.max(this._toInt(req.query.pageSize, 25), 1), 200);
       const offset = (page - 1) * pageSize;
 
       const whereParts = ['1 = 1'];
       const replacements = { limit: pageSize, offset };
-      if (!ehAdmin) {
+      if (!ehAdmin || idCondominioFiltro) {
         whereParts.push('r.id_condominio = :id_condominio');
-        replacements.id_condominio = idCondominio;
+        replacements.id_condominio = idCondominioFiltro || idCondominio;
       }
 
       if (req.query.status_rotina) {
@@ -173,6 +178,11 @@ class ManutencaoController {
       const ehAdmin = idPerfilToken === 1;
       if (!ehAdmin && !idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
 
+      const idCondominioFiltro = this._toInt(req.query.id_condominio, null);
+      if (idCondominioFiltro && !ehAdmin && idCondominioFiltro !== idCondominio) {
+        return res.status(403).json({ message: 'Sem permissão para consultar rotinas de outro condomínio.' });
+      }
+
       const dias = this._toInt(req.query.dias, 30);
       const page = Math.max(this._toInt(req.query.page, 1), 1);
       const pageSize = Math.min(Math.max(this._toInt(req.query.pageSize, 25), 1), 200);
@@ -184,9 +194,9 @@ class ManutencaoController {
         "r.status_rotina NOT IN ('CONCLUIDA', 'CANCELADA')",
         "r.proxima_execucao BETWEEN CURRENT_DATE AND (CURRENT_DATE + (:dias || ' day')::interval)",
       ];
-      if (!ehAdmin) {
+      if (!ehAdmin || idCondominioFiltro) {
         condicoes.unshift('r.id_condominio = :id_condominio');
-        replacements.id_condominio = idCondominio;
+        replacements.id_condominio = idCondominioFiltro || idCondominio;
       }
       const whereClause = condicoes.join('\n        AND ');
 
