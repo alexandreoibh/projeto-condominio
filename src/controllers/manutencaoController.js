@@ -103,15 +103,21 @@ class ManutencaoController {
 
   async listarRotinas(req, res) {
     try {
+      const idPerfilToken = this._toInt(req.IdPerfil, null);
       const idCondominio = this._toInt(req.id_condominio, null);
-      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      const ehAdmin = idPerfilToken === 1;
+      if (!ehAdmin && !idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
 
       const page = Math.max(this._toInt(req.query.page, 1), 1);
       const pageSize = Math.min(Math.max(this._toInt(req.query.pageSize, 25), 1), 200);
       const offset = (page - 1) * pageSize;
 
-      const whereParts = ['r.id_condominio = :id_condominio'];
-      const replacements = { id_condominio: idCondominio, limit: pageSize, offset };
+      const whereParts = ['1 = 1'];
+      const replacements = { limit: pageSize, offset };
+      if (!ehAdmin) {
+        whereParts.push('r.id_condominio = :id_condominio');
+        replacements.id_condominio = idCondominio;
+      }
 
       if (req.query.status_rotina) {
         whereParts.push('r.status_rotina = :status_rotina');
@@ -162,22 +168,27 @@ class ManutencaoController {
 
   async listarProximasManutencoes(req, res) {
     try {
+      const idPerfilToken = this._toInt(req.IdPerfil, null);
       const idCondominio = this._toInt(req.id_condominio, null);
-      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      const ehAdmin = idPerfilToken === 1;
+      if (!ehAdmin && !idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
 
       const dias = this._toInt(req.query.dias, 30);
       const page = Math.max(this._toInt(req.query.page, 1), 1);
       const pageSize = Math.min(Math.max(this._toInt(req.query.pageSize, 25), 1), 200);
       const offset = (page - 1) * pageSize;
 
-      const replacements = { id_condominio: idCondominio, dias, limit: pageSize, offset };
-
-      const whereClause = `
-        r.id_condominio = :id_condominio
-        AND r.ativo = 'S'
-        AND r.status_rotina NOT IN ('CONCLUIDA', 'CANCELADA')
-        AND r.proxima_execucao BETWEEN CURRENT_DATE AND (CURRENT_DATE + (:dias || ' day')::interval)
-      `;
+      const replacements = { dias, limit: pageSize, offset };
+      const condicoes = [
+        "r.ativo = 'S'",
+        "r.status_rotina NOT IN ('CONCLUIDA', 'CANCELADA')",
+        "r.proxima_execucao BETWEEN CURRENT_DATE AND (CURRENT_DATE + (:dias || ' day')::interval)",
+      ];
+      if (!ehAdmin) {
+        condicoes.unshift('r.id_condominio = :id_condominio');
+        replacements.id_condominio = idCondominio;
+      }
+      const whereClause = condicoes.join('\n        AND ');
 
       const [totalRows, data] = await Promise.all([
         postgres.query(
