@@ -2329,7 +2329,7 @@ class FinanceiroController {
                  LEFT JOIN "condominio-bh"."tb-condominios" c ON c.id::text = u.id_condominio::text
                 WHERE u.id_condominio = :id_condominio
                   AND LOWER(u.status) = 'ativo'
-                  AND COALESCE(p.nome, '') != 'Portaria'
+                  AND COALESCE(p.nome, '') NOT IN ('Portaria', 'Colaborador')
                   AND u.email IS NOT NULL AND u.email <> ''`,
               { replacements: { id_condominio: idCondominio }, type: QueryTypes.SELECT }
             );

@@ -3,6 +3,7 @@
 const { QueryTypes } = require("sequelize");
 const postgres = require("../database/postgres");
 const pushNotificationService = require("../service/pushNotificationService");
+const { despacharEmail } = require("../service/emailDispatchService");
 
 const TIPOS_REUNIAO = new Set(["ordinaria", "extraordinaria"]);
 const STATUS_REUNIAO = new Set(["CRIADA", "CONVOCADA", "EM_ANDAMENTO", "FINALIZADA", "CANCELADA"]);
@@ -189,6 +190,7 @@ class ReuniaoController {
       const itensPauta = this._normalizarItensPauta(body.pauta);
       const dataLimiteConfirmacao = this._parseDataHora(body.data_limite_confirmacao);
       const notificarMoradores = body.notificar_moradores !== false;
+      const enviarEmail = body.enviar_email === 1 || body.enviar_email === "1" || body.enviar_email === true;
 
       if (!titulo) return res.status(400).json({ message: "Campo titulo e obrigatorio." });
       if (!dataHora) return res.status(400).json({ message: "Campo data_hora invalido ou ausente." });
@@ -235,6 +237,42 @@ class ReuniaoController {
               data: { tipo: "reuniao", id: idReuniao, rota: "/reunioes" }
             });
           } catch { /* Push nao impede o fluxo principal. */ }
+        });
+      }
+
+      if (enviarEmail && idReuniao) {
+        setImmediate(async () => {
+          try {
+            const destinatarios = await postgres.query(
+              `SELECT DISTINCT u.id, u.nome, u.email, c.nome AS condominio_nome
+                 FROM "condominio-bh"."tb-usuarios" u
+                 LEFT JOIN "condominio-bh".tb_sgw_perfil p ON p.id::text = u.tipo_perfil_id::text
+                 LEFT JOIN "condominio-bh"."tb-condominios" c ON c.id::text = u.id_condominio::text
+                WHERE u.id_condominio = :id_condominio
+                  AND LOWER(u.status) = 'ativo'
+                  AND COALESCE(p.nome, '') NOT IN ('Portaria', 'Colaborador')
+                  AND u.email IS NOT NULL AND u.email <> ''`,
+              { replacements: { id_condominio: idCondominio }, type: QueryTypes.SELECT }
+            );
+
+            if (destinatarios.length > 0) {
+              await despacharEmail({
+                _ref: `reuniao_${idCondominio}_${idReuniao}`,
+                template: "reuniao_convocacao",
+                emails: destinatarios.map((d) => d.email),
+                reuniao: {
+                  titulo,
+                  tipo,
+                  data_hora: dataHora,
+                  local: local || "",
+                  descricao: descricao || "",
+                  condominio_nome: destinatarios[0]?.condominio_nome || ""
+                }
+              });
+            }
+          } catch (emailErr) {
+            console.error("[reuniaoController.criar] Erro ao enviar e-mail de convocação:", emailErr?.message);
+          }
         });
       }
 

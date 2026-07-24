@@ -87,7 +87,11 @@ router.post(
     body("notificar_moradores")
       .optional({ nullable: true })
       .isBoolean()
-      .withMessage("notificar_moradores deve ser booleano.")
+      .withMessage("notificar_moradores deve ser booleano."),
+    body("enviar_email")
+      .optional({ nullable: true })
+      .isIn([0, 1, "0", "1", true, false])
+      .withMessage("enviar_email deve ser 0 ou 1.")
   ],
   validate,
   controller.criar.bind(controller)

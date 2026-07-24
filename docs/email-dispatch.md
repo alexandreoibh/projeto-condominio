@@ -38,7 +38,7 @@ O disparo roda em `setImmediate()`, depois da resposta HTTP já ter sido enviada
 
 ## Regra de destinatários
 
-Todos os usuários **ativos** do condomínio (`tb-usuarios.status`), **de qualquer perfil, exceto Portaria** (perfil resolvido via `tb_sgw_perfil` — mesma junção usada no login para resolver `nomePerfil`), com e-mail preenchido. Mesma regra usada para o log de notificação (`tb_notificacao_log`) dessa mesma publicação.
+Todos os usuários **ativos** do condomínio (`tb-usuarios.status`), **de qualquer perfil, exceto Portaria e Colaborador** (perfil resolvido via `tb_sgw_perfil` — mesma junção usada no login para resolver `nomePerfil`), com e-mail preenchido. Mesma regra usada para o log de notificação (`tb_notificacao_log`) dessa mesma publicação, e para o template `reuniao_convocacao` (`src/controllers/reuniaoController.js`).
 
 ## Template usado
 
