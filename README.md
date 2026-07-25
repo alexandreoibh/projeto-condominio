@@ -83,6 +83,24 @@ Body JSON:
 - Login disponível apenas via `POST /api/login`.
 - O bootstrap principal agora conecta no PostgreSQL ao iniciar.
 
+## Efeitos colaterais assíncronos em produção (Vercel Serverless)
+
+Este backend roda em produção como Vercel Serverless Function (`@vercel/node`, ver `vercel.json`). Funções serverless podem ser suspensas assim que a resposta HTTP é enviada ao cliente — qualquer trabalho assíncrono ainda pendente nesse momento (ex.: uma chamada de rede a um serviço externo) pode ser cortado no meio, sem gerar nenhum log de erro, mesmo que o mesmo código funcione perfeitamente em ambiente local (processo Node de vida longa, nunca suspenso).
+
+**Regra:** qualquer efeito colateral assíncrono disparado após a resposta HTTP já ter sido enviada (push notification, e-mail, log de notificação) deve usar `waitUntil` de `@vercel/functions`, nunca `setImmediate` puro:
+
+```js
+const { waitUntil } = require('@vercel/functions');
+
+waitUntil((async () => {
+  // ... trabalho assíncrono (ex.: despacharEmail) ...
+})());
+```
+
+`waitUntil` mantém a função viva até a Promise resolver, sem atrasar a resposta já enviada ao cliente, e é um no-op seguro fora do runtime da Vercel (não quebra rodar localmente com `npm start`).
+
+**Sintoma característico deste bug:** funciona 100% em ambiente local, falha de forma silenciosa (sem nenhum log) só em produção — geralmente em chamadas de rede mais lentas que uma query local (ex.: dispatch de e-mail para serviço externo).
+
 ## Documentação
 
 - Regras de push notification: `docs/push-notifications.md`

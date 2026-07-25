@@ -4,6 +4,7 @@ const { QueryTypes } = require("sequelize");
 const postgres = require("../database/postgres");
 const pushNotificationService = require("../service/pushNotificationService");
 const { despacharEmail } = require("../service/emailDispatchService");
+const { waitUntil } = require("@vercel/functions");
 
 const TIPOS_REUNIAO = new Set(["ordinaria", "extraordinaria"]);
 const STATUS_REUNIAO = new Set(["CRIADA", "CONVOCADA", "EM_ANDAMENTO", "FINALIZADA", "CANCELADA"]);
@@ -240,8 +241,11 @@ class ReuniaoController {
         });
       }
 
+      console.log(`[reuniaoController.criar] DIAG enviarEmail=${enviarEmail} (raw body.enviar_email=${JSON.stringify(body.enviar_email)}) idReuniao=${idReuniao}`);
+
       if (enviarEmail && idReuniao) {
-        setImmediate(async () => {
+        waitUntil((async () => {
+          console.log(`[reuniaoController.criar] DIAG waitUntil email iniciado idReuniao=${idReuniao} idCondominio=${idCondominio}`);
           try {
             const destinatarios = await postgres.query(
               `SELECT DISTINCT u.id, u.nome, u.email, c.nome AS condominio_nome
@@ -255,7 +259,10 @@ class ReuniaoController {
               { replacements: { id_condominio: idCondominio }, type: QueryTypes.SELECT }
             );
 
+            console.log(`[reuniaoController.criar] DIAG destinatarios encontrados=${destinatarios.length} idReuniao=${idReuniao}`);
+
             if (destinatarios.length > 0) {
+              console.log(`[reuniaoController.criar] DIAG chamando despacharEmail idReuniao=${idReuniao} emails=${destinatarios.map((d) => d.email).join(',')}`);
               await despacharEmail({
                 _ref: `reuniao_${idCondominio}_${idReuniao}`,
                 template: "reuniao_convocacao",
@@ -269,11 +276,12 @@ class ReuniaoController {
                   condominio_nome: destinatarios[0]?.condominio_nome || ""
                 }
               });
+              console.log(`[reuniaoController.criar] DIAG despacharEmail retornou (ver logs [emailDispatch] acima) idReuniao=${idReuniao}`);
             }
           } catch (emailErr) {
-            console.error("[reuniaoController.criar] Erro ao enviar e-mail de convocação:", emailErr?.message);
+            console.error("[reuniaoController.criar] Erro ao enviar e-mail de convocação:", emailErr?.message, emailErr?.stack);
           }
-        });
+        })());
       }
 
       return res.status(201).json({ id: idReuniao, message: "Reuniao criada com sucesso." });

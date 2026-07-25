@@ -8,6 +8,7 @@ const fetch = require('node-fetch');
 const { QueryTypes } = require('sequelize');
 const pushNotificationService = require('../service/pushNotificationService');
 const { despacharEmail, despacharEmailReserva } = require('../service/emailDispatchService');
+const { waitUntil } = require('@vercel/functions');
 const { buildAvatarProxyUrl, buildConsumoImagemProxyUrl, buildDashboardImagemProxyUrl, getBlobReadToken, resolveBlobUrl } = require('../helpers/avatarProxy');
 
 const INVITE_TOKEN_SECRET =
@@ -4567,7 +4568,7 @@ class CondominioController {
 
       // Email aos moradores do apartamento quando encomenda é registrada
       if (tipoRegistro === 3 && apartamentoFinal) {
-        setImmediate(async () => {
+        waitUntil((async () => {
           try {
             const moradores = await postgres.query(
               `SELECT tu.email
@@ -4606,7 +4607,7 @@ class CondominioController {
           } catch (emailErr) {
             console.error('[emailDispatch] Erro encomenda:', emailErr?.message);
           }
-        });
+        })());
       }
 
       const arquivoImagem =
@@ -7340,7 +7341,7 @@ class CondominioController {
         { expiresIn: '7d' }
       );
 
-      setImmediate(async () => {
+      waitUntil((async () => {
         try {
           await despacharEmailReserva({
             _ref: `convite_${idCondominioToken}_${Date.now()}`,
@@ -7355,7 +7356,7 @@ class CondominioController {
         } catch (emailErr) {
           console.error('[emailDispatch] Erro convite morador:', emailErr?.message);
         }
-      });
+      })());
 
       return res.status(201).json({
         message: 'Convite gerado e e-mail de convite enviado.',
@@ -7750,7 +7751,7 @@ class CondominioController {
       const nomeCompleto = this._normalizarNomeCapitalizado(`${usuario.nome || ''} ${usuario.sobrenome || ''}`.trim()) || null;
       const nomeCondominio = this._normalizarTextoOuNull(usuario.nome_condominio);
 
-      setImmediate(async () => {
+      waitUntil((async () => {
         try {
           await despacharEmailReserva({
             _ref: `recovery_${usuario.id}`,
@@ -7762,7 +7763,7 @@ class CondominioController {
         } catch (emailErr) {
           console.error('[emailDispatch] Erro recovery senha:', emailErr?.message);
         }
-      });
+      })());
 
       return res.status(200).json({
         success: true,
@@ -7900,7 +7901,7 @@ class CondominioController {
       const emailUsuario = this._normalizarEmailOuNull(usuario.email);
       const nomeCompleto = this._normalizarNomeCapitalizado(`${usuario.nome || ''} ${usuario.sobrenome || ''}`.trim()) || null;
 
-      setImmediate(async () => {
+      waitUntil((async () => {
         try {
           await despacharEmail({
             _ref: `recovery_${idUsuario}`,
@@ -7912,7 +7913,7 @@ class CondominioController {
         } catch (emailErr) {
           console.error('[recovery] Erro ao enviar e-mail:', emailErr?.message);
         }
-      });
+      })());
 
       return res.status(200).json({
         success: true,
@@ -10069,7 +10070,7 @@ class CondominioController {
       }
 
       // Disparo assíncrono de email — não bloqueia a resposta
-      setImmediate(async () => {
+      waitUntil((async () => {
         try {
           const [condominioRow] = await postgres.query(
             `SELECT nome FROM "condominio-bh"."tb-condominios" WHERE id = :id LIMIT 1`,
@@ -10122,7 +10123,7 @@ class CondominioController {
         } catch (emailErr) {
           console.error('[emailDispatch] Erro ao montar payload:', emailErr?.message);
         }
-      });
+      })());
 
       return res.status(201).json({
         message: 'Sala agendada com sucesso.',
@@ -10422,7 +10423,7 @@ class CondominioController {
 
       // Email ao morador somente para aprovação (3), reprovação (4) ou cancelamento (5)
       if ([3, 4, 5].includes(idStatus)) {
-        setImmediate(async () => {
+        waitUntil((async () => {
           try {
             const [moradorReserva] = await postgres.query(
               `SELECT tu.nome, tu.email, tu.apartamento, tu.bloco,
@@ -10464,7 +10465,7 @@ class CondominioController {
           } catch (emailErr) {
             console.error('[emailDispatch] Erro status reserva:', emailErr?.message);
           }
-        });
+        })());
       }
 
       const agendaAtualizada = await postgres.query(

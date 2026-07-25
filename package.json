@@ -13,6 +13,7 @@
   "dependencies": {
     "@sendgrid/mail": "^7.7.0",
     "@vercel/blob": "^2.3.3",
+    "@vercel/functions": "^3.7.6",
     "@vercel/postgres": "^0.8.0",
     "axios": "^0.21.4",
     "bcryptjs": "^3.0.3",

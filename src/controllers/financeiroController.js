@@ -5,6 +5,7 @@ const { put } = require('@vercel/blob');
 const postgres = require('../database/postgres');
 const pushNotificationService = require('../service/pushNotificationService');
 const { despacharEmail } = require('../service/emailDispatchService');
+const { waitUntil } = require('@vercel/functions');
 
 const PERFIS_GESTAO = new Set(['Admin', 'Sindico', 'Sub-Sindico']);
 
@@ -1831,9 +1832,11 @@ class FinanceiroController {
             console.error(`[cobrarInadimplente] Erro no push (receita ${pendencia.id}):`, pushErr?.message);
           }
         }
+      });
 
-        const emails = [...new Set(pendencias.map((p) => p.usuario_email).filter(Boolean))];
-        if (emails.length > 0) {
+      const emails = [...new Set(pendencias.map((p) => p.usuario_email).filter(Boolean))];
+      if (emails.length > 0) {
+        waitUntil((async () => {
           try {
             const valorTotal = pendencias.reduce((soma, p) => soma + Number(p.valor || 0) + Number(p.valor_fundo_reserva || 0), 0);
             const diasAtrasoMax = Math.max(...pendencias.map((p) => Number(p.dias_atraso || 0)));
@@ -1893,8 +1896,8 @@ class FinanceiroController {
           } catch (emailErr) {
             console.error('[cobrarInadimplente] Erro no e-mail:', emailErr?.message);
           }
-        }
-      });
+        })());
+      }
     } catch (error) {
       return res.status(500).json({ message: 'Falha ao processar cobrança.', detail: error.message });
     }
@@ -2258,14 +2261,14 @@ class FinanceiroController {
       });
 
       // Notifica moradores via push / log / e-mail — cada etapa isolada, uma falha não bloqueia as demais
-      setImmediate(async () => {
-        const mesesAbrev = ['JAN', 'FEV', 'MAR', 'ABR', 'MAI', 'JUN', 'JUL', 'AGO', 'SET', 'OUT', 'NOV', 'DEZ'];
-        const mesesCompletos = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
-        const [anoPeriodo, mesPeriodo] = periodo.split('-');
-        const mensagemNotificacao = `Houve publicação da Prestação Contas ${mesesAbrev[Number(mesPeriodo) - 1]}/${anoPeriodo}, acompanhe no dashboard`;
-        const competenciaFormatada = `${mesesCompletos[Number(mesPeriodo) - 1]}/${anoPeriodo}`;
-        const idCodigoBalancete = this._toInt(balancete?.id, null);
+      const mesesAbrev = ['JAN', 'FEV', 'MAR', 'ABR', 'MAI', 'JUN', 'JUL', 'AGO', 'SET', 'OUT', 'NOV', 'DEZ'];
+      const mesesCompletos = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+      const [anoPeriodo, mesPeriodo] = periodo.split('-');
+      const mensagemNotificacao = `Houve publicação da Prestação Contas ${mesesAbrev[Number(mesPeriodo) - 1]}/${anoPeriodo}, acompanhe no dashboard`;
+      const competenciaFormatada = `${mesesCompletos[Number(mesPeriodo) - 1]}/${anoPeriodo}`;
+      const idCodigoBalancete = this._toInt(balancete?.id, null);
 
+      setImmediate(async () => {
         let ids = [];
         try {
           const moradores = await postgres.query(
@@ -2319,8 +2322,10 @@ class FinanceiroController {
         } catch (logErr) {
           console.error('[publicarBalancete] Erro no log de notificação:', logErr?.message);
         }
+      });
 
-        if (enviarEmail) {
+      if (enviarEmail) {
+        waitUntil((async () => {
           try {
             const destinatarios = await postgres.query(
               `SELECT DISTINCT u.id, u.nome, u.email, c.nome AS condominio_nome
@@ -2354,8 +2359,8 @@ class FinanceiroController {
           } catch (destinatariosErr) {
             console.error('[publicarBalancete] Erro no disparo de e-mail:', destinatariosErr?.message);
           }
-        }
-      });
+        })());
+      }
     } catch (error) {
       return res.status(500).json({ message: 'Falha ao publicar balancete.', detail: error.message });
     }
