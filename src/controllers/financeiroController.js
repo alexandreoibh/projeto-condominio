@@ -180,7 +180,8 @@ class FinanceiroController {
           `SELECT r.*,
                   us.nome,
                   us.bloco,
-                  us.apartamento
+                  us.apartamento,
+                  tcu.unidades_bloco AS unidade_bloco
              FROM "condominio-bh".tb_fin_receitas r
              LEFT JOIN "condominio-bh".tb_condominios_unidades tcu
                ON tcu.id = r.id_unidade AND tcu.id_condominio = r.id_condominio
