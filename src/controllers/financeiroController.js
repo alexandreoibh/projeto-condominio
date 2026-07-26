@@ -1998,8 +1998,6 @@ class FinanceiroController {
       if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
 
       const periodo = this._periodoDaQuery(req) || this._periodoAtual();
-      const ano = periodo.slice(0, 4);
-      const replacements = { id_condominio: idCondominio, periodo, ano };
 
       // Moradores só veem balancetes publicados
       if (!this._isGestor(req)) {
@@ -2009,10 +2007,21 @@ class FinanceiroController {
             WHERE id_condominio = :id_condominio
               AND TO_CHAR(competencia, 'YYYY-MM') = :periodo
               AND publicado = true`,
-          { replacements, type: QueryTypes.SELECT }
+          { replacements: { id_condominio: idCondominio, periodo }, type: QueryTypes.SELECT }
         );
         if (!publicado[0]) return res.status(404).json({ message: 'Balancete não publicado para este período.' });
       }
+
+      const resultado = await this._montarBalanceteCompleto(idCondominio, periodo);
+      return res.status(200).json(resultado);
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao carregar balancete.', detail: error.message });
+    }
+  }
+
+  async _montarBalanceteCompleto(idCondominio, periodo) {
+      const ano = periodo.slice(0, 4);
+      const replacements = { id_condominio: idCondominio, periodo, ano };
 
       const [recebidoAcumulado, pagoAcumulado, recebidoAcumuladoAnterior, pagoAcumuladoAnterior, receitasAno, despesasAno, balancete, receitas, despesas, ultimaAlteracaoRows] = await Promise.all([
         postgres.query(
@@ -2142,7 +2151,7 @@ class FinanceiroController {
           }
         : null;
 
-      return res.status(200).json({
+      return {
         periodo,
         saldo_caixa: totalRecebidoAcumulado - totalPagoAcumulado,
         saldo_caixa_mes_anterior: saldoCaixaMesAnterior,
@@ -2175,10 +2184,7 @@ class FinanceiroController {
             pendente: Number(despesasAno[0]?.pendente || 0),
           },
         },
-      });
-    } catch (error) {
-      return res.status(500).json({ message: 'Falha ao carregar balancete.', detail: error.message });
-    }
+      };
   }
 
   async publicarBalancete(req, res) {
@@ -2350,6 +2356,13 @@ class FinanceiroController {
             console.log(`[publicarBalancete] Disparando e-mail para ${destinatarios.length} destinatário(s), template=balancete_publicado.`);
 
             if (destinatarios.length > 0) {
+              let balanceteCompleto = null;
+              try {
+                balanceteCompleto = await this._montarBalanceteCompleto(idCondominio, periodo);
+              } catch (balanceteErr) {
+                console.error('[publicarBalancete] Erro ao montar dados completos do balancete para e-mail:', balanceteErr?.message);
+              }
+
               try {
                 await despacharEmail({
                   _ref: `balancete_${idCondominio}_${periodo}`,
@@ -2358,6 +2371,16 @@ class FinanceiroController {
                   balancete: {
                     competencia: competenciaFormatada,
                     condominio_nome: destinatarios[0]?.condominio_nome || '',
+                    ...(balanceteCompleto ? {
+                      receitas: balanceteCompleto.receitas,
+                      despesas: balanceteCompleto.despesas,
+                      saldo_caixa: balanceteCompleto.saldo_caixa,
+                      saldo_caixa_mes_anterior: balanceteCompleto.saldo_caixa_mes_anterior,
+                      totais_ano: balanceteCompleto.totais_ano,
+                      publicado: balanceteCompleto.balancete?.publicado ?? true,
+                      publicado_em: balanceteCompleto.balancete?.publicado_em ?? null,
+                      publicado_por_nome: balanceteCompleto.balancete?.publicado_por_nome ?? null,
+                    } : {}),
                   },
                 });
               } catch (emailErr) {
