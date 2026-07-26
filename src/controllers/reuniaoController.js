@@ -8,6 +8,8 @@ const { waitUntil } = require("@vercel/functions");
 
 const TIPOS_REUNIAO = new Set(["ordinaria", "extraordinaria"]);
 const STATUS_REUNIAO = new Set(["CRIADA", "CONVOCADA", "EM_ANDAMENTO", "FINALIZADA", "CANCELADA"]);
+const FILTROS_DESTINATARIO = new Set(["todos", "inquilinos", "proprietarios"]);
+const TIPO_MORADOR_POR_FILTRO = { inquilinos: "inquilino", proprietarios: "proprietario" };
 class ReuniaoController {
   _toInt(value, fallback) {
     const parsed = Number.parseInt(value, 10);
@@ -192,6 +194,11 @@ class ReuniaoController {
       const dataLimiteConfirmacao = this._parseDataHora(body.data_limite_confirmacao);
       const notificarMoradores = body.notificar_moradores !== false;
       const enviarEmail = body.enviar_email === 1 || body.enviar_email === "1" || body.enviar_email === true;
+      const filtroDestinatarioRaw = (this._normalizarTextoOuNull(body.filtro_destinatario, 20) || "todos").toLowerCase();
+      if (!FILTROS_DESTINATARIO.has(filtroDestinatarioRaw)) {
+        return res.status(400).json({ message: `filtro_destinatario invalido. Use: ${[...FILTROS_DESTINATARIO].join(", ")}.` });
+      }
+      const tipoMoradorFiltro = TIPO_MORADOR_POR_FILTRO[filtroDestinatarioRaw] || null;
 
       if (!titulo) return res.status(400).json({ message: "Campo titulo e obrigatorio." });
       if (!dataHora) return res.status(400).json({ message: "Campo data_hora invalido ou ausente." });
@@ -223,11 +230,15 @@ class ReuniaoController {
       if (notificarMoradores && idReuniao) {
         setImmediate(async () => {
           try {
+            const pushWhereParts = ["id_condominio = :id_condominio", "COALESCE(status, '') IN ('ativo', 'Ativo')"];
+            const pushReplacements = { id_condominio: idCondominio };
+            if (tipoMoradorFiltro) {
+              pushWhereParts.push("lower(COALESCE(tipo_morador, '')) = :tipo_morador");
+              pushReplacements.tipo_morador = tipoMoradorFiltro;
+            }
             const moradores = await postgres.query(
-              `SELECT id FROM "condominio-bh"."tb-usuarios"
-                WHERE id_condominio = :id_condominio
-                  AND COALESCE(status, '') IN ('ativo', 'Ativo')`,
-              { replacements: { id_condominio: idCondominio }, type: QueryTypes.SELECT }
+              `SELECT id FROM "condominio-bh"."tb-usuarios" WHERE ${pushWhereParts.join(' AND ')}`,
+              { replacements: pushReplacements, type: QueryTypes.SELECT }
             );
             const ids = moradores.map((m) => m.id).filter(Boolean);
             if (ids.length === 0) return;
@@ -241,28 +252,30 @@ class ReuniaoController {
         });
       }
 
-      console.log(`[reuniaoController.criar] DIAG enviarEmail=${enviarEmail} (raw body.enviar_email=${JSON.stringify(body.enviar_email)}) idReuniao=${idReuniao}`);
-
       if (enviarEmail && idReuniao) {
         waitUntil((async () => {
-          console.log(`[reuniaoController.criar] DIAG waitUntil email iniciado idReuniao=${idReuniao} idCondominio=${idCondominio}`);
           try {
+            const emailWhereParts = [
+              "u.id_condominio = :id_condominio",
+              "LOWER(u.status) = 'ativo'",
+              "COALESCE(p.nome, '') NOT IN ('Portaria', 'Colaborador')",
+              "u.email IS NOT NULL AND u.email <> ''",
+            ];
+            const emailReplacements = { id_condominio: idCondominio };
+            if (tipoMoradorFiltro) {
+              emailWhereParts.push("lower(COALESCE(u.tipo_morador, '')) = :tipo_morador");
+              emailReplacements.tipo_morador = tipoMoradorFiltro;
+            }
             const destinatarios = await postgres.query(
               `SELECT DISTINCT u.id, u.nome, u.email, c.nome AS condominio_nome
                  FROM "condominio-bh"."tb-usuarios" u
                  LEFT JOIN "condominio-bh".tb_sgw_perfil p ON p.id::text = u.tipo_perfil_id::text
                  LEFT JOIN "condominio-bh"."tb-condominios" c ON c.id::text = u.id_condominio::text
-                WHERE u.id_condominio = :id_condominio
-                  AND LOWER(u.status) = 'ativo'
-                  AND COALESCE(p.nome, '') NOT IN ('Portaria', 'Colaborador')
-                  AND u.email IS NOT NULL AND u.email <> ''`,
-              { replacements: { id_condominio: idCondominio }, type: QueryTypes.SELECT }
+                WHERE ${emailWhereParts.join(' AND ')}`,
+              { replacements: emailReplacements, type: QueryTypes.SELECT }
             );
 
-            console.log(`[reuniaoController.criar] DIAG destinatarios encontrados=${destinatarios.length} idReuniao=${idReuniao}`);
-
             if (destinatarios.length > 0) {
-              console.log(`[reuniaoController.criar] DIAG chamando despacharEmail idReuniao=${idReuniao} emails=${destinatarios.map((d) => d.email).join(',')}`);
               await despacharEmail({
                 _ref: `reuniao_${idCondominio}_${idReuniao}`,
                 template: "reuniao_convocacao",
@@ -273,10 +286,11 @@ class ReuniaoController {
                   data_hora: dataHora,
                   local: local || "",
                   descricao: descricao || "",
-                  condominio_nome: destinatarios[0]?.condominio_nome || ""
+                  condominio_nome: destinatarios[0]?.condominio_nome || "",
+                  pauta: itensPauta,
+                  data_limite_confirmacao: dataLimiteConfirmacao
                 }
               });
-              console.log(`[reuniaoController.criar] DIAG despacharEmail retornou (ver logs [emailDispatch] acima) idReuniao=${idReuniao}`);
             }
           } catch (emailErr) {
             console.error("[reuniaoController.criar] Erro ao enviar e-mail de convocação:", emailErr?.message, emailErr?.stack);

@@ -91,7 +91,11 @@ router.post(
     body("enviar_email")
       .optional({ nullable: true })
       .isIn([0, 1, "0", "1", true, false])
-      .withMessage("enviar_email deve ser 0 ou 1.")
+      .withMessage("enviar_email deve ser 0 ou 1."),
+    body("filtro_destinatario")
+      .optional({ nullable: true, checkFalsy: true })
+      .isIn(["todos", "inquilinos", "proprietarios"])
+      .withMessage("filtro_destinatario deve ser: todos, inquilinos ou proprietarios.")
   ],
   validate,
   controller.criar.bind(controller)
