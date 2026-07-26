@@ -520,7 +520,13 @@ class ReuniaoController {
       const idUsuario = this._toInt(req.idcliente, null);
       if (!idUsuario) return res.status(403).json({ message: "Token sem id de usuario." });
 
-      const presente = req.body.presente !== undefined ? Boolean(req.body.presente) : true;
+      const statusRaw = this._normalizarTextoOuNull(req.body.status);
+      let presente;
+      if (statusRaw && ["CONFIRMADO", "RECUSADO"].includes(statusRaw.toUpperCase())) {
+        presente = statusRaw.toUpperCase() === "CONFIRMADO";
+      } else {
+        presente = req.body.presente !== undefined ? Boolean(req.body.presente) : true;
+      }
       const dataCheckin = presente ? (this._normalizarTextoOuNull(req.body.data_checkin) || new Date().toISOString()) : null;
 
       const [reuniao] = await postgres.query(

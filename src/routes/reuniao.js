@@ -181,6 +181,10 @@ router.post(
       .optional({ nullable: true })
       .isBoolean()
       .withMessage("presente deve ser booleano (true ou false)."),
+    body("status")
+      .optional({ nullable: true, checkFalsy: true })
+      .isIn(["CONFIRMADO", "RECUSADO"])
+      .withMessage("status deve ser: CONFIRMADO ou RECUSADO."),
     body("data_checkin")
       .optional({ nullable: true, checkFalsy: true })
       .isISO8601()
