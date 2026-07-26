@@ -26,37 +26,47 @@ class UsuarioController {
       const token = String(req.body?.token || '').trim();
       const plataforma = String(req.body?.plataforma || '').trim().toLowerCase();
 
-      await postgres.query(
-        `INSERT INTO "condominio-bh".tb_usuario_push_tokens (
-            id_usuario,
-            push_token,
-            plataforma,
-            ativo,
-            created_at,
-            updated_at
-          ) VALUES (
-            :id_usuario,
-            :push_token,
-            :plataforma,
-            1,
-            now(),
-            now()
-          )
-          ON CONFLICT (push_token)
-          DO UPDATE SET
-            id_usuario = EXCLUDED.id_usuario,
-            plataforma = EXCLUDED.plataforma,
-            ativo = 1,
-            updated_at = now()`,
+      const [, updatedRows] = await postgres.query(
+        `UPDATE "condominio-bh".tb_usuario_push_tokens
+            SET id_usuario = :id_usuario, plataforma = :plataforma, ativo = 1, updated_at = now()
+          WHERE push_token = :push_token`,
         {
           replacements: {
             id_usuario: idUsuario,
             push_token: token,
             plataforma: plataforma
           },
-          type: QueryTypes.INSERT
+          type: QueryTypes.UPDATE
         }
       );
+
+      if (updatedRows === 0) {
+        await postgres.query(
+          `INSERT INTO "condominio-bh".tb_usuario_push_tokens (
+              id_usuario,
+              push_token,
+              plataforma,
+              ativo,
+              created_at,
+              updated_at
+            ) VALUES (
+              :id_usuario,
+              :push_token,
+              :plataforma,
+              1,
+              now(),
+              now()
+            )`,
+          {
+            replacements: {
+              id_usuario: idUsuario,
+              push_token: token,
+              plataforma: plataforma
+            },
+            type: QueryTypes.INSERT
+          }
+        );
+      }
 
       return res.status(200).json({ success: true });
     } catch (error) {

@@ -533,17 +533,27 @@ class ReuniaoController {
         return res.status(422).json({ message: "Nao e possivel confirmar presenca em reuniao cancelada." });
       }
 
-      await postgres.query(
-        `INSERT INTO "condominio-bh".tb_reuniao_presenca
-            (id_reuniao, id_usuario, presente, data_checkin)
-          VALUES (:id_reuniao, :id_usuario, :presente, :data_checkin)
-          ON CONFLICT (id_reuniao, id_usuario)
-          DO UPDATE SET presente = EXCLUDED.presente, data_checkin = EXCLUDED.data_checkin`,
+      const [, updatedRows] = await postgres.query(
+        `UPDATE "condominio-bh".tb_reuniao_presenca
+            SET presente = :presente, data_checkin = :data_checkin
+          WHERE id_reuniao = :id_reuniao AND id_usuario = :id_usuario`,
         {
           replacements: { id_reuniao: idReuniao, id_usuario: idUsuario, presente, data_checkin: dataCheckin },
-          type: QueryTypes.INSERT
+          type: QueryTypes.UPDATE
         }
       );
+
+      if (updatedRows === 0) {
+        await postgres.query(
+          `INSERT INTO "condominio-bh".tb_reuniao_presenca
+              (id_reuniao, id_usuario, presente, data_checkin)
+            VALUES (:id_reuniao, :id_usuario, :presente, :data_checkin)`,
+          {
+            replacements: { id_reuniao: idReuniao, id_usuario: idUsuario, presente, data_checkin: dataCheckin },
+            type: QueryTypes.INSERT
+          }
+        );
+      }
 
       return res.status(200).json({ message: "Presenca registrada com sucesso.", presente, data_checkin: dataCheckin });
     } catch (error) {

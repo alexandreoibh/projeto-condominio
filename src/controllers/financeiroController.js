@@ -1362,13 +1362,20 @@ class FinanceiroController {
 
       const idUsuario = this._toInt(req.idcliente, null);
 
-      await postgres.query(
-        `INSERT INTO "condominio-bh".tb_fin_meta_fundo_reserva (id_condominio, valor_meta, atualizado_por, created_at, updated_at)
-         VALUES (:id_condominio, :valor_meta, :atualizado_por, NOW(), NOW())
-         ON CONFLICT (id_condominio) DO UPDATE
-           SET valor_meta = :valor_meta, atualizado_por = :atualizado_por, updated_at = NOW()`,
-        { replacements: { id_condominio: idCondominio, valor_meta: valorMeta, atualizado_por: idUsuario } }
+      const [, updatedRows] = await postgres.query(
+        `UPDATE "condominio-bh".tb_fin_meta_fundo_reserva
+            SET valor_meta = :valor_meta, atualizado_por = :atualizado_por, updated_at = NOW()
+          WHERE id_condominio = :id_condominio`,
+        { replacements: { id_condominio: idCondominio, valor_meta: valorMeta, atualizado_por: idUsuario }, type: QueryTypes.UPDATE }
       );
+
+      if (updatedRows === 0) {
+        await postgres.query(
+          `INSERT INTO "condominio-bh".tb_fin_meta_fundo_reserva (id_condominio, valor_meta, atualizado_por, created_at, updated_at)
+           VALUES (:id_condominio, :valor_meta, :atualizado_por, NOW(), NOW())`,
+          { replacements: { id_condominio: idCondominio, valor_meta: valorMeta, atualizado_por: idUsuario }, type: QueryTypes.INSERT }
+        );
+      }
 
       return res.status(200).json({ message: 'Meta do fundo de reserva atualizada.', valor_meta: valorMeta });
     } catch (error) {
