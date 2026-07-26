@@ -110,7 +110,7 @@ class ReuniaoController {
       const [rows, contagem] = await Promise.all([
         postgres.query(
           `SELECT r.id, r.titulo, r.descricao, r.tipo, r.data_hora, r.local, r.link_online,
-                  r.pauta, r.status, r.id_usuario_criador, tu.nome AS nome_criador,
+                  r.pauta, r.status, r.participantes, r.id_usuario_criador, tu.nome AS nome_criador,
                   r.created_at, r.updated_at
              FROM "condominio-bh".tb_reuniao r
              LEFT JOIN "condominio-bh"."tb-usuarios" tu ON tu.id = r.id_usuario_criador
@@ -144,7 +144,7 @@ class ReuniaoController {
 
       const [reuniao] = await postgres.query(
         `SELECT r.id, r.titulo, r.descricao, r.tipo, r.data_hora, r.local, r.link_online,
-                r.ata, r.status, r.id_usuario_criador,
+                r.ata, r.status, r.participantes, r.id_usuario_criador,
                 tu.nome AS nome_criador, r.created_at, r.updated_at
            FROM "condominio-bh".tb_reuniao r
            LEFT JOIN "condominio-bh"."tb-usuarios" tu ON tu.id = r.id_usuario_criador
@@ -222,15 +222,16 @@ class ReuniaoController {
       const [rows] = await postgres.query(
         `INSERT INTO "condominio-bh".tb_reuniao
             (id_condominio, titulo, descricao, tipo, data_hora, local, link_online,
-             data_limite_confirmacao, status, id_usuario_criador, created_at, updated_at)
+             data_limite_confirmacao, participantes, status, id_usuario_criador, created_at, updated_at)
           VALUES
             (:id_condominio, :titulo, :descricao, :tipo, :data_hora, :local, :link_online,
-             :data_limite_confirmacao, 'CRIADA', :id_usuario_criador, now(), now())
+             :data_limite_confirmacao, :participantes, 'CRIADA', :id_usuario_criador, now(), now())
           RETURNING id`,
         {
           replacements: {
             id_condominio: idCondominio, titulo, descricao, tipo, data_hora: dataHora,
-            local, link_online: linkOnline, data_limite_confirmacao: dataLimiteConfirmacao, id_usuario_criador: idUsuarioCriador
+            local, link_online: linkOnline, data_limite_confirmacao: dataLimiteConfirmacao,
+            participantes: filtroDestinatarioRaw, id_usuario_criador: idUsuarioCriador
           },
           type: QueryTypes.INSERT
         }
