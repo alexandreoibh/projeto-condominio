@@ -444,12 +444,12 @@ class FinanceiroController {
     try {
       const idCondominio = this._toInt(req.id_condominio, null);
       if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
-      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+      const ehGestor = this._isGestor(req);
 
       const periodoInicio = this._normalizarPeriodo(req.query.periodo_inicio);
       const periodoFim = this._normalizarPeriodo(req.query.periodo_fim);
       if (periodoInicio && periodoFim) {
-        return this._consolidadoReceitasSerie(req, res, idCondominio, periodoInicio, periodoFim);
+        return this._consolidadoReceitasSerie(req, res, idCondominio, periodoInicio, periodoFim, ehGestor);
       }
 
       const whereParts = ['id_condominio = :id_condominio'];
@@ -467,6 +467,12 @@ class FinanceiroController {
       if (req.query.id_grupo_receita) {
         whereParts.push('id_grupo_receita = :id_grupo_receita');
         replacements.id_grupo_receita = this._toInt(req.query.id_grupo_receita, null);
+      }
+      if (!ehGestor) {
+        whereParts.push(`TO_CHAR(competencia, 'YYYY-MM') IN (
+          SELECT TO_CHAR(competencia, 'YYYY-MM') FROM "condominio-bh".tb_fin_balancetes
+           WHERE id_condominio = :id_condominio AND publicado = true
+        )`);
       }
 
       const rows = await postgres.query(
@@ -532,7 +538,7 @@ class FinanceiroController {
     return (anoFim - anoIni) * 12 + (mesFim - mesIni) + 1;
   }
 
-  async _consolidadoReceitasSerie(req, res, idCondominio, periodoInicio, periodoFim) {
+  async _consolidadoReceitasSerie(req, res, idCondominio, periodoInicio, periodoFim, ehGestor) {
     try {
       if (periodoInicio > periodoFim) {
         return res.status(422).json({ message: 'periodo_inicio deve ser anterior ou igual a periodo_fim.' });
@@ -551,6 +557,12 @@ class FinanceiroController {
       if (req.query.id_grupo_receita) {
         filtrosExtra.push('AND r.id_grupo_receita = :id_grupo_receita');
         replacements.id_grupo_receita = this._toInt(req.query.id_grupo_receita, null);
+      }
+      if (!ehGestor) {
+        filtrosExtra.push(`AND TO_CHAR(r.competencia, 'YYYY-MM') IN (
+          SELECT TO_CHAR(competencia, 'YYYY-MM') FROM "condominio-bh".tb_fin_balancetes
+           WHERE id_condominio = :id_condominio AND publicado = true
+        )`);
       }
 
       const rows = await postgres.query(
@@ -685,12 +697,12 @@ class FinanceiroController {
     try {
       const idCondominio = this._toInt(req.id_condominio, null);
       if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
-      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+      const ehGestor = this._isGestor(req);
 
       const periodoInicio = this._normalizarPeriodo(req.query.periodo_inicio);
       const periodoFim = this._normalizarPeriodo(req.query.periodo_fim);
       if (periodoInicio && periodoFim) {
-        return this._consolidadoDespesasSerie(req, res, idCondominio, periodoInicio, periodoFim);
+        return this._consolidadoDespesasSerie(req, res, idCondominio, periodoInicio, periodoFim, ehGestor);
       }
 
       const whereParts = ['d.id_condominio = :id_condominio'];
@@ -707,6 +719,12 @@ class FinanceiroController {
       if (req.query.categoria) {
         whereParts.push('d.categoria = :categoria');
         replacements.categoria = req.query.categoria;
+      }
+      if (!ehGestor) {
+        whereParts.push(`TO_CHAR(d.competencia, 'YYYY-MM') IN (
+          SELECT TO_CHAR(competencia, 'YYYY-MM') FROM "condominio-bh".tb_fin_balancetes
+           WHERE id_condominio = :id_condominio AND publicado = true
+        )`);
       }
 
       const rows = await postgres.query(
@@ -737,7 +755,7 @@ class FinanceiroController {
     }
   }
 
-  async _consolidadoDespesasSerie(req, res, idCondominio, periodoInicio, periodoFim) {
+  async _consolidadoDespesasSerie(req, res, idCondominio, periodoInicio, periodoFim, ehGestor) {
     try {
       if (periodoInicio > periodoFim) {
         return res.status(422).json({ message: 'periodo_inicio deve ser anterior ou igual a periodo_fim.' });
@@ -752,6 +770,12 @@ class FinanceiroController {
       if (req.query.categoria) {
         filtrosExtra.push('AND d.categoria = :categoria');
         replacements.categoria = req.query.categoria;
+      }
+      if (!ehGestor) {
+        filtrosExtra.push(`AND TO_CHAR(d.competencia, 'YYYY-MM') IN (
+          SELECT TO_CHAR(competencia, 'YYYY-MM') FROM "condominio-bh".tb_fin_balancetes
+           WHERE id_condominio = :id_condominio AND publicado = true
+        )`);
       }
 
       const rows = await postgres.query(
