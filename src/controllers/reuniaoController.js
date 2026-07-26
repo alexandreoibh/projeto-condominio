@@ -10,6 +10,7 @@ const TIPOS_REUNIAO = new Set(["ordinaria", "extraordinaria"]);
 const STATUS_REUNIAO = new Set(["CRIADA", "CONVOCADA", "EM_ANDAMENTO", "FINALIZADA", "CANCELADA"]);
 const FILTROS_DESTINATARIO = new Set(["todos", "inquilinos", "proprietarios"]);
 const TIPO_MORADOR_POR_FILTRO = { inquilinos: "inquilino", proprietarios: "proprietario" };
+const STATUS_REUNIAO_ABERTA = ["CRIADA", "CONVOCADA", "EM_ANDAMENTO"];
 class ReuniaoController {
   _toInt(value, fallback) {
     const parsed = Number.parseInt(value, 10);
@@ -203,6 +204,20 @@ class ReuniaoController {
       if (!titulo) return res.status(400).json({ message: "Campo titulo e obrigatorio." });
       if (!dataHora) return res.status(400).json({ message: "Campo data_hora invalido ou ausente." });
       if (!TIPOS_REUNIAO.has(tipo)) return res.status(400).json({ message: `Tipo invalido. Use: ${[...TIPOS_REUNIAO].join(", ")}.` });
+
+      const [reuniaoAberta] = await postgres.query(
+        `SELECT id, titulo, status FROM "condominio-bh".tb_reuniao
+          WHERE id_condominio = :id_condominio AND status IN (:status_abertos)
+          ORDER BY data_hora DESC LIMIT 1`,
+        { replacements: { id_condominio: idCondominio, status_abertos: STATUS_REUNIAO_ABERTA }, type: QueryTypes.SELECT }
+      );
+
+      if (reuniaoAberta) {
+        return res.status(409).json({
+          message: "Ja existe uma reuniao em aberto para este condominio. Cancele ou encerre a reuniao atual antes de criar uma nova.",
+          reuniao_em_aberto: { id: reuniaoAberta.id, titulo: reuniaoAberta.titulo, status: reuniaoAberta.status }
+        });
+      }
 
       const [rows] = await postgres.query(
         `INSERT INTO "condominio-bh".tb_reuniao
