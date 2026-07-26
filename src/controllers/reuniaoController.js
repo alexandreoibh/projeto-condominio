@@ -471,11 +471,11 @@ class ReuniaoController {
       if (!reuniao) return res.status(200).json({ reuniao: null });
 
       const [presenca] = await postgres.query(
-        `SELECT id FROM "condominio-bh".tb_reuniao_presenca
+        `SELECT presente FROM "condominio-bh".tb_reuniao_presenca
           WHERE id_reuniao = :id_reuniao AND id_usuario = :id_usuario LIMIT 1`,
         { replacements: { id_reuniao: reuniao.id, id_usuario: idUsuario }, type: QueryTypes.SELECT }
       );
-      if (presenca) return res.status(200).json({ reuniao: null });
+      const minhaPresenca = !presenca ? null : (presenca.presente === true ? "CONFIRMADO" : "RECUSADO");
 
       const participantes = (reuniao.participantes || "todos").toLowerCase();
       const ehGestorReuniao = PERFIS_SEMPRE_VEEM_CONVOCACAO.has(req.nomePerfil);
@@ -500,7 +500,8 @@ class ReuniaoController {
           status: reuniao.status,
           data_hora: reuniao.data_hora,
           local: reuniao.local,
-          filtro_destinatario: participantes
+          filtro_destinatario: participantes,
+          minha_presenca: minhaPresenca
         }
       });
     } catch (error) {
