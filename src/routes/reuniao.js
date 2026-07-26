@@ -43,6 +43,13 @@ router.get(
   controller.listar.bind(controller)
 );
 
+// GET /api/reuniao/pendente-confirmacao — reuniao em aberto pendente de confirmacao do usuario logado
+router.get(
+  "/pendente-confirmacao",
+  auth,
+  controller.pendenteConfirmacao.bind(controller)
+);
+
 // GET /api/reuniao/:id — busca reuniao por id com lista de presencas
 router.get(
   "/:id(\\d+)",

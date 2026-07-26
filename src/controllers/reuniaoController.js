@@ -452,6 +452,60 @@ class ReuniaoController {
     }
   }
 
+  async pendenteConfirmacao(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: "Token sem id_condominio." });
+
+      const idUsuario = this._toInt(req.idcliente, null);
+      if (!idUsuario) return res.status(403).json({ message: "Token sem id de usuario." });
+
+      const [reuniao] = await postgres.query(
+        `SELECT id, titulo, tipo, status, data_hora, local, participantes
+           FROM "condominio-bh".tb_reuniao
+          WHERE id_condominio = :id_condominio AND status IN (:status_abertos)
+          ORDER BY data_hora DESC LIMIT 1`,
+        { replacements: { id_condominio: idCondominio, status_abertos: STATUS_REUNIAO_ABERTA }, type: QueryTypes.SELECT }
+      );
+      if (!reuniao) return res.status(200).json({ reuniao: null });
+
+      const [presenca] = await postgres.query(
+        `SELECT id FROM "condominio-bh".tb_reuniao_presenca
+          WHERE id_reuniao = :id_reuniao AND id_usuario = :id_usuario LIMIT 1`,
+        { replacements: { id_reuniao: reuniao.id, id_usuario: idUsuario }, type: QueryTypes.SELECT }
+      );
+      if (presenca) return res.status(200).json({ reuniao: null });
+
+      const participantes = (reuniao.participantes || "todos").toLowerCase();
+      if (participantes !== "todos") {
+        const [usuario] = await postgres.query(
+          `SELECT tipo_morador FROM "condominio-bh"."tb-usuarios"
+            WHERE id = :id_usuario AND id_condominio = :id_condominio LIMIT 1`,
+          { replacements: { id_usuario: idUsuario, id_condominio: idCondominio }, type: QueryTypes.SELECT }
+        );
+        const tipoMoradorEsperado = TIPO_MORADOR_POR_FILTRO[participantes] || null;
+        const tipoMoradorUsuario = (usuario?.tipo_morador || "").toLowerCase();
+        if (!tipoMoradorEsperado || tipoMoradorUsuario !== tipoMoradorEsperado) {
+          return res.status(200).json({ reuniao: null });
+        }
+      }
+
+      return res.status(200).json({
+        reuniao: {
+          id: reuniao.id,
+          titulo: reuniao.titulo,
+          tipo: reuniao.tipo,
+          status: reuniao.status,
+          data_hora: reuniao.data_hora,
+          local: reuniao.local,
+          filtro_destinatario: participantes
+        }
+      });
+    } catch (error) {
+      return res.status(500).json({ message: "Erro ao verificar reuniao pendente de confirmacao.", detail: error.message });
+    }
+  }
+
   async confirmarPresenca(req, res) {
     try {
       const idCondominio = this._toInt(req.id_condominio, null);
