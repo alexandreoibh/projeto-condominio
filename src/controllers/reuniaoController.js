@@ -11,6 +11,7 @@ const STATUS_REUNIAO = new Set(["CRIADA", "CONVOCADA", "EM_ANDAMENTO", "FINALIZA
 const FILTROS_DESTINATARIO = new Set(["todos", "inquilinos", "proprietarios"]);
 const TIPO_MORADOR_POR_FILTRO = { inquilinos: "inquilino", proprietarios: "proprietario" };
 const STATUS_REUNIAO_ABERTA = ["CRIADA", "CONVOCADA", "EM_ANDAMENTO"];
+const PERFIS_SEMPRE_VEEM_CONVOCACAO = new Set(["Sindico", "Sub-Sindico"]);
 class ReuniaoController {
   _toInt(value, fallback) {
     const parsed = Number.parseInt(value, 10);
@@ -477,7 +478,8 @@ class ReuniaoController {
       if (presenca) return res.status(200).json({ reuniao: null });
 
       const participantes = (reuniao.participantes || "todos").toLowerCase();
-      if (participantes !== "todos") {
+      const ehGestorReuniao = PERFIS_SEMPRE_VEEM_CONVOCACAO.has(req.nomePerfil);
+      if (participantes !== "todos" && !ehGestorReuniao) {
         const [usuario] = await postgres.query(
           `SELECT tipo_morador FROM "condominio-bh"."tb-usuarios"
             WHERE id = :id_usuario AND id_condominio = :id_condominio LIMIT 1`,
