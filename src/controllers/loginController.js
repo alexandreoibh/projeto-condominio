@@ -307,12 +307,15 @@ class Login {
             tu.senha_hash,
             tu.last_login_at,
             tu.created_at,
-            tu.updated_at
+            tu.updated_at,
+            tcu.id AS id_unidade
            FROM "condominio-bh"."tb-usuarios" tu
            LEFT JOIN "condominio-bh".tb_sgw_perfil p
                ON p.id::text = tu.tipo_perfil_id::text
            LEFT JOIN "condominio-bh"."tb-condominios" c
                ON c.id::text = tu.id_condominio::text
+           LEFT JOIN "condominio-bh".tb_condominios_unidades tcu
+               ON tcu.id_condominio = tu.id_condominio AND tcu.unidades_bloco = tu.apartamento
           WHERE (lower(tu.email) = :loginEmail OR tu.cpf = :loginCpf)
             AND tu.status in ('ativo','Ativo')
           LIMIT 1`,
@@ -395,6 +398,7 @@ class Login {
           path_avatar: result.path_avatar || null,
           role: result.tipo,
           id_condominio: result.id_condominio,
+          id_unidade: result.id_unidade || null,
           nome_condominio: result.nome_condominio || null,
           empresa: "condominio"
         },
@@ -408,6 +412,7 @@ class Login {
       return res.send({
         id: result.id,
         id_condominio: result.id_condominio,
+        id_unidade: result.id_unidade || null,
         matricula: result.cpf,
         nome: nomeCompleto,
         email: result.email,
@@ -441,6 +446,7 @@ class Login {
           tipo_morador: result.tipo_morador || null,
           apartamento: result.apartamento || null,
           bloco: result.bloco || null,
+          id_unidade: result.id_unidade || null,
           path_avatar: result.path_avatar || null,
           avatar_url: avatarUrl
         },

@@ -59,6 +59,7 @@ module.exports = async (req, res, next) => {
     req.ssss = verify.ssss || "";
     req.IdPerfil = verify.IdPerfil || null;
     req.id_condominio = verify.id_condominio || null;
+    req.id_unidade = verify.id_unidade || null;
     req.empresa = verify.empresa || "condominio";
     req.nomePerfil = verify.nome_perfil || verify.role || "";
 
