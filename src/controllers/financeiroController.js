@@ -124,7 +124,17 @@ class FinanceiroController {
     try {
       const idCondominio = this._toInt(req.id_condominio, null);
       if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
-      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const ehGestor = this._isGestor(req);
+      const idUnidadeToken = this._toInt(req.id_unidade, null);
+      if (!ehGestor && !idUnidadeToken) {
+        return res.status(403).json({ message: 'Acesso negado.' });
+      }
+
+      const idUnidadeFiltro = this._toInt(req.query.id_unidade, null);
+      if (idUnidadeFiltro && !ehGestor && idUnidadeFiltro !== idUnidadeToken) {
+        return res.status(403).json({ message: 'Sem permissão para consultar receitas de outra unidade.' });
+      }
 
       const page = Math.max(this._toInt(req.query.page, 1), 1);
       const pageSize = Math.min(Math.max(this._toInt(req.query.pageSize, 25), 1), 200);
@@ -150,9 +160,10 @@ class FinanceiroController {
         whereParts.push('r.id_grupo_receita = :id_grupo_receita');
         replacements.id_grupo_receita = this._toInt(req.query.id_grupo_receita, null);
       }
-      if (req.query.id_unidade) {
+      const idUnidadeAplicada = ehGestor ? idUnidadeFiltro : idUnidadeToken;
+      if (idUnidadeAplicada) {
         whereParts.push('r.id_unidade = :id_unidade');
-        replacements.id_unidade = this._toInt(req.query.id_unidade, null);
+        replacements.id_unidade = idUnidadeAplicada;
       }
 
       const whereClause = whereParts.join(' AND ');
