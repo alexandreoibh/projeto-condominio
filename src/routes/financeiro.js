@@ -51,6 +51,7 @@ router.get(
     query('categoria').optional({ nullable: true, checkFalsy: true }).isLength({ max: 60 }).withMessage('categoria deve ter no máximo 60 caracteres.'),
     query('situacao').optional({ nullable: true, checkFalsy: true }).isIn(['em_aberto', 'pago', 'cancelado']).withMessage('situacao inválida.'),
     query('id_grupo_receita').optional({ nullable: true, checkFalsy: true }).isInt({ min: 1 }).withMessage('id_grupo_receita deve ser inteiro positivo.'),
+    query('id_unidade').optional({ nullable: true, checkFalsy: true }).isInt({ min: 1 }).withMessage('id_unidade deve ser inteiro positivo.'),
     query('page').optional().isInt({ min: 1 }).withMessage('page deve ser inteiro maior que zero.'),
     query('pageSize').optional().isInt({ min: 1, max: 200 }).withMessage('pageSize deve estar entre 1 e 200.'),
     query('sort').optional({ nullable: true, checkFalsy: true }).isIn(['id', 'unidade', 'morador', 'categoria', 'situacao', 'valor_total']).withMessage('sort inválido.'),

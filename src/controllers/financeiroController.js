@@ -150,6 +150,10 @@ class FinanceiroController {
         whereParts.push('r.id_grupo_receita = :id_grupo_receita');
         replacements.id_grupo_receita = this._toInt(req.query.id_grupo_receita, null);
       }
+      if (req.query.id_unidade) {
+        whereParts.push('r.id_unidade = :id_unidade');
+        replacements.id_unidade = this._toInt(req.query.id_unidade, null);
+      }
 
       const whereClause = whereParts.join(' AND ');
 
