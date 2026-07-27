@@ -196,7 +196,15 @@ class FinanceiroController {
                   us.nome,
                   us.bloco,
                   us.apartamento,
-                  tcu.unidades_bloco AS unidade_bloco
+                  tcu.unidades_bloco AS unidade_bloco,
+                  EXISTS (
+                    SELECT 1 FROM "condominio-bh".tb_fin_receitas_documentos rd
+                     WHERE rd.id_receita = r.id AND rd.tipo = 'boleto'
+                  ) AS tem_anexo_boleto,
+                  EXISTS (
+                    SELECT 1 FROM "condominio-bh".tb_fin_receitas_documentos rd
+                     WHERE rd.id_receita = r.id AND rd.tipo = 'comprovante'
+                  ) AS tem_anexo_comprovante
              FROM "condominio-bh".tb_fin_receitas r
              LEFT JOIN "condominio-bh".tb_condominios_unidades tcu
                ON tcu.id = r.id_unidade AND tcu.id_condominio = r.id_condominio
@@ -452,6 +460,129 @@ class FinanceiroController {
       return res.status(200).json({ message: 'Receita cancelada.' });
     } catch (error) {
       return res.status(500).json({ message: 'Falha ao excluir receita.', detail: error.message });
+    }
+  }
+
+  // ─── Documentos da receita ───────────────────────────────────────────────────
+
+  async listarDocumentosReceita(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+
+      const idReceita = this._toInt(req.params.id, null);
+
+      const ehGestor = this._isGestor(req);
+      const idUnidadeToken = this._toInt(req.id_unidade, null);
+      if (!ehGestor && !idUnidadeToken) {
+        return res.status(403).json({ message: 'Acesso negado.' });
+      }
+
+      const receitas = await postgres.query(
+        `SELECT id, id_unidade FROM "condominio-bh".tb_fin_receitas WHERE id = :id AND id_condominio = :id_condominio`,
+        { replacements: { id: idReceita, id_condominio: idCondominio }, type: QueryTypes.SELECT }
+      );
+      if (!receitas[0]) return res.status(404).json({ message: 'Receita não encontrada.' });
+
+      if (!ehGestor && this._toInt(receitas[0].id_unidade, null) !== idUnidadeToken) {
+        return res.status(403).json({ message: 'Sem permissão para consultar documentos de outra unidade.' });
+      }
+
+      const data = await postgres.query(
+        `SELECT id, tipo, nome_arquivo, caminho_arquivo, data_envio
+           FROM "condominio-bh".tb_fin_receitas_documentos
+          WHERE id_receita = :id_receita
+          ORDER BY data_envio DESC`,
+        { replacements: { id_receita: idReceita }, type: QueryTypes.SELECT }
+      );
+
+      return res.status(200).json({ data });
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao listar documentos da receita.', detail: error.message });
+    }
+  }
+
+  async uploadDocumentoReceita(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+      if (!req.file) return res.status(400).json({ message: 'Arquivo não enviado.' });
+
+      const idReceita = this._toInt(req.params.id, null);
+      const tipo = req.body.tipo;
+
+      const receitas = await postgres.query(
+        `SELECT id FROM "condominio-bh".tb_fin_receitas WHERE id = :id AND id_condominio = :id_condominio`,
+        { replacements: { id: idReceita, id_condominio: idCondominio }, type: QueryTypes.SELECT }
+      );
+      if (!receitas[0]) return res.status(404).json({ message: 'Receita não encontrada.' });
+
+      const arquivo = req.file;
+      const ext = (arquivo.originalname.split('.').pop() || 'bin').toLowerCase();
+      const ambiente = process.env.NODE_ENV === 'production' ? 'prod' : 'dev';
+      const nomeArquivo = `${Date.now()}_${Math.random().toString(36).substr(2, 8)}.${ext}`;
+      const blobPath = `${ambiente}/condominios/${idCondominio}/financeiro/receitas/${idReceita}/${nomeArquivo}`;
+
+      const uploadResult = await put(blobPath, arquivo.buffer, { access: 'private', contentType: arquivo.mimetype });
+      const caminhoArquivo = uploadResult?.url || blobPath;
+
+      const [docRows] = await postgres.query(
+        `INSERT INTO "condominio-bh".tb_fin_receitas_documentos
+            (id_receita, tipo, nome_arquivo, caminho_arquivo, id_usuario_cadastro, data_envio)
+           VALUES (:id_receita, :tipo, :nome_arquivo, :caminho_arquivo, :id_usuario_cadastro, now())
+           RETURNING *`,
+        {
+          replacements: {
+            id_receita: idReceita,
+            tipo,
+            nome_arquivo: arquivo.originalname,
+            caminho_arquivo: caminhoArquivo,
+            id_usuario_cadastro: this._toInt(req.idcliente, null),
+          },
+        }
+      );
+
+      return res.status(201).json(docRows[0]);
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao fazer upload do documento.', detail: error.message });
+    }
+  }
+
+  async excluirDocumentoReceita(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const idReceita = this._toInt(req.params.id, null);
+      const idDoc = this._toInt(req.params.docId, null);
+
+      const docs = await postgres.query(
+        `SELECT doc.id, doc.caminho_arquivo
+           FROM "condominio-bh".tb_fin_receitas_documentos doc
+           JOIN "condominio-bh".tb_fin_receitas r ON r.id = doc.id_receita
+          WHERE doc.id = :id_doc AND doc.id_receita = :id_receita AND r.id_condominio = :id_condominio`,
+        { replacements: { id_doc: idDoc, id_receita: idReceita, id_condominio: idCondominio }, type: QueryTypes.SELECT }
+      );
+
+      if (!docs[0]) return res.status(404).json({ message: 'Documento não encontrado.' });
+
+      try {
+        const { del } = require('@vercel/blob');
+        await del(docs[0].caminho_arquivo);
+      } catch (_) {
+        // remoção do blob é melhor esforço
+      }
+
+      await postgres.query(
+        `DELETE FROM "condominio-bh".tb_fin_receitas_documentos WHERE id = :id`,
+        { replacements: { id: idDoc } }
+      );
+
+      return res.status(200).json({ message: 'Documento removido.' });
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao remover documento.', detail: error.message });
     }
   }
 
@@ -1069,18 +1200,46 @@ class FinanceiroController {
     }
   }
 
+  _extrairIdReceitaDoPath(url) {
+    const match = String(url || '').match(/\/financeiro\/receitas\/(\d+)\//);
+    return match ? this._toInt(match[1], null) : null;
+  }
+
   async downloadDocumentoFinanceiro(req, res) {
     try {
       const idCondominio = this._toInt(req.id_condominio, null);
       if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
-      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const ehGestor = this._isGestor(req);
+      const idUnidadeToken = this._toInt(req.id_unidade, null);
+      if (!ehGestor && !idUnidadeToken) {
+        return res.status(403).json({ message: 'Acesso negado.' });
+      }
 
       const url = String(req.query.url || '');
       const baseBlobUrl = process.env.BLOB_STORAGE_URL || '';
 
-      const caminhoValido = url.includes('/financeiro/despesas/') || url.includes('/financeiro/competencias/');
+      const ehDocumentoReceita = url.includes('/financeiro/receitas/');
+      const caminhoValido = url.includes('/financeiro/despesas/') || url.includes('/financeiro/competencias/') || ehDocumentoReceita;
       if (!url || !baseBlobUrl || !url.startsWith(baseBlobUrl) || !caminhoValido) {
         return res.status(400).json({ message: 'Parâmetro url inválido.' });
+      }
+
+      // Documentos de despesa/competência continuam gestor-only; documentos de
+      // receita liberam Morador da própria unidade.
+      if (!ehGestor && !ehDocumentoReceita) {
+        return res.status(403).json({ message: 'Acesso negado.' });
+      }
+
+      if (!ehGestor && ehDocumentoReceita) {
+        const idReceitaNaUrl = this._extrairIdReceitaDoPath(url);
+        const receitas = await postgres.query(
+          `SELECT id_unidade FROM "condominio-bh".tb_fin_receitas WHERE id = :id AND id_condominio = :id_condominio`,
+          { replacements: { id: idReceitaNaUrl, id_condominio: idCondominio }, type: QueryTypes.SELECT }
+        );
+        if (!receitas[0] || this._toInt(receitas[0].id_unidade, null) !== idUnidadeToken) {
+          return res.status(403).json({ message: 'Sem permissão para baixar documento de outra unidade.' });
+        }
       }
 
       const blobResponse = await fetch(url, {

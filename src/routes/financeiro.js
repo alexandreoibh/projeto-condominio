@@ -485,6 +485,42 @@ router.get(
   controller.downloadDocumentoFinanceiro.bind(controller)
 );
 
+// ── Documentos da receita ────────────────────────────────────────────────────
+
+router.get(
+  '/receitas/:id/documentos',
+  auth,
+  [param('id').isInt({ min: 1 }).withMessage('id inválido.')],
+  validate,
+  controller.listarDocumentosReceita.bind(controller)
+);
+
+router.post(
+  '/receitas/:id/documentos',
+  auth,
+  uploadDoc.single('arquivo'),
+  [
+    param('id').isInt({ min: 1 }).withMessage('id inválido.'),
+    body('tipo')
+      .notEmpty().withMessage('tipo é obrigatório.')
+      .bail()
+      .isIn(['boleto', 'comprovante', 'outro']).withMessage('tipo inválido.'),
+  ],
+  validate,
+  controller.uploadDocumentoReceita.bind(controller)
+);
+
+router.delete(
+  '/receitas/:id/documentos/:docId',
+  auth,
+  [
+    param('id').isInt({ min: 1 }).withMessage('id inválido.'),
+    param('docId').isInt({ min: 1 }).withMessage('docId inválido.'),
+  ],
+  validate,
+  controller.excluirDocumentoReceita.bind(controller)
+);
+
 // ── Fornecedores ──────────────────────────────────────────────────────────────
 
 const camposFornecedorValidacao = [
