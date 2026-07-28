@@ -586,6 +586,109 @@ class FinanceiroController {
     }
   }
 
+  async solicitar2ViaBoleto(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+
+      const idReceita = this._toInt(req.params.id, null);
+
+      const ehGestor = this._isGestor(req);
+      const idUnidadeToken = this._toInt(req.id_unidade, null);
+      if (!ehGestor && !idUnidadeToken) {
+        return res.status(403).json({ message: 'Acesso negado.' });
+      }
+
+      const [receita] = await postgres.query(
+        `SELECT r.id, r.id_unidade, r.descricao, r.valor, r.valor_fundo_reserva, r.competencia,
+                tcu.unidades_bloco AS unidade_bloco,
+                us.nome AS morador_nome,
+                c.nome AS condominio_nome
+           FROM "condominio-bh".tb_fin_receitas r
+           LEFT JOIN "condominio-bh".tb_condominios_unidades tcu
+             ON tcu.id = r.id_unidade AND tcu.id_condominio = r.id_condominio
+           LEFT JOIN (
+             SELECT DISTINCT ON (id_condominio, apartamento) *
+               FROM "condominio-bh"."tb-usuarios"
+              WHERE status = 'ativo'
+              ORDER BY id_condominio, apartamento, id
+           ) us ON us.id_condominio = tcu.id_condominio AND us.apartamento = tcu.unidades_bloco
+           LEFT JOIN "condominio-bh"."tb-condominios" c ON c.id = r.id_condominio
+          WHERE r.id = :id AND r.id_condominio = :id_condominio`,
+        { replacements: { id: idReceita, id_condominio: idCondominio }, type: QueryTypes.SELECT }
+      );
+      if (!receita) return res.status(404).json({ message: 'Receita não encontrada.' });
+
+      if (!ehGestor && this._toInt(receita.id_unidade, null) !== idUnidadeToken) {
+        return res.status(403).json({ message: 'Sem permissão para solicitar 2ª via de outra unidade.' });
+      }
+
+      const [ultimaSolicitacao] = await postgres.query(
+        `SELECT created_at FROM "condominio-bh".tb_fin_2via_boleto_log
+          WHERE id_receita = :id_receita
+          ORDER BY created_at DESC LIMIT 1`,
+        { replacements: { id_receita: idReceita }, type: QueryTypes.SELECT }
+      );
+      if (ultimaSolicitacao && new Date() - new Date(ultimaSolicitacao.created_at) < 24 * 60 * 60 * 1000) {
+        return res.status(422).json({
+          message: 'Já existe uma solicitação de 2ª via recente para esta receita. Tente novamente mais tarde.',
+        });
+      }
+
+      const gestoresRows = await postgres.query(
+        `SELECT email FROM "condominio-bh"."tb-usuarios"
+          WHERE id_condominio = :id_condominio
+            AND COALESCE(tipo_perfil_id::text, '0') IN ('3', '4')
+            AND COALESCE(status, '') IN ('ativo', 'Ativo')
+            AND email IS NOT NULL AND email <> ''`,
+        { replacements: { id_condominio: idCondominio }, type: QueryTypes.SELECT }
+      );
+      const emailsGestores = [...new Set(gestoresRows.map((r) => r.email).filter(Boolean))];
+      if (emailsGestores.length === 0) {
+        return res.status(422).json({
+          message: 'Este condomínio não possui síndico ou sub-síndico com e-mail cadastrado.',
+        });
+      }
+
+      const idUsuarioSolicitante = this._toInt(req.idcliente, null);
+
+      await postgres.query(
+        `INSERT INTO "condominio-bh".tb_fin_2via_boleto_log
+            (id_condominio, id_receita, id_usuario_solicitante, created_at)
+          VALUES (:id_condominio, :id_receita, :id_usuario_solicitante, now())`,
+        { replacements: { id_condominio: idCondominio, id_receita: idReceita, id_usuario_solicitante: idUsuarioSolicitante } }
+      );
+
+      res.status(200).json({ success: true, message: 'Solicitação enviada ao síndico.' });
+
+      waitUntil((async () => {
+        try {
+          const valorTotal = Number(receita.valor || 0) + Number(receita.valor_fundo_reserva || 0);
+          const competenciaFormatada = receita.competencia
+            ? new Date(receita.competencia).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })
+            : '';
+
+          await despacharEmail({
+            _ref: `2via_boleto_${idCondominio}_${idReceita}`,
+            template: 'solicitacao_2via_boleto',
+            emails: emailsGestores,
+            solicitacao: {
+              morador_nome: receita.morador_nome || '',
+              unidade: receita.unidade_bloco || '',
+              competencia: competenciaFormatada,
+              valor: valorTotal,
+              condominio_nome: receita.condominio_nome || '',
+            },
+          });
+        } catch (emailErr) {
+          console.error('[solicitar2ViaBoleto] Erro ao enviar e-mail:', emailErr?.message);
+        }
+      })());
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao solicitar 2ª via.', detail: error.message });
+    }
+  }
+
   async consolidadoReceitas(req, res) {
     try {
       const idCondominio = this._toInt(req.id_condominio, null);

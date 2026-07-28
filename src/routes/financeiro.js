@@ -124,6 +124,14 @@ router.delete(
   controller.excluirReceita.bind(controller)
 );
 
+router.post(
+  '/receitas/:id/solicitar-2via',
+  auth,
+  [param('id').isInt({ min: 1 }).withMessage('id inválido.')],
+  validate,
+  controller.solicitar2ViaBoleto.bind(controller)
+);
+
 router.get(
   '/receita-consolidado',
   auth,
