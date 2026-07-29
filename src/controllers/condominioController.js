@@ -7734,19 +7734,34 @@ class CondominioController {
       // Código de 6 dígitos para exibição no e-mail — válido por 10 minutos
       const otpCode = String(Math.floor(100000 + Math.random() * 900000));
       const emailUsuario = this._normalizarEmailOuNull(usuario.email);
-      if (emailUsuario) {
-        // Limpa OTPs expirados deste email antes de gravar o novo
-        const existing = recoveryOtpStore.get(emailUsuario);
-        if (!existing || Date.now() > existing.expiresAt) {
-          recoveryOtpStore.delete(emailUsuario);
+      const idUsuarioLookup = this._toInt(usuario.id, null);
+      const idCondominioLookup = this._toInt(usuario.id_condominio, null);
+      const codeHashLookup = await bcrypt.hash(otpCode, 10);
+      const expiresAtLookup = new Date(Date.now() + RECOVERY_OTP_TTL_MS);
+
+      // Persistido em tb_recovery_tokens (não em memória) — precisa sobreviver
+      // entre esta requisição e a de verificação, que pode cair numa instância
+      // serverless diferente na Vercel.
+      await postgres.query(
+        `DELETE FROM "condominio-bh".tb_recovery_tokens WHERE id_usuario = :id_usuario AND consumed_at IS NULL`,
+        { replacements: { id_usuario: idUsuarioLookup }, type: QueryTypes.DELETE }
+      );
+
+      await postgres.query(
+        `INSERT INTO "condominio-bh".tb_recovery_tokens
+           (id_usuario, id_condominio, code_hash, invite_token, expires_at, attempts, created_at, updated_at)
+         VALUES (:id_usuario, :id_condominio, :code_hash, :invite_token, :expires_at, 0, NOW(), NOW())`,
+        {
+          replacements: {
+            id_usuario: idUsuarioLookup,
+            id_condominio: idCondominioLookup,
+            code_hash: codeHashLookup,
+            invite_token: inviteToken,
+            expires_at: expiresAtLookup
+          },
+          type: QueryTypes.INSERT
         }
-        recoveryOtpStore.set(emailUsuario, {
-          code: otpCode,
-          id_usuario: this._toInt(usuario.id, null),
-          invite_token: inviteToken,
-          expiresAt: Date.now() + RECOVERY_OTP_TTL_MS
-        });
-      }
+      );
 
       const nomeCompleto = this._normalizarNomeCapitalizado(`${usuario.nome || ''} ${usuario.sobrenome || ''}`.trim()) || null;
       const nomeCondominio = this._normalizarTextoOuNull(usuario.nome_condominio);
@@ -7798,22 +7813,45 @@ class CondominioController {
         return res.status(400).json({ success: false, message: 'Campos email e code são obrigatórios.' });
       }
 
-      const entry = recoveryOtpStore.get(email);
+      const MAX_ATTEMPTS_VERIFY = 5;
+
+      const [entry] = await postgres.query(
+        `SELECT rt.id, rt.code_hash, rt.invite_token, rt.expires_at, rt.attempts
+           FROM "condominio-bh".tb_recovery_tokens rt
+           JOIN "condominio-bh"."tb-usuarios" tu ON tu.id = rt.id_usuario
+          WHERE lower(tu.email) = :email
+            AND rt.consumed_at IS NULL
+          ORDER BY rt.created_at DESC LIMIT 1`,
+        { replacements: { email }, type: QueryTypes.SELECT }
+      );
 
       if (!entry) {
         return res.status(422).json({ success: false, message: 'Código inválido ou expirado.' });
       }
 
-      if (Date.now() > entry.expiresAt) {
-        recoveryOtpStore.delete(email);
+      if (new Date(entry.expires_at) < new Date()) {
         return res.status(422).json({ success: false, message: 'Código expirado. Solicite um novo.' });
       }
 
-      if (entry.code !== code) {
+      if (entry.attempts >= MAX_ATTEMPTS_VERIFY) {
+        return res.status(429).json({ success: false, message: 'Limite de tentativas atingido. Solicite um novo código.' });
+      }
+
+      // Incrementa tentativas antes de validar (evita timing attack)
+      await postgres.query(
+        `UPDATE "condominio-bh".tb_recovery_tokens SET attempts = attempts + 1, updated_at = NOW() WHERE id = :id`,
+        { replacements: { id: entry.id }, type: QueryTypes.UPDATE }
+      );
+
+      const codeValido = await bcrypt.compare(code, entry.code_hash);
+      if (!codeValido) {
         return res.status(422).json({ success: false, message: 'Código incorreto.' });
       }
 
-      recoveryOtpStore.delete(email);
+      await postgres.query(
+        `UPDATE "condominio-bh".tb_recovery_tokens SET consumed_at = NOW(), updated_at = NOW() WHERE id = :id`,
+        { replacements: { id: entry.id }, type: QueryTypes.UPDATE }
+      );
 
       return res.status(200).json({
         success: true,
