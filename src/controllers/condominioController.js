@@ -7664,6 +7664,8 @@ class CondominioController {
 
   async authRecoveryLookup(req, res) {
     try {
+      console.log(`[authRecoveryLookup] DIAG chamada recebida em ${new Date().toISOString()} login=${String(req.body?.login || '').slice(0, 3)}*** ip=${req.ip || req.headers['x-forwarded-for'] || 'desconhecido'}`);
+
       const loginRaw = this._normalizarTextoOuNull(req.body?.login);
       if (!loginRaw) {
         return res.status(400).json({
