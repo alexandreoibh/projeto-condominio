@@ -386,7 +386,7 @@ class CondominioController {
     }
 
     const idPerfilToken = this._toInt(req.IdPerfil, null);
-    if (idPerfilToken === 1 || idPerfilToken === 3) {
+    if ([1, 3, 5, 54].includes(idPerfilToken)) {
       return true;
     }
 
@@ -421,7 +421,7 @@ class CondominioController {
     }
 
     const idPerfilDb = this._toInt(usuario[0].tipo_perfil_id, null);
-    return idPerfilDb === 1 || idPerfilDb === 3;
+    return [1, 3, 5, 54].includes(idPerfilDb);
   }
 
   _podeGerenciarPermissoesMenu(req) {
