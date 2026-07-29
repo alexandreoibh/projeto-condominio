@@ -10268,6 +10268,15 @@ class CondominioController {
         null
       );
 
+      const avisarPortaria =
+        req.body.avisar_portaria === true ||
+        req.body.avisar_portaria === 'true' ||
+        req.body.avisar_portaria === 1;
+      const avisarColaborador =
+        req.body.avisar_colaborador === true ||
+        req.body.avisar_colaborador === 'true' ||
+        req.body.avisar_colaborador === 1;
+
       const transaction = await postgres.transaction();
       let update = null;
 
@@ -10488,6 +10497,72 @@ class CondominioController {
             });
           } catch (emailErr) {
             console.error('[emailDispatch] Erro status reserva:', emailErr?.message);
+          }
+        })());
+      }
+
+      // Aviso a Portaria/Colaborador — somente quando o tratamento é aprovação e ao menos uma flag veio true
+      if (idStatus === 3 && (avisarPortaria || avisarColaborador)) {
+        waitUntil((async () => {
+          try {
+            const perfisAvisar = [];
+            if (avisarPortaria) perfisAvisar.push(5);
+            if (avisarColaborador) perfisAvisar.push(54);
+
+            const destinatarios = await postgres.query(
+              `SELECT DISTINCT u.email
+                 FROM "condominio-bh"."tb-usuarios" u
+                WHERE u.id_condominio = :id_condominio
+                  AND LOWER(COALESCE(u.status, '')) = 'ativo'
+                  AND u.tipo_perfil_id IN (:perfis)
+                  AND u.email IS NOT NULL AND u.email <> ''`,
+              {
+                replacements: { id_condominio: idCondominioToken, perfis: perfisAvisar },
+                type: QueryTypes.SELECT
+              }
+            );
+
+            const emails = destinatarios.map((d) => d.email).filter(Boolean);
+            if (emails.length === 0) return;
+
+            const [dadosReserva] = await postgres.query(
+              `SELECT tu.nome, tu.email AS email_solicitante, tu.apartamento, tu.bloco,
+                      te.nome AS espaco_nome,
+                      tc.nome AS condominio_nome,
+                      ea.data_agendamento, ea.tratamento_observacao
+                 FROM "condominio-bh".tb_espaco_agenda ea
+                 JOIN "condominio-bh"."tb-usuarios" tu ON tu.id = ea.id_usuario
+                 JOIN "condominio-bh".tb_espaco te ON te.id = ea.id_espaco
+                 JOIN "condominio-bh"."tb-condominios" tc ON tc.id::text = ea.id_condominio::text
+                WHERE ea.id = :id_agenda LIMIT 1`,
+              { replacements: { id_agenda: idAgenda }, type: QueryTypes.SELECT }
+            );
+            if (!dadosReserva) return;
+
+            const dataFormatada = dadosReserva.data_agendamento
+              ? new Date(dadosReserva.data_agendamento).toISOString().slice(0, 10).split('-').reverse().join('/')
+              : '';
+
+            await despacharEmailReserva({
+              _id_agenda: idAgenda,
+              template: 'reserva_status',
+              emails,
+              solicitante: {
+                nome: dadosReserva.nome || '',
+                email: dadosReserva.email_solicitante || '',
+                apartamento: dadosReserva.apartamento || '',
+                bloco: dadosReserva.bloco || ''
+              },
+              reserva: {
+                sala_nome: dadosReserva.espaco_nome || '',
+                data: dataFormatada,
+                status: 'Aprovada',
+                justificativa: dadosReserva.tratamento_observacao || observacao || '',
+                condominio_nome: dadosReserva.condominio_nome || ''
+              }
+            });
+          } catch (emailErr) {
+            console.error('[emailDispatch] Erro aviso Portaria/Colaborador:', emailErr?.message);
           }
         })());
       }

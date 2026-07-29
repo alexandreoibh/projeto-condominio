@@ -2736,7 +2736,15 @@ router.patch(
 		body('id_usuario_tratamento')
 			.optional({ nullable: true, checkFalsy: true })
 			.isInt({ min: 1 })
-			.withMessage('Campo id_usuario_tratamento deve ser numérico e maior que zero.')
+			.withMessage('Campo id_usuario_tratamento deve ser numérico e maior que zero.'),
+		body('avisar_portaria')
+			.optional({ nullable: true })
+			.isBoolean()
+			.withMessage('Campo avisar_portaria deve ser boolean.'),
+		body('avisar_colaborador')
+			.optional({ nullable: true })
+			.isBoolean()
+			.withMessage('Campo avisar_colaborador deve ser boolean.')
 	],
 	validate,
 	controller.atualizarTratamentoAgenda.bind(controller)
@@ -2787,7 +2795,15 @@ router.put(
 		body('id_usuario_tratamento')
 			.optional({ nullable: true, checkFalsy: true })
 			.isInt({ min: 1 })
-			.withMessage('Campo id_usuario_tratamento deve ser numérico e maior que zero.')
+			.withMessage('Campo id_usuario_tratamento deve ser numérico e maior que zero.'),
+		body('avisar_portaria')
+			.optional({ nullable: true })
+			.isBoolean()
+			.withMessage('Campo avisar_portaria deve ser boolean.'),
+		body('avisar_colaborador')
+			.optional({ nullable: true })
+			.isBoolean()
+			.withMessage('Campo avisar_colaborador deve ser boolean.')
 	],
 	validate,
 	controller.atualizarTratamentoAgenda.bind(controller)
