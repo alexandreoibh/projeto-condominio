@@ -7664,8 +7664,6 @@ class CondominioController {
 
   async authRecoveryLookup(req, res) {
     try {
-      console.log(`[authRecoveryLookup] DIAG chamada recebida em ${new Date().toISOString()} login=${String(req.body?.login || '').slice(0, 3)}*** ip=${req.ip || req.headers['x-forwarded-for'] || 'desconhecido'}`);
-
       const loginRaw = this._normalizarTextoOuNull(req.body?.login);
       if (!loginRaw) {
         return res.status(400).json({
@@ -7767,20 +7765,6 @@ class CondominioController {
 
       const nomeCompleto = this._normalizarNomeCapitalizado(`${usuario.nome || ''} ${usuario.sobrenome || ''}`.trim()) || null;
       const nomeCondominio = this._normalizarTextoOuNull(usuario.nome_condominio);
-
-      waitUntil((async () => {
-        try {
-          await despacharEmailReserva({
-            _ref: `recovery_${usuario.id}`,
-            template: 'auth_recovery_token',
-            email: emailUsuario || '',
-            nome: nomeCompleto || '',
-            token: otpCode
-          });
-        } catch (emailErr) {
-          console.error('[emailDispatch] Erro recovery senha:', emailErr?.message);
-        }
-      })());
 
       return res.status(200).json({
         success: true,
