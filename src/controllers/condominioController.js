@@ -7195,6 +7195,16 @@ class CondominioController {
 
       const senha_hash = await bcrypt.hash(String(password), 10);
 
+      let tipoResolvido = tipo || null;
+      if (!tipoResolvido && tipo_perfil_id) {
+        const perfilRow = await postgres.query(
+          `SELECT nome FROM "condominio-bh".tb_sgw_perfil WHERE id = :id LIMIT 1`,
+          { replacements: { id: this._toInt(tipo_perfil_id, null) }, type: QueryTypes.SELECT }
+        );
+        tipoResolvido = perfilRow?.[0]?.nome ? this._normalizarPerfil(perfilRow[0].nome) : null;
+      }
+      tipoResolvido = tipoResolvido || 'morador';
+
       const insert = await postgres.query(
         `INSERT INTO "condominio-bh"."tb-usuarios" (
             id_condominio,
@@ -7264,7 +7274,7 @@ class CondominioController {
             genero: genero || null,
             tipo_morador: tipo_morador || null,
             tipo_perfil_id: this._toInt(tipo_perfil_id, null),
-            tipo: tipo || 'morador',
+            tipo: tipoResolvido,
             status: status || 'ativo',
             senha_hash,
             endereco_logradouro: endereco_logradouro || null,
@@ -8195,6 +8205,27 @@ class CondominioController {
         senha_hash = await bcrypt.hash(String(req.body.password), 10);
       }
 
+      const tipoPerfilIdNovo =
+        req.body.tipo_perfil_id !== undefined
+          ? this._toInt(req.body.tipo_perfil_id, null)
+          : this._toInt(atual.tipo_perfil_id, null);
+
+      let tipoResolvido = req.body.tipo !== undefined ? req.body.tipo || 'morador' : atual.tipo;
+
+      if (
+        req.body.tipo === undefined &&
+        tipoPerfilIdNovo &&
+        tipoPerfilIdNovo !== this._toInt(atual.tipo_perfil_id, null)
+      ) {
+        const perfilRow = await postgres.query(
+          `SELECT nome FROM "condominio-bh".tb_sgw_perfil WHERE id = :id LIMIT 1`,
+          { replacements: { id: tipoPerfilIdNovo }, type: QueryTypes.SELECT }
+        );
+        if (perfilRow && perfilRow.length > 0) {
+          tipoResolvido = this._normalizarPerfil(perfilRow[0].nome);
+        }
+      }
+
       const update = await postgres.query(
         `UPDATE "condominio-bh"."tb-usuarios"
             SET nome = :nome,
@@ -8246,7 +8277,7 @@ class CondominioController {
               req.body.tipo_perfil_id !== undefined
                 ? this._toInt(req.body.tipo_perfil_id, null)
                 : this._toInt(atual.tipo_perfil_id, null),
-            tipo: req.body.tipo !== undefined ? req.body.tipo || 'morador' : atual.tipo,
+            tipo: tipoResolvido,
             status: req.body.status !== undefined ? req.body.status || 'ativo' : atual.status,
             senha_hash,
             endereco_logradouro:
