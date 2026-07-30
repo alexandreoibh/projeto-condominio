@@ -3213,11 +3213,14 @@ class CondominioController {
             c.updated_at,
             COALESCE(
               (
-                SELECT ARRAY_AGG(cu.unidades_bloco ORDER BY cu.id)
+                SELECT json_agg(
+                         json_build_object('id', cu.id, 'bloco', cu.bloco, 'unidade', cu.unidades_bloco)
+                         ORDER BY cu.bloco ASC, cu.unidades_bloco ASC
+                       )
                   FROM "condominio-bh".tb_condominios_unidades cu
                  WHERE cu.id_condominio = c.id
               ),
-              ARRAY[]::varchar[]
+              '[]'::json
             ) AS unidades_bloco
           FROM "condominio-bh"."tb-condominios" c
           WHERE ${whereClause}
@@ -3271,11 +3274,14 @@ class CondominioController {
             c.updated_at,
             COALESCE(
               (
-                SELECT ARRAY_AGG(cu.unidades_bloco ORDER BY cu.id)
+                SELECT json_agg(
+                         json_build_object('id', cu.id, 'bloco', cu.bloco, 'unidade', cu.unidades_bloco)
+                         ORDER BY cu.bloco ASC, cu.unidades_bloco ASC
+                       )
                   FROM "condominio-bh".tb_condominios_unidades cu
                  WHERE cu.id_condominio = c.id
               ),
-              ARRAY[]::varchar[]
+              '[]'::json
             ) AS unidades_bloco
           FROM "condominio-bh"."tb-condominios" c
           WHERE c.id = :id
