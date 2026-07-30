@@ -3213,18 +3213,19 @@ class CondominioController {
             c.updated_at,
             COALESCE(
               (
-                SELECT jsonb_agg(
-                         jsonb_build_object(
-                           'id'::text, cu.id::int,
-                           'bloco'::text, cu.bloco::int,
-                           'unidade'::text, cu.unidades_bloco::text
+                SELECT array_to_json(
+                         array_agg(
+                           row_to_json(unidade_row)
+                           ORDER BY unidade_row.bloco, unidade_row.unidade
                          )
-                         ORDER BY cu.bloco ASC, cu.unidades_bloco ASC
                        )
-                  FROM "condominio-bh".tb_condominios_unidades cu
-                 WHERE cu.id_condominio = c.id
+                  FROM (
+                    SELECT cu.id, cu.bloco, cu.unidades_bloco AS unidade
+                      FROM "condominio-bh".tb_condominios_unidades cu
+                     WHERE cu.id_condominio = c.id
+                  ) unidade_row
               ),
-              '[]'::jsonb
+              '[]'::json
             ) AS unidades_bloco
           FROM "condominio-bh"."tb-condominios" c
           WHERE ${whereClause}
@@ -3278,18 +3279,19 @@ class CondominioController {
             c.updated_at,
             COALESCE(
               (
-                SELECT jsonb_agg(
-                         jsonb_build_object(
-                           'id'::text, cu.id::int,
-                           'bloco'::text, cu.bloco::int,
-                           'unidade'::text, cu.unidades_bloco::text
+                SELECT array_to_json(
+                         array_agg(
+                           row_to_json(unidade_row)
+                           ORDER BY unidade_row.bloco, unidade_row.unidade
                          )
-                         ORDER BY cu.bloco ASC, cu.unidades_bloco ASC
                        )
-                  FROM "condominio-bh".tb_condominios_unidades cu
-                 WHERE cu.id_condominio = c.id
+                  FROM (
+                    SELECT cu.id, cu.bloco, cu.unidades_bloco AS unidade
+                      FROM "condominio-bh".tb_condominios_unidades cu
+                     WHERE cu.id_condominio = c.id
+                  ) unidade_row
               ),
-              '[]'::jsonb
+              '[]'::json
             ) AS unidades_bloco
           FROM "condominio-bh"."tb-condominios" c
           WHERE c.id = :id
