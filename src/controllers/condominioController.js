@@ -7187,7 +7187,6 @@ class CondominioController {
         endereco_cep,
         apartamento,
         bloco,
-        id_unidade_predio,
         observacoes,
         path_avatar,
         password
@@ -7263,21 +7262,25 @@ class CondominioController {
       }
       tipoResolvido = tipoResolvido || 'morador';
 
-      const idUnidadePredioInformado = this._toInt(id_unidade_predio, null);
-      if (idUnidadePredioInformado) {
+      let idUnidadePredioResolvido = null;
+      if (apartamento && bloco) {
         const unidadeRow = await postgres.query(
           `SELECT id FROM "condominio-bh".tb_condominios_unidades
-            WHERE id = :id AND id_condominio = :id_condominio
+            WHERE id_condominio = :id_condominio
+              AND unidades_bloco = :apartamento
+              AND bloco = :bloco
             LIMIT 1`,
           {
-            replacements: { id: idUnidadePredioInformado, id_condominio: idCondominioToken },
+            replacements: {
+              id_condominio: idCondominioToken,
+              apartamento: String(apartamento).trim(),
+              bloco: this._toInt(bloco, null)
+            },
             type: QueryTypes.SELECT
           }
         );
-        if (!unidadeRow || unidadeRow.length === 0) {
-          return res.status(422).json({
-            message: 'id_unidade_predio inválido para este condomínio.'
-          });
+        if (unidadeRow && unidadeRow.length > 0) {
+          idUnidadePredioResolvido = this._toInt(unidadeRow[0].id, null);
         }
       }
 
@@ -7364,7 +7367,7 @@ class CondominioController {
             endereco_cep: endereco_cep || null,
             apartamento: apartamento || null,
             bloco: bloco || null,
-            id_unidade_predio: idUnidadePredioInformado,
+            id_unidade_predio: idUnidadePredioResolvido,
             observacoes: observacoes || null,
             path_avatar: path_avatar || null
           }
@@ -8305,26 +8308,32 @@ class CondominioController {
         }
       }
 
-      const idUnidadePredioNovo =
-        req.body.id_unidade_predio !== undefined
-          ? this._toInt(req.body.id_unidade_predio, null)
-          : this._toInt(atual.id_unidade_predio, null);
+      const apartamentoFinal =
+        req.body.apartamento !== undefined ? req.body.apartamento || null : atual.apartamento;
+      const blocoFinal = req.body.bloco !== undefined ? req.body.bloco || null : atual.bloco;
 
-      if (req.body.id_unidade_predio !== undefined && idUnidadePredioNovo) {
+      let idUnidadePredioNovo = this._toInt(atual.id_unidade_predio, null);
+      if (
+        (req.body.apartamento !== undefined || req.body.bloco !== undefined) &&
+        apartamentoFinal &&
+        blocoFinal
+      ) {
         const unidadeRow = await postgres.query(
           `SELECT id FROM "condominio-bh".tb_condominios_unidades
-            WHERE id = :id AND id_condominio = :id_condominio
+            WHERE id_condominio = :id_condominio
+              AND unidades_bloco = :apartamento
+              AND bloco = :bloco
             LIMIT 1`,
           {
-            replacements: { id: idUnidadePredioNovo, id_condominio: idCondominioToken },
+            replacements: {
+              id_condominio: idCondominioToken,
+              apartamento: String(apartamentoFinal).trim(),
+              bloco: this._toInt(blocoFinal, null)
+            },
             type: QueryTypes.SELECT
           }
         );
-        if (!unidadeRow || unidadeRow.length === 0) {
-          return res.status(422).json({
-            message: 'id_unidade_predio inválido para este condomínio.'
-          });
-        }
+        idUnidadePredioNovo = unidadeRow && unidadeRow.length > 0 ? this._toInt(unidadeRow[0].id, null) : null;
       }
 
       const update = await postgres.query(
@@ -8406,9 +8415,8 @@ class CondominioController {
               req.body.endereco_uf !== undefined ? req.body.endereco_uf || null : atual.endereco_uf,
             endereco_cep:
               req.body.endereco_cep !== undefined ? req.body.endereco_cep || null : atual.endereco_cep,
-            apartamento:
-              req.body.apartamento !== undefined ? req.body.apartamento || null : atual.apartamento,
-            bloco: req.body.bloco !== undefined ? req.body.bloco || null : atual.bloco,
+            apartamento: apartamentoFinal,
+            bloco: blocoFinal,
             id_unidade_predio: idUnidadePredioNovo,
             observacoes:
               req.body.observacoes !== undefined ? req.body.observacoes || null : atual.observacoes,
