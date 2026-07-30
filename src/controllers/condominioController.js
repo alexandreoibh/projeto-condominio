@@ -7187,6 +7187,7 @@ class CondominioController {
         endereco_cep,
         apartamento,
         bloco,
+        id_unidade_predio,
         observacoes,
         path_avatar,
         password
@@ -7262,6 +7263,24 @@ class CondominioController {
       }
       tipoResolvido = tipoResolvido || 'morador';
 
+      const idUnidadePredioInformado = this._toInt(id_unidade_predio, null);
+      if (idUnidadePredioInformado) {
+        const unidadeRow = await postgres.query(
+          `SELECT id FROM "condominio-bh".tb_condominios_unidades
+            WHERE id = :id AND id_condominio = :id_condominio
+            LIMIT 1`,
+          {
+            replacements: { id: idUnidadePredioInformado, id_condominio: idCondominioToken },
+            type: QueryTypes.SELECT
+          }
+        );
+        if (!unidadeRow || unidadeRow.length === 0) {
+          return res.status(422).json({
+            message: 'id_unidade_predio inválido para este condomínio.'
+          });
+        }
+      }
+
       const insert = await postgres.query(
         `INSERT INTO "condominio-bh"."tb-usuarios" (
             id_condominio,
@@ -7286,6 +7305,7 @@ class CondominioController {
             endereco_cep,
             apartamento,
             bloco,
+            id_unidade_predio,
             observacoes,
             path_avatar,
             created_at,
@@ -7313,12 +7333,13 @@ class CondominioController {
             :endereco_cep,
             :apartamento,
             :bloco,
+            :id_unidade_predio,
             :observacoes,
             :path_avatar,
             now(),
             now()
         )
-        RETURNING id, id_condominio, nome, sobrenome, cpf, email, telefone, path_avatar, tipo_morador, tipo_perfil_id, tipo, status, apartamento, bloco, created_at`,
+        RETURNING id, id_condominio, nome, sobrenome, cpf, email, telefone, path_avatar, tipo_morador, tipo_perfil_id, tipo, status, apartamento, bloco, id_unidade_predio, created_at`,
         {
           replacements: {
             id_condominio: idCondominioToken,
@@ -7343,6 +7364,7 @@ class CondominioController {
             endereco_cep: endereco_cep || null,
             apartamento: apartamento || null,
             bloco: bloco || null,
+            id_unidade_predio: idUnidadePredioInformado,
             observacoes: observacoes || null,
             path_avatar: path_avatar || null
           }
@@ -8283,6 +8305,28 @@ class CondominioController {
         }
       }
 
+      const idUnidadePredioNovo =
+        req.body.id_unidade_predio !== undefined
+          ? this._toInt(req.body.id_unidade_predio, null)
+          : this._toInt(atual.id_unidade_predio, null);
+
+      if (req.body.id_unidade_predio !== undefined && idUnidadePredioNovo) {
+        const unidadeRow = await postgres.query(
+          `SELECT id FROM "condominio-bh".tb_condominios_unidades
+            WHERE id = :id AND id_condominio = :id_condominio
+            LIMIT 1`,
+          {
+            replacements: { id: idUnidadePredioNovo, id_condominio: idCondominioToken },
+            type: QueryTypes.SELECT
+          }
+        );
+        if (!unidadeRow || unidadeRow.length === 0) {
+          return res.status(422).json({
+            message: 'id_unidade_predio inválido para este condomínio.'
+          });
+        }
+      }
+
       const update = await postgres.query(
         `UPDATE "condominio-bh"."tb-usuarios"
             SET nome = :nome,
@@ -8306,12 +8350,13 @@ class CondominioController {
                 endereco_cep = :endereco_cep,
                 apartamento = :apartamento,
                 bloco = :bloco,
+                id_unidade_predio = :id_unidade_predio,
                 observacoes = :observacoes,
                 path_avatar = :path_avatar,
                 updated_at = now()
           WHERE id = :id
             AND id_condominio = :id_condominio
-        RETURNING id, id_condominio, nome, sobrenome, cpf, email, telefone, path_avatar, tipo_morador, tipo_perfil_id, tipo, status, apartamento, bloco, created_at, updated_at`,
+        RETURNING id, id_condominio, nome, sobrenome, cpf, email, telefone, path_avatar, tipo_morador, tipo_perfil_id, tipo, status, apartamento, bloco, id_unidade_predio, created_at, updated_at`,
         {
           replacements: {
             id: idUsuario,
@@ -8364,6 +8409,7 @@ class CondominioController {
             apartamento:
               req.body.apartamento !== undefined ? req.body.apartamento || null : atual.apartamento,
             bloco: req.body.bloco !== undefined ? req.body.bloco || null : atual.bloco,
+            id_unidade_predio: idUnidadePredioNovo,
             observacoes:
               req.body.observacoes !== undefined ? req.body.observacoes || null : atual.observacoes,
             path_avatar:
@@ -8428,6 +8474,7 @@ class CondominioController {
             tu.endereco_cep,
             tu.apartamento,
             tu.bloco,
+            tu.id_unidade_predio,
             tu.observacoes,
             tu.created_at,
             tu.updated_at
