@@ -2085,7 +2085,11 @@ router.post(
 		body('path_avatar')
 			.optional({ nullable: true, checkFalsy: true })
 			.isLength({ max: 255 })
-			.withMessage('Campo path_avatar deve ter no máximo 255 caracteres.')
+			.withMessage('Campo path_avatar deve ter no máximo 255 caracteres.'),
+		body('id_unidade')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Campo id_unidade deve ser numérico e maior que zero.')
 	],
 	validate,
 	controller.criarUsuario.bind(controller)
@@ -2164,7 +2168,11 @@ router.put(
 		body('path_avatar')
 			.optional({ nullable: true, checkFalsy: true })
 			.isLength({ max: 255 })
-			.withMessage('Campo path_avatar deve ter no máximo 255 caracteres.')
+			.withMessage('Campo path_avatar deve ter no máximo 255 caracteres.'),
+		body('id_unidade')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Campo id_unidade deve ser numérico e maior que zero.')
 	],
 	validate,
 	controller.editarUsuario.bind(controller)
@@ -2243,7 +2251,11 @@ router.patch(
 		body('path_avatar')
 			.optional({ nullable: true, checkFalsy: true })
 			.isLength({ max: 255 })
-			.withMessage('Campo path_avatar deve ter no máximo 255 caracteres.')
+			.withMessage('Campo path_avatar deve ter no máximo 255 caracteres.'),
+		body('id_unidade')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Campo id_unidade deve ser numérico e maior que zero.')
 	],
 	validate,
 	controller.editarUsuario.bind(controller)

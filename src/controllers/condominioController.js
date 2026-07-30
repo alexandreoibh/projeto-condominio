@@ -7094,9 +7094,10 @@ class CondominioController {
       );
 
       const rows = await postgres.query(
-        `SELECT DISTINCT 
+        `SELECT DISTINCT
     tcu.id AS id_unidade,
     tcu.unidades_bloco ,
+    tcu.bloco AS bloco_unidade,
     tu.id,
     tu.id_condominio,
     tc.nome AS nome_condominio,
@@ -7120,14 +7121,13 @@ class CondominioController {
     tu.updated_at,
     tu.apartamento::int AS apartamento_ordem
     FROM "condominio-bh"."tb-condominios" tc
-    INNER JOIN "condominio-bh".tb_condominios_unidades tcu 
-        ON tc.id = tcu.id_condominio           
+    INNER JOIN "condominio-bh".tb_condominios_unidades tcu
+        ON tc.id = tcu.id_condominio
     LEFT JOIN "condominio-bh"."tb-usuarios" tu
-        ON tc.id::text = tu.id_condominio::text
-        AND tu.apartamento = tcu.unidades_bloco 
-        AND tu.id_condominio = :id_condominio  
+        ON tu.id_condominio = tc.id
+        AND tu.id_unidade_predio = tcu.id
     WHERE tc.id = :id_condominio
-    ORDER BY 
+    ORDER BY
     apartamento_ordem ASC,
     tu.nome ASC,
     tu.id ASC
@@ -7187,6 +7187,7 @@ class CondominioController {
         endereco_cep,
         apartamento,
         bloco,
+        id_unidade,
         observacoes,
         path_avatar,
         password
@@ -7263,7 +7264,29 @@ class CondominioController {
       tipoResolvido = tipoResolvido || 'morador';
 
       let idUnidadePredioResolvido = null;
-      if (apartamento && bloco) {
+      let apartamentoResolvido = apartamento || null;
+      let blocoResolvido = bloco || null;
+
+      const idUnidadeInformado = this._toInt(id_unidade, null);
+      if (idUnidadeInformado) {
+        const unidadeRow = await postgres.query(
+          `SELECT id, bloco, unidades_bloco FROM "condominio-bh".tb_condominios_unidades
+            WHERE id = :id AND id_condominio = :id_condominio
+            LIMIT 1`,
+          {
+            replacements: { id: idUnidadeInformado, id_condominio: idCondominioToken },
+            type: QueryTypes.SELECT
+          }
+        );
+        if (!unidadeRow || unidadeRow.length === 0) {
+          return res.status(422).json({
+            message: 'id_unidade inválido para este condomínio.'
+          });
+        }
+        idUnidadePredioResolvido = idUnidadeInformado;
+        apartamentoResolvido = unidadeRow[0].unidades_bloco;
+        blocoResolvido = String(unidadeRow[0].bloco);
+      } else if (apartamento && bloco) {
         const unidadeRow = await postgres.query(
           `SELECT id FROM "condominio-bh".tb_condominios_unidades
             WHERE id_condominio = :id_condominio
@@ -7365,8 +7388,8 @@ class CondominioController {
             endereco_cidade: endereco_cidade || null,
             endereco_uf: endereco_uf || null,
             endereco_cep: endereco_cep || null,
-            apartamento: apartamento || null,
-            bloco: bloco || null,
+            apartamento: apartamentoResolvido,
+            bloco: blocoResolvido,
             id_unidade_predio: idUnidadePredioResolvido,
             observacoes: observacoes || null,
             path_avatar: path_avatar || null
@@ -8308,12 +8331,35 @@ class CondominioController {
         }
       }
 
-      const apartamentoFinal =
+      let apartamentoFinal =
         req.body.apartamento !== undefined ? req.body.apartamento || null : atual.apartamento;
-      const blocoFinal = req.body.bloco !== undefined ? req.body.bloco || null : atual.bloco;
-
+      let blocoFinal = req.body.bloco !== undefined ? req.body.bloco || null : atual.bloco;
       let idUnidadePredioNovo = this._toInt(atual.id_unidade_predio, null);
-      if (
+
+      if (req.body.id_unidade !== undefined) {
+        const idUnidadeInformado = this._toInt(req.body.id_unidade, null);
+        if (idUnidadeInformado) {
+          const unidadeRow = await postgres.query(
+            `SELECT id, bloco, unidades_bloco FROM "condominio-bh".tb_condominios_unidades
+              WHERE id = :id AND id_condominio = :id_condominio
+              LIMIT 1`,
+            {
+              replacements: { id: idUnidadeInformado, id_condominio: idCondominioToken },
+              type: QueryTypes.SELECT
+            }
+          );
+          if (!unidadeRow || unidadeRow.length === 0) {
+            return res.status(422).json({
+              message: 'id_unidade inválido para este condomínio.'
+            });
+          }
+          idUnidadePredioNovo = idUnidadeInformado;
+          apartamentoFinal = unidadeRow[0].unidades_bloco;
+          blocoFinal = String(unidadeRow[0].bloco);
+        } else {
+          idUnidadePredioNovo = null;
+        }
+      } else if (
         (req.body.apartamento !== undefined || req.body.bloco !== undefined) &&
         apartamentoFinal &&
         blocoFinal
