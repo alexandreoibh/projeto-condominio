@@ -1461,6 +1461,7 @@ class CondominioController {
             SELECT DISTINCT
               cu.id AS id_unidade,
               cu.unidades_bloco,
+              cu.bloco as bloco_unidade,
               c.id AS id_condominio,
               c.nome AS nome_condominio,
               c.cnpj AS cnpj_condominio,
@@ -1496,6 +1497,7 @@ class CondominioController {
             GROUP BY
               cu.id,
               cu.unidades_bloco,
+              cu.bloco,
               c.id,
               c.nome,
               c.cnpj,
@@ -1535,6 +1537,7 @@ class CondominioController {
           SELECT
             ub.id_unidade,
             ub.unidades_bloco,
+            ub.bloco_unidade,
             ub.id_condominio,
             ub.nome_condominio,
             ub.cnpj_condominio,
@@ -1560,6 +1563,7 @@ class CondominioController {
           GROUP BY
             ub.id_unidade,
             ub.unidades_bloco,
+            ub.bloco_unidade,
             ub.id_condominio,
             ub.nome_condominio,
             ub.cnpj_condominio,
@@ -1912,7 +1916,8 @@ class CondominioController {
         `SELECT
             cu.id,
             cu.unidades_bloco,
-            cu.id_condominio
+            cu.id_condominio,
+            cu.bloco
           FROM "condominio-bh".tb_condominios_unidades cu
           WHERE cu.id = :id_unidade
             AND cu.id_condominio = :id_condominio
@@ -1974,7 +1979,8 @@ class CondominioController {
             cr.created_at,
             cr.updated_at,
             cu.id AS id_unidade,
-            cu.unidades_bloco AS unidade_bloco
+            cu.unidades_bloco AS unidade_bloco,
+            cu.bloco AS unidade_bloco_torre,
           FROM "condominio-bh".tb_consumo_registros cr
           INNER JOIN "condominio-bh"."tb-usuarios" tu
             ON tu.id = cr.id_usuario
