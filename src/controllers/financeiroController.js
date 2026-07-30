@@ -209,11 +209,13 @@ class FinanceiroController {
              LEFT JOIN "condominio-bh".tb_condominios_unidades tcu
                ON tcu.id = r.id_unidade AND tcu.id_condominio = r.id_condominio
              LEFT JOIN (
-               SELECT DISTINCT ON (id_condominio, apartamento) *
+               SELECT DISTINCT ON (id_condominio, apartamento, bloco) *
                  FROM "condominio-bh"."tb-usuarios"
                 WHERE status = 'ativo'
-                ORDER BY id_condominio, apartamento, id
-             ) us ON us.id_condominio = tcu.id_condominio AND us.apartamento = tcu.unidades_bloco
+                ORDER BY id_condominio, apartamento, bloco, id
+             ) us ON us.id_condominio = tcu.id_condominio
+                 AND us.apartamento = tcu.unidades_bloco
+                 AND NULLIF(us.bloco, '')::int = tcu.bloco
             WHERE ${whereClause}
             ORDER BY ${orderByClause}
             LIMIT :limit OFFSET :offset`,
@@ -350,11 +352,13 @@ class FinanceiroController {
            LEFT JOIN "condominio-bh".tb_condominios_unidades tcu
              ON tcu.id = r.id_unidade AND tcu.id_condominio = rot.id_condominio
            LEFT JOIN (
-             SELECT DISTINCT ON (id_condominio, apartamento) *
+             SELECT DISTINCT ON (id_condominio, apartamento, bloco) *
                FROM "condominio-bh"."tb-usuarios"
               WHERE status = 'ativo'
-              ORDER BY id_condominio, apartamento, id
-           ) us ON us.id_condominio = tcu.id_condominio AND us.apartamento = tcu.unidades_bloco
+              ORDER BY id_condominio, apartamento, bloco, id
+           ) us ON us.id_condominio = tcu.id_condominio
+               AND us.apartamento = tcu.unidades_bloco
+               AND NULLIF(us.bloco, '')::int = tcu.bloco
           WHERE rot.id_condominio = :id_condominio
           ORDER BY rot.ativo DESC, rot.created_at DESC`,
         { replacements: { id_condominio: idCondominio }, type: QueryTypes.SELECT }
@@ -608,11 +612,13 @@ class FinanceiroController {
            LEFT JOIN "condominio-bh".tb_condominios_unidades tcu
              ON tcu.id = r.id_unidade AND tcu.id_condominio = r.id_condominio
            LEFT JOIN (
-             SELECT DISTINCT ON (id_condominio, apartamento) *
+             SELECT DISTINCT ON (id_condominio, apartamento, bloco) *
                FROM "condominio-bh"."tb-usuarios"
               WHERE status = 'ativo'
-              ORDER BY id_condominio, apartamento, id
-           ) us ON us.id_condominio = tcu.id_condominio AND us.apartamento = tcu.unidades_bloco
+              ORDER BY id_condominio, apartamento, bloco, id
+           ) us ON us.id_condominio = tcu.id_condominio
+               AND us.apartamento = tcu.unidades_bloco
+               AND NULLIF(us.bloco, '')::int = tcu.bloco
            LEFT JOIN "condominio-bh"."tb-condominios" c ON c.id = r.id_condominio
           WHERE r.id = :id AND r.id_condominio = :id_condominio`,
         { replacements: { id: idReceita, id_condominio: idCondominio }, type: QueryTypes.SELECT }
@@ -1455,11 +1461,13 @@ class FinanceiroController {
              FROM "condominio-bh".tb_fin_receitas r
              LEFT JOIN "condominio-bh".tb_condominios_unidades un ON un.id = r.id_unidade AND un.id_condominio = r.id_condominio
              LEFT JOIN (
-               SELECT DISTINCT ON (id_condominio, apartamento) *
+               SELECT DISTINCT ON (id_condominio, apartamento, bloco) *
                  FROM "condominio-bh"."tb-usuarios"
                 WHERE status = 'ativo'
-                ORDER BY id_condominio, apartamento, id
-             ) us ON us.id_condominio = un.id_condominio AND us.apartamento = un.unidades_bloco
+                ORDER BY id_condominio, apartamento, bloco, id
+             ) us ON us.id_condominio = un.id_condominio
+                 AND us.apartamento = un.unidades_bloco
+                 AND NULLIF(us.bloco, '')::int = un.bloco
             WHERE r.id_condominio = :id_condominio
               AND r.situacao = 'em_aberto'
               AND r.data_vencimento < CURRENT_DATE
@@ -1918,11 +1926,13 @@ class FinanceiroController {
                LEFT JOIN "condominio-bh".tb_condominios_unidades tcu
                  ON tcu.id = r.id_unidade AND tcu.id_condominio = r.id_condominio
                LEFT JOIN (
-                 SELECT DISTINCT ON (id_condominio, apartamento) *
+                 SELECT DISTINCT ON (id_condominio, apartamento, bloco) *
                    FROM "condominio-bh"."tb-usuarios"
                   WHERE status = 'ativo'
-                  ORDER BY id_condominio, apartamento, id
-               ) us ON us.id_condominio = tcu.id_condominio AND us.apartamento = tcu.unidades_bloco
+                  ORDER BY id_condominio, apartamento, bloco, id
+               ) us ON us.id_condominio = tcu.id_condominio
+                   AND us.apartamento = tcu.unidades_bloco
+                   AND NULLIF(us.bloco, '')::int = tcu.bloco
               WHERE r.id_condominio = :id_condominio AND r.situacao != 'cancelado'
               UNION ALL
              SELECT 'despesa' AS tipo, d.id, d.descricao, d.categoria, d.valor, NULL::numeric AS valor_fundo_reserva,
@@ -1982,11 +1992,13 @@ class FinanceiroController {
              FROM "condominio-bh".tb_fin_receitas r
              LEFT JOIN "condominio-bh".tb_condominios_unidades un ON un.id = r.id_unidade AND un.id_condominio = r.id_condominio
              LEFT JOIN (
-               SELECT DISTINCT ON (id_condominio, apartamento) *
+               SELECT DISTINCT ON (id_condominio, apartamento, bloco) *
                  FROM "condominio-bh"."tb-usuarios"
                 WHERE status = 'ativo'
-                ORDER BY id_condominio, apartamento, id
-             ) us ON us.id_condominio = un.id_condominio AND us.apartamento = un.unidades_bloco
+                ORDER BY id_condominio, apartamento, bloco, id
+             ) us ON us.id_condominio = un.id_condominio
+                 AND us.apartamento = un.unidades_bloco
+                 AND NULLIF(us.bloco, '')::int = un.bloco
             WHERE r.id_condominio = :id_condominio
               AND r.situacao = 'em_aberto'
               AND r.data_vencimento < CURRENT_DATE`,
@@ -2007,11 +2019,13 @@ class FinanceiroController {
              LEFT JOIN "condominio-bh".tb_fin_inadimplencia i ON i.id_receita = r.id
              LEFT JOIN "condominio-bh".tb_condominios_unidades un ON un.id = r.id_unidade AND un.id_condominio = r.id_condominio
              LEFT JOIN (
-               SELECT DISTINCT ON (id_condominio, apartamento) *
+               SELECT DISTINCT ON (id_condominio, apartamento, bloco) *
                  FROM "condominio-bh"."tb-usuarios"
                 WHERE status = 'ativo'
-                ORDER BY id_condominio, apartamento, id
-             ) us ON us.id_condominio = un.id_condominio AND us.apartamento = un.unidades_bloco
+                ORDER BY id_condominio, apartamento, bloco, id
+             ) us ON us.id_condominio = un.id_condominio
+                 AND us.apartamento = un.unidades_bloco
+                 AND NULLIF(us.bloco, '')::int = un.bloco
             WHERE r.id_condominio = :id_condominio
               AND r.situacao = 'em_aberto'
               AND r.data_vencimento < CURRENT_DATE
@@ -2066,11 +2080,13 @@ class FinanceiroController {
            LEFT JOIN "condominio-bh".tb_condominios_unidades tcu
              ON tcu.id = r.id_unidade AND tcu.id_condominio = r.id_condominio
            LEFT JOIN (
-             SELECT DISTINCT ON (id_condominio, apartamento) *
+             SELECT DISTINCT ON (id_condominio, apartamento, bloco) *
                FROM "condominio-bh"."tb-usuarios"
               WHERE status = 'ativo'
-              ORDER BY id_condominio, apartamento, id
-           ) u ON u.id_condominio = tcu.id_condominio AND u.apartamento = tcu.unidades_bloco
+              ORDER BY id_condominio, apartamento, bloco, id
+           ) u ON u.id_condominio = tcu.id_condominio
+               AND u.apartamento = tcu.unidades_bloco
+               AND NULLIF(u.bloco, '')::int = tcu.bloco
            LEFT JOIN "condominio-bh"."tb-condominios" c ON c.id::text = r.id_condominio::text
           WHERE r.id IN (:ids) AND r.id_condominio = :id_condominio AND r.situacao = 'em_aberto'`,
         { replacements: { ids: idsConsulta, id_condominio: idCondominio }, type: QueryTypes.SELECT }

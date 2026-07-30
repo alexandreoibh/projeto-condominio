@@ -449,15 +449,7 @@ class CondominioController {
           c.qtde_blocos,
           c.modelo_fatura,
           c.created_at,
-          c.updated_at,
-          COALESCE(
-            (
-              SELECT ARRAY_AGG(cu.unidades_bloco ORDER BY cu.id)
-                FROM "condominio-bh".tb_condominios_unidades cu
-               WHERE cu.id_condominio = c.id
-            ),
-            ARRAY[]::varchar[]
-          ) AS unidades_bloco
+          c.updated_at
         FROM "condominio-bh"."tb-condominios" c
        WHERE c.id = :id
        LIMIT 1`,
@@ -468,39 +460,74 @@ class CondominioController {
       }
     );
 
-    return rows && rows.length > 0 ? rows[0] : null;
-  }
+    if (!rows || rows.length === 0) {
+      return null;
+    }
 
-  async _sincronizarUnidadesCondominio(idCondominio, unidadesBloco, transaction) {
-    await postgres.query(
-      `DELETE FROM "condominio-bh".tb_condominios_unidades
-        WHERE id_condominio = :id_condominio`,
+    const unidades = await postgres.query(
+      `SELECT id, bloco, unidades_bloco AS unidade
+         FROM "condominio-bh".tb_condominios_unidades
+        WHERE id_condominio = :id_condominio
+        ORDER BY bloco ASC, unidades_bloco ASC`,
       {
         replacements: { id_condominio: idCondominio },
-        type: QueryTypes.DELETE,
+        type: QueryTypes.SELECT,
         transaction
       }
     );
 
-    for (const unidade of unidadesBloco) {
-      await postgres.query(
-        `INSERT INTO "condominio-bh".tb_condominios_unidades (
-            id_condominio,
-            unidades_bloco,
-            created_at
-          ) VALUES (
-            :id_condominio,
-            :unidades_bloco,
-            now()
-          )`,
-        {
-          replacements: {
-            id_condominio: idCondominio,
-            unidades_bloco: unidade
-          },
-          transaction
-        }
-      );
+    return { ...rows[0], unidades_bloco: unidades };
+  }
+
+  async _sincronizarUnidadesCondominio(idCondominio, unidadesBloco, qtdeBlocos, transaction) {
+    const totalBlocos = Math.max(this._toInt(qtdeBlocos, 1) || 1, 1);
+    const unidadesOrdenadas = [...unidadesBloco].sort((a, b) =>
+      a.localeCompare(b, 'pt-BR', { numeric: true, sensitivity: 'base' })
+    );
+
+    const existentes = await postgres.query(
+      `SELECT id, bloco, unidades_bloco
+         FROM "condominio-bh".tb_condominios_unidades
+        WHERE id_condominio = :id_condominio`,
+      {
+        replacements: { id_condominio: idCondominio },
+        type: QueryTypes.SELECT,
+        transaction
+      }
+    );
+
+    const chaveExistente = (bloco, unidade) => `${bloco}::${unidade}`;
+    const existentesPorChave = new Set(
+      existentes.map((row) => chaveExistente(this._toInt(row.bloco, null), row.unidades_bloco))
+    );
+
+    for (let bloco = 1; bloco <= totalBlocos; bloco += 1) {
+      for (const unidade of unidadesOrdenadas) {
+        const chave = chaveExistente(bloco, unidade);
+        if (existentesPorChave.has(chave)) continue;
+
+        await postgres.query(
+          `INSERT INTO "condominio-bh".tb_condominios_unidades (
+              id_condominio,
+              unidades_bloco,
+              bloco,
+              created_at
+            ) VALUES (
+              :id_condominio,
+              :unidades_bloco,
+              :bloco,
+              now()
+            )`,
+          {
+            replacements: {
+              id_condominio: idCondominio,
+              unidades_bloco: unidade,
+              bloco
+            },
+            transaction
+          }
+        );
+      }
     }
   }
 
@@ -3342,7 +3369,12 @@ class CondominioController {
       );
 
       const idCondominio = insert[0][0].id;
-      await this._sincronizarUnidadesCondominio(idCondominio, unidadesBloco, transaction);
+      await this._sincronizarUnidadesCondominio(
+        idCondominio,
+        unidadesBloco,
+        this._toInt(qtdeBlocosBody, null),
+        transaction
+      );
 
       const data = await this._buscarCondominioComUnidades(idCondominio, transaction);
       await transaction.commit();
@@ -3465,7 +3497,16 @@ class CondominioController {
       );
 
       if (unidadesBlocoInformadas) {
-        await this._sincronizarUnidadesCondominio(id, unidadesBlocoInformadas, transaction);
+        const qtdeBlocosResolvida =
+          qtdeBlocosBody !== undefined
+            ? this._toInt(qtdeBlocosBody, null)
+            : this._toInt(registroAtual.qtde_blocos, null);
+        await this._sincronizarUnidadesCondominio(
+          id,
+          unidadesBlocoInformadas,
+          qtdeBlocosResolvida,
+          transaction
+        );
       }
 
       const data = await this._buscarCondominioComUnidades(id, transaction);

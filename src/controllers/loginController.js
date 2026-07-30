@@ -315,7 +315,9 @@ class Login {
            LEFT JOIN "condominio-bh"."tb-condominios" c
                ON c.id::text = tu.id_condominio::text
            LEFT JOIN "condominio-bh".tb_condominios_unidades tcu
-               ON tcu.id_condominio = tu.id_condominio AND tcu.unidades_bloco = tu.apartamento
+               ON tcu.id_condominio = tu.id_condominio
+              AND tcu.unidades_bloco = tu.apartamento
+              AND tcu.bloco = NULLIF(tu.bloco, '')::int
           WHERE (lower(tu.email) = :loginEmail OR tu.cpf = :loginCpf)
             AND tu.status in ('ativo','Ativo')
           LIMIT 1`,
