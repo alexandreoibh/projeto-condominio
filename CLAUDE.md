@@ -73,15 +73,19 @@ src/
 
 ## Perfis de acesso
 
-| Perfil | Descrição |
-|---|---|
-| Admin | Acesso total, gerencia permissões de menu |
-| Sindico | Gestor do condomínio |
-| Sub-Sindico | Gestor auxiliar |
-| Morador | Residente — acesso restrito |
-| Portaria | Controle de acesso/visitantes |
+| `tipo_perfil_id` | Perfil | Descrição |
+|---|---|---|
+| 1 | Admin | Acesso total, gerencia permissões de menu |
+| 2 | Morador | Residente — acesso restrito |
+| 3 | Sindico | Gestor do condomínio |
+| 4 | Sub-Sindico | Gestor auxiliar |
+| 5 | Portaria | Controle de acesso/visitantes |
+| 54 | Colaborador | Equipe de apoio do condomínio (limpeza, manutenção etc.) |
 
-Permissões de menu ficam na tabela `tb_sgw_perfil_menu`. O seed inicial está em `src/database/sql/seed-tb-sgw-perfil-menu-inicial.sql`.
+- Tabela de perfis: `"condominio-bh".tb_sgw_perfil` (id, nome, status) — apesar do nome "sgw", vive no schema `condominio-bh`.
+- `"condominio-bh"."tb-usuarios".tipo_perfil_id` referencia esse id. A coluna `tipo` (varchar) da mesma tabela guarda o nome do perfil normalizado (lowercase, sem acento — ex.: `'sindico'`, `'portaria'`) e **precisa ser mantida em sincronia manualmente**: `criarUsuario`/`editarUsuario` resolvem `tipo` a partir de `tipo_perfil_id` via SELECT em `tb_sgw_perfil` sempre que o front não envia `tipo` explicitamente.
+- Portaria e Colaborador têm acesso de leitura a dados de morador (nome/email/apartamento/bloco) nas listagens de agenda de espaços — ver `_podeVisualizarDadosMorador()` em `condominioController.js`.
+- Permissões de menu ficam na tabela `tb_sgw_perfil_menu`. O seed inicial está em `src/database/sql/seed-tb-sgw-perfil-menu-inicial.sql` (cobre só os perfis 1-5; Colaborador/54 foi adicionado depois, fora do seed).
 
 ## Padrão de rotas
 
@@ -106,6 +110,25 @@ Rotas especiais em `condominio.js`:
 - Schema das tabelas SGW (perfis/menu): `sgw` — ex: `sgw.tb_sgw_perfil_menu`
 - Schema das tabelas de condomínio (moradores, espaços, agenda): `"condominio-bh"` — ex: `"condominio-bh"."tb-usuarios"`, `"condominio-bh".tb_espaco`
 - O schema `"condominio-bh"` tem nomes de tabelas mistos (com e sem hifens), sempre usar aspas duplas quando necessário no SQL raw
+
+## Unidades por bloco (`tb_condominios_unidades`)
+
+Quando o síndico/admin cadastra ou edita um condomínio (`POST`/`PUT /api/condominio/condominios[/:id]`, `criarCondominio`/`editarCondominio` em `condominioController.js`), o backend gera automaticamente uma unidade (apartamento) para **cada bloco/torre** do condomínio, a partir de dois campos do body:
+
+- `qtde_blocos` (ou alias legado `qtde_bloco`): quantidade de blocos/torres.
+- `unidades_bloco`: array plano de strings — a lista-modelo de unidades a replicar em cada bloco (ex.: `["101", "102", "201"]`).
+
+O total de registros gerados é `qtde_blocos × unidades_bloco.length` em `"condominio-bh".tb_condominios_unidades` (colunas: `id`, `id_condominio`, `unidades_bloco` — o texto da unidade —, `bloco` int inteiro sequencial `1..qtde_blocos`, `created_at`). Cada combinação bloco×unidade tem seu próprio `id`, mesmo quando o texto se repete entre blocos (ex.: bloco 1 "101" e bloco 2 "101" são registros distintos) — esse `id` é a referência estável usada para vincular o morador à unidade (`tb_fin_receitas.id_unidade`, `loginController.js` resolvendo `id_unidade` no login).
+
+**Regra crítica: nunca recriar/apagar unidades já existentes.** `_sincronizarUnidadesCondominio()` faz upsert real — busca o que já existe por `(bloco, unidades_bloco)` e só insere as combinações que ainda faltam (ex.: síndico aumenta de 2 para 3 blocos → só o bloco 3 ganha registros novos; blocos 1 e 2 mantêm os mesmos IDs). Isso é essencial porque apagar e recriar quebraria vínculos já feitos (moradores, receitas financeiras). As unidades são ordenadas por texto (`localeCompare` com `numeric: true`, ex. "2" antes de "10") antes de distribuir por bloco.
+
+`_buscarCondominioComUnidades()`, `listarCondominios()` e `buscarCondominioPorId()` retornam `unidades_bloco` como array de objetos `{ id, bloco, unidade }` (não mais array de strings), ordenado por bloco e depois por texto — os três pontos de leitura de condomínio precisam ficar consistentes entre si sempre que esse formato mudar.
+
+**Cuidado com JSON agregado no Postgres via Sequelize:** `json_build_object` é variádico e, chamado como *prepared statement* (padrão do Sequelize), falha ao inferir tipo se os argumentos não tiverem cast explícito (erro real já visto em produção: `function json_build_object(unknown, integer, unknown, integer, unknown, character varying) does not exist`). Sempre castar explicitamente cada valor (`cu.id::int`, `cu.bloco::int`, `cu.unidades_bloco::text`) ao montar JSON agregado em SQL raw.
+
+**JOINs que casam morador por unidade precisam considerar `bloco`, não só o texto.** Como o mesmo texto de unidade agora pode existir em vários blocos, qualquer JOIN que resolve "o morador daquela unidade" comparando só `tb-usuarios.apartamento = tb_condominios_unidades.unidades_bloco` fica ambíguo — precisa também comparar bloco (`NULLIF(tu.bloco, '')::int = cu.bloco`, já que `tb-usuarios.bloco` é sempre texto e `tb_condominios_unidades.bloco` é `int4`). Esse padrão está em `financeiroController.js` (relatórios de receita/inadimplência) e `loginController.js` (resolução de `id_unidade` no login).
+
+Sem migration formal — `tb_condominios_unidades` (como `tb-condominios` e `tb-usuarios`) é gerenciada fora do fluxo de migrations do Sequelize.
 
 ## Estado em memória (não persistido)
 

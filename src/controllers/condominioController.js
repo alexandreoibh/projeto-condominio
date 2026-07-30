@@ -3213,18 +3213,18 @@ class CondominioController {
             c.updated_at,
             COALESCE(
               (
-                SELECT json_agg(
-                         json_build_object(
-                           'id', cu.id::int,
-                           'bloco', cu.bloco::int,
-                           'unidade', cu.unidades_bloco::text
+                SELECT jsonb_agg(
+                         jsonb_build_object(
+                           'id'::text, cu.id::int,
+                           'bloco'::text, cu.bloco::int,
+                           'unidade'::text, cu.unidades_bloco::text
                          )
                          ORDER BY cu.bloco ASC, cu.unidades_bloco ASC
                        )
                   FROM "condominio-bh".tb_condominios_unidades cu
                  WHERE cu.id_condominio = c.id
               ),
-              '[]'::json
+              '[]'::jsonb
             ) AS unidades_bloco
           FROM "condominio-bh"."tb-condominios" c
           WHERE ${whereClause}
@@ -3278,18 +3278,18 @@ class CondominioController {
             c.updated_at,
             COALESCE(
               (
-                SELECT json_agg(
-                         json_build_object(
-                           'id', cu.id::int,
-                           'bloco', cu.bloco::int,
-                           'unidade', cu.unidades_bloco::text
+                SELECT jsonb_agg(
+                         jsonb_build_object(
+                           'id'::text, cu.id::int,
+                           'bloco'::text, cu.bloco::int,
+                           'unidade'::text, cu.unidades_bloco::text
                          )
                          ORDER BY cu.bloco ASC, cu.unidades_bloco ASC
                        )
                   FROM "condominio-bh".tb_condominios_unidades cu
                  WHERE cu.id_condominio = c.id
               ),
-              '[]'::json
+              '[]'::jsonb
             ) AS unidades_bloco
           FROM "condominio-bh"."tb-condominios" c
           WHERE c.id = :id
