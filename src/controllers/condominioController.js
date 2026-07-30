@@ -3214,7 +3214,11 @@ class CondominioController {
             COALESCE(
               (
                 SELECT json_agg(
-                         json_build_object('id', cu.id, 'bloco', cu.bloco, 'unidade', cu.unidades_bloco)
+                         json_build_object(
+                           'id', cu.id::int,
+                           'bloco', cu.bloco::int,
+                           'unidade', cu.unidades_bloco::text
+                         )
                          ORDER BY cu.bloco ASC, cu.unidades_bloco ASC
                        )
                   FROM "condominio-bh".tb_condominios_unidades cu
@@ -3275,7 +3279,11 @@ class CondominioController {
             COALESCE(
               (
                 SELECT json_agg(
-                         json_build_object('id', cu.id, 'bloco', cu.bloco, 'unidade', cu.unidades_bloco)
+                         json_build_object(
+                           'id', cu.id::int,
+                           'bloco', cu.bloco::int,
+                           'unidade', cu.unidades_bloco::text
+                         )
                          ORDER BY cu.bloco ASC, cu.unidades_bloco ASC
                        )
                   FROM "condominio-bh".tb_condominios_unidades cu
