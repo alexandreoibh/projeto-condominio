@@ -861,6 +861,20 @@ router.patch(
 	validate,
 	controller.editarCondominio.bind(controller)
 );
+router.get('/whatsapp/instancia', auth, controller.obterInstanciaWhatsapp.bind(controller));
+router.post(
+	'/whatsapp/instancia',
+	auth,
+	[
+		body('instance_name').notEmpty().withMessage('instance_name é obrigatório.'),
+		body('status').isIn(['DESCONECTADO', 'CONECTANDO', 'CONECTADO']).withMessage('status inválido.'),
+		body('telefone').optional({ nullable: true, checkFalsy: true }).isString(),
+		body('nome_perfil').optional({ nullable: true, checkFalsy: true }).isString(),
+	],
+	validate,
+	controller.salvarInstanciaWhatsapp.bind(controller)
+);
+
 router.get('/menu', auth, controller.listarMenuDinamico.bind(controller));
 router.get('/dashboard/tipos', auth, controller.listarDashboardTipos.bind(controller));
 router.get('/dashboard/empresas', auth, controller.listarDashboardEmpresas.bind(controller));

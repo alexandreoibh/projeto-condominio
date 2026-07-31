@@ -147,6 +147,7 @@ Três Maps no `CondominioController` sobrevivem apenas enquanto o processo estiv
   - Tipos de evento válidos: `encomenda`, `reuniao`, `aviso`, `ocorrencia`, `financeiro`, `visitante`
 - **Vercel Blob** (`@vercel/blob`) — armazenamento de avatares/imagens de consumo/dashboard
 - **emailDispatchService** — envia para URL externa configurada em `EMAIL_DISPATCH_URL`; retry automático 3× em erros 5xx, sem retry em 4xx
+- **whatsappDispatchService** — envia mensagens de WhatsApp via URL externa configurada em `WHATSAPP_DISPATCH_URL` (endpoint PHP `public-whatsapp-dispatch.php`, que fala com a Evolution API); mesmo padrão de retry do `emailDispatchService`. Infraestrutura pronta (`despacharWhatsapp()`), ainda sem chamadas automáticas nos fluxos existentes (convite, cobrança, reunião, lembrete) — integração call-site-a-call-site é trabalho futuro. Persistência do status de conexão por condomínio fica em `"condominio-bh".tb_whatsapp_instancia`, exposta via `GET|POST /api/condominio/whatsapp/instancia`.
 - **bcryptjs** — hash de senhas
 - **node-fetch** — chamadas HTTP internas
 - **node-cron** — agendamento do lembrete de reservas (carregado em `server.js`)
@@ -165,6 +166,8 @@ Três Maps no `CondominioController` sobrevivem apenas enquanto o processo estiv
 | `SERVICE_INVITE_TOKEN_SECRET` | Secret para tokens de convite |
 | `EMAIL_DISPATCH_URL` | URL do serviço de despacho de e-mails |
 | `PUBLIC_EMAIL_DISPATCH_KEY` | Bearer token do serviço de e-mails |
+| `WHATSAPP_DISPATCH_URL` | URL do serviço de despacho de WhatsApp (`public-whatsapp-dispatch.php`, front PHP/Evolution API) |
+| `PUBLIC_WHATSAPP_DISPATCH_KEY` | Bearer token do serviço de WhatsApp — opcional; se ausente, usa `PUBLIC_EMAIL_DISPATCH_KEY` como fallback |
 
 ## Convenções
 
@@ -172,5 +175,6 @@ Três Maps no `CondominioController` sobrevivem apenas enquanto o processo estiv
 - Métodos auxiliares privados do controller começam com `_` (ex: `_toInt`, `_parseDataAgendamento`, `_normalizarPerfil`).
 - Datas aceitam formato ISO 8601 ou `dd/mm/aaaa` — parsing centralizado em `_parseDataAgendamento()` (CondominioController) e `_parseDataHora()` (ReuniaoController).
 - Paginação padrão: `page` + `pageSize` como query params; sem eles retorna todos os registros.
-- Operações com efeitos colaterais assíncronos (push, e-mail) são disparadas via `setImmediate()` após a resposta HTTP já ter sido enviada.
+- Operações com efeitos colaterais assíncronos (push, e-mail) são disparadas via `waitUntil` de `@vercel/functions` após a resposta HTTP já ter sido enviada — necessário porque a função serverless (Vercel) pode ser suspensa assim que a resposta é enviada; `setImmediate()` puro não garante execução (ver `README.md` para detalhes).
 - Soft delete em reuniões: `DELETE /api/reuniao/:id` muda status para `CANCELADA`, não remove o registro.
+- `id_condominio` normalmente é extraído do token. Exceção: quando o usuário autenticado é Admin (`IdPerfil === 1`), vários endpoints de `condominioController.js` aceitam um `id_condominio` explícito no body/query para operar em nome de outro condomínio ("Admin override") — inclusive os endpoints de instância WhatsApp.

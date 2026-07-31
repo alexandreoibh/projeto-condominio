@@ -3718,6 +3718,101 @@ class CondominioController {
     }
   }
 
+  async obterInstanciaWhatsapp(req, res) {
+    try {
+      const idPerfilToken = this._toInt(req.IdPerfil, null);
+      const ehAdmin = idPerfilToken === 1;
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      const idCondominioPayload = this._toInt(req.query.id_condominio, null);
+      const idCondominioRef = (ehAdmin && idCondominioPayload) ? idCondominioPayload : idCondominioToken;
+
+      if (!idCondominioRef) {
+        return res.status(403).json({ message: 'Token sem id_condominio.' });
+      }
+
+      const rows = await postgres.query(
+        `SELECT id_condominio, instance_name, status, telefone, nome_perfil, updated_at AS atualizado_em
+           FROM "condominio-bh".tb_whatsapp_instancia
+          WHERE id_condominio = :id_condominio`,
+        { replacements: { id_condominio: idCondominioRef }, type: QueryTypes.SELECT }
+      );
+
+      if (!rows.length) {
+        return res.status(200).json({ instancia: null });
+      }
+
+      return res.status(200).json({ instancia: rows[0] });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao obter instância do WhatsApp.',
+        detail: error.message
+      });
+    }
+  }
+
+  async salvarInstanciaWhatsapp(req, res) {
+    try {
+      const idPerfilToken = this._toInt(req.IdPerfil, null);
+      const ehAdmin = idPerfilToken === 1;
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      const idCondominioPayload = this._toInt(req.body.id_condominio, null);
+      const idCondominioRef = (ehAdmin && idCondominioPayload) ? idCondominioPayload : idCondominioToken;
+
+      if (!idCondominioRef) {
+        return res.status(403).json({ message: 'Token sem id_condominio.' });
+      }
+
+      const instanceName = String(req.body.instance_name || '').trim();
+      const status = req.body.status;
+      const telefone = req.body.telefone ? String(req.body.telefone).trim() : null;
+      const nomePerfil = req.body.nome_perfil ? String(req.body.nome_perfil).trim() : null;
+
+      const replacements = {
+        id_condominio: idCondominioRef,
+        instance_name: instanceName,
+        status,
+        telefone,
+        nome_perfil: nomePerfil,
+      };
+
+      const [, updatedRows] = await postgres.query(
+        `UPDATE "condominio-bh".tb_whatsapp_instancia
+            SET instance_name = :instance_name,
+                status = :status,
+                telefone = :telefone,
+                nome_perfil = :nome_perfil,
+                updated_at = NOW()
+          WHERE id_condominio = :id_condominio`,
+        { replacements, type: QueryTypes.UPDATE }
+      );
+
+      if (updatedRows === 0) {
+        await postgres.query(
+          `INSERT INTO "condominio-bh".tb_whatsapp_instancia
+             (id_condominio, instance_name, status, telefone, nome_perfil, created_at, updated_at)
+           VALUES (:id_condominio, :instance_name, :status, :telefone, :nome_perfil, NOW(), NOW())`,
+          { replacements, type: QueryTypes.INSERT }
+        );
+      }
+
+      return res.status(200).json({
+        message: 'Instância do WhatsApp salva com sucesso.',
+        instancia: {
+          id_condominio: idCondominioRef,
+          instance_name: instanceName,
+          status,
+          telefone,
+          nome_perfil: nomePerfil,
+        }
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao salvar instância do WhatsApp.',
+        detail: error.message
+      });
+    }
+  }
+
   async listarDashboardTipos(req, res) {
     try {
       const idPerfilToken = this._toInt(req.IdPerfil, null);
