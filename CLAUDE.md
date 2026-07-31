@@ -30,13 +30,15 @@ src/
 │   ├── reuniaoController.js    # Controlador isolado para o domínio de reuniões
 │   ├── usuarioController.js    # Push tokens, perfil de usuário
 │   ├── loginController.js      # Login / autenticação
-│   └── pdfController.js        # Geração de PDFs
+│   ├── pdfController.js        # Geração de PDFs
+│   └── whatsappController.js   # Instância única global de WhatsApp (Evolution API)
 ├── routes/
 │   ├── condominio.js           # /api/condominio/*
 │   ├── login.js                # /api/login
 │   ├── usuario.js              # /api/usuario/*
 │   ├── recovery.js             # /api/auth/recovery/*
-│   └── reuniao.js              # /api/reuniao/*
+│   ├── reuniao.js              # /api/reuniao/*
+│   └── whatsapp.js             # /api/whatsapp/* (fora do prefixo /condominio — registro único, não por condomínio)
 ├── database/
 │   ├── postgres.js             # Instância Sequelize (singleton)
 │   ├── config_postgres.js      # Config de conexão lida do .env
@@ -147,7 +149,7 @@ Três Maps no `CondominioController` sobrevivem apenas enquanto o processo estiv
   - Tipos de evento válidos: `encomenda`, `reuniao`, `aviso`, `ocorrencia`, `financeiro`, `visitante`
 - **Vercel Blob** (`@vercel/blob`) — armazenamento de avatares/imagens de consumo/dashboard
 - **emailDispatchService** — envia para URL externa configurada em `EMAIL_DISPATCH_URL`; retry automático 3× em erros 5xx, sem retry em 4xx
-- **whatsappDispatchService** — envia mensagens de WhatsApp via URL externa configurada em `WHATSAPP_DISPATCH_URL` (endpoint PHP `public-whatsapp-dispatch.php`, que fala com a Evolution API); mesmo padrão de retry do `emailDispatchService`. Infraestrutura pronta (`despacharWhatsapp()`), ainda sem chamadas automáticas nos fluxos existentes (convite, cobrança, reunião, lembrete) — integração call-site-a-call-site é trabalho futuro. Persistência do status de conexão por condomínio fica em `"condominio-bh".tb_whatsapp_instancia`, exposta via `GET|POST /api/condominio/whatsapp/instancia`.
+- **whatsappDispatchService** — envia mensagens de WhatsApp via URL externa configurada em `WHATSAPP_DISPATCH_URL` (endpoint PHP `public-whatsapp-dispatch.php`, que fala com a Evolution API); mesmo padrão de retry do `emailDispatchService`. Payload `{ telefones, mensagem }` — **sem** `id_condominio`, pois existe apenas **uma instância WhatsApp para o sistema inteiro** (não por condomínio). Infraestrutura pronta (`despacharWhatsapp()`), ainda sem chamadas automáticas nos fluxos existentes (convite, cobrança, reunião, lembrete) — integração call-site-a-call-site é trabalho futuro. Persistência do status de conexão fica em `"condominio-bh".tb_whatsapp_instancia` (registro único, sempre `id = 1`), exposta via `GET|POST /api/whatsapp/instancia` (fora do prefixo `/api/condominio`, `whatsappController.js`/`routes/whatsapp.js`).
 - **bcryptjs** — hash de senhas
 - **node-fetch** — chamadas HTTP internas
 - **node-cron** — agendamento do lembrete de reservas (carregado em `server.js`)
@@ -177,4 +179,5 @@ Três Maps no `CondominioController` sobrevivem apenas enquanto o processo estiv
 - Paginação padrão: `page` + `pageSize` como query params; sem eles retorna todos os registros.
 - Operações com efeitos colaterais assíncronos (push, e-mail) são disparadas via `waitUntil` de `@vercel/functions` após a resposta HTTP já ter sido enviada — necessário porque a função serverless (Vercel) pode ser suspensa assim que a resposta é enviada; `setImmediate()` puro não garante execução (ver `README.md` para detalhes).
 - Soft delete em reuniões: `DELETE /api/reuniao/:id` muda status para `CANCELADA`, não remove o registro.
-- `id_condominio` normalmente é extraído do token. Exceção: quando o usuário autenticado é Admin (`IdPerfil === 1`), vários endpoints de `condominioController.js` aceitam um `id_condominio` explícito no body/query para operar em nome de outro condomínio ("Admin override") — inclusive os endpoints de instância WhatsApp.
+- `id_condominio` normalmente é extraído do token. Exceção: quando o usuário autenticado é Admin (`IdPerfil === 1`), vários endpoints de `condominioController.js` aceitam um `id_condominio` explícito no body/query para operar em nome de outro condomínio ("Admin override").
+- A instância de WhatsApp (`whatsappController.js`, `"condominio-bh".tb_whatsapp_instancia`) é **global**, não por condomínio — não segue o padrão de `id_condominio` do token; qualquer usuário autenticado lê/grava o mesmo registro único (`id = 1`).

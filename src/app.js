@@ -21,6 +21,7 @@ const recoveryRoute = require('./routes/recovery');
 const reuniaoRoute = require('./routes/reuniao');
 const financeiroRoute = require('./routes/financeiro');
 const manutencaoRoute = require('./routes/manutencao');
+const whatsappRoute = require('./routes/whatsapp');
 // ******************Gestor fim********************************************* 
 
 
@@ -40,6 +41,7 @@ app.use('/api/auth/recovery', recoveryRoute);
 app.use('/api/reuniao', reuniaoRoute);
 app.use('/api/condominio/financeiro', financeiroRoute);
 app.use('/api/condominio/manutencao', manutencaoRoute);
+app.use('/api/whatsapp', whatsappRoute);
 
 app.use('/login', loginRoute);
 app.use('/service/back-cond.php', loginRoute);

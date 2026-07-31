@@ -35,7 +35,6 @@ async function despacharWhatsapp(payload) {
 
   const telefones = _normalizarTelefones(payload.telefones);
   const body = {
-    id_condominio: payload.id_condominio,
     telefones,
     mensagem: payload.mensagem,
   };
