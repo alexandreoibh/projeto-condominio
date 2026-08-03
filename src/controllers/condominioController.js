@@ -8782,9 +8782,9 @@ class CondominioController {
 
       const avatarPathAtual = String(usuarioAtual.path_avatar || '');
       const versaoAtualMatch = avatarPathAtual.match(/\/avatar\/v(\d+)\.[^\/?#]+(?:[?#].*)?$/i);
-      const versaoAtualNumero = versaoAtualMatch ? this._toInt(versaoAtualMatch[1], 0) : 0;
-      const proximaVersaoNumero = (Number.isFinite(versaoAtualNumero) ? versaoAtualNumero : 0) + 1;
-      const versao = `v${proximaVersaoNumero}`;
+      const versao = versaoAtualMatch
+        ? `v${this._toInt(versaoAtualMatch[1], 0) + 1}`
+        : `v${Date.now()}`;
       const blobPath = `${ambiente}/condominios/${idCondominio}/usuarios/${idUsuario}/avatar/${versao}.${extensao}`;
 
       const blobAccess = 'private';
@@ -8823,6 +8823,7 @@ class CondominioController {
 
       const uploadOptionsBase = {
         addRandomSuffix: false,
+        allowOverwrite: true,
         contentType: arquivoRecebido.mimetype || undefined,
         token: token || undefined
       };
