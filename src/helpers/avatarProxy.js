@@ -43,6 +43,15 @@ const resolveBlobUrl = (pathAvatar) => {
   return joinUrl(blobStorageUrl, avatarPath);
 };
 
+const isAvatarProxyUrl = (value) => {
+  const text = normalizeText(value);
+  if (!text) {
+    return false;
+  }
+
+  return text.includes(`${API_AVATAR_PREFIX}/`) && /\/avatar(\?|$)/.test(text);
+};
+
 const getBlobReadToken = () => {
   const candidateTokens = [
     process.env.BLOB_PRIVATE_READ_WRITE_TOKEN,
@@ -151,5 +160,6 @@ module.exports = {
   buildConsumoImagemProxyUrl,
   buildDashboardImagemProxyUrl,
   getBlobReadToken,
+  isAvatarProxyUrl,
   resolveBlobUrl
 };

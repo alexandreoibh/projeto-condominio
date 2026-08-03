@@ -1995,8 +1995,8 @@ router.post(
 			.withMessage('Campo bloco deve ter no máximo 50 caracteres.'),
 		body('path_avatar')
 			.optional({ nullable: true, checkFalsy: true })
-			.isLength({ max: 255 })
-			.withMessage('Campo path_avatar deve ter no máximo 255 caracteres.'),
+			.isLength({ max: 2048 })
+			.withMessage('Campo path_avatar deve ter no máximo 2048 caracteres.'),
 		body('id_condominio')
 			.optional({ nullable: true, checkFalsy: true })
 			.isInt({ min: 1 })
@@ -2085,8 +2085,8 @@ router.post(
 			.withMessage('Campo bloco deve ter no máximo 50 caracteres.'),
 		body('path_avatar')
 			.optional({ nullable: true, checkFalsy: true })
-			.isLength({ max: 255 })
-			.withMessage('Campo path_avatar deve ter no máximo 255 caracteres.'),
+			.isLength({ max: 2048 })
+			.withMessage('Campo path_avatar deve ter no máximo 2048 caracteres.'),
 		body('id_unidade')
 			.optional({ nullable: true, checkFalsy: true })
 			.isInt({ min: 1 })
@@ -2176,8 +2176,8 @@ router.put(
 			.withMessage('Campo bloco deve ter no máximo 50 caracteres.'),
 		body('path_avatar')
 			.optional({ nullable: true, checkFalsy: true })
-			.isLength({ max: 255 })
-			.withMessage('Campo path_avatar deve ter no máximo 255 caracteres.'),
+			.isLength({ max: 2048 })
+			.withMessage('Campo path_avatar deve ter no máximo 2048 caracteres.'),
 		body('id_unidade')
 			.optional({ nullable: true, checkFalsy: true })
 			.isInt({ min: 1 })
@@ -2267,8 +2267,8 @@ router.patch(
 			.withMessage('Campo bloco deve ter no máximo 50 caracteres.'),
 		body('path_avatar')
 			.optional({ nullable: true, checkFalsy: true })
-			.isLength({ max: 255 })
-			.withMessage('Campo path_avatar deve ter no máximo 255 caracteres.'),
+			.isLength({ max: 2048 })
+			.withMessage('Campo path_avatar deve ter no máximo 2048 caracteres.'),
 		body('id_unidade')
 			.optional({ nullable: true, checkFalsy: true })
 			.isInt({ min: 1 })

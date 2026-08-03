@@ -9,7 +9,7 @@ const { QueryTypes } = require('sequelize');
 const pushNotificationService = require('../service/pushNotificationService');
 const { despacharEmail, despacharEmailReserva } = require('../service/emailDispatchService');
 const { waitUntil } = require('@vercel/functions');
-const { buildAvatarProxyUrl, buildConsumoImagemProxyUrl, buildDashboardImagemProxyUrl, getBlobReadToken, resolveBlobUrl } = require('../helpers/avatarProxy');
+const { buildAvatarProxyUrl, buildConsumoImagemProxyUrl, buildDashboardImagemProxyUrl, getBlobReadToken, isAvatarProxyUrl, resolveBlobUrl } = require('../helpers/avatarProxy');
 
 const INVITE_TOKEN_SECRET =
   process.env.SERVICE_INVITE_TOKEN_SECRET ||
@@ -7414,7 +7414,7 @@ class CondominioController {
             bloco: blocoResolvido,
             id_unidade_predio: idUnidadePredioResolvido,
             observacoes: observacoes || null,
-            path_avatar: path_avatar || null,
+            path_avatar: !isAvatarProxyUrl(path_avatar) ? path_avatar || null : null,
             mensagem_whatsapp: mensagem_whatsapp !== undefined ? Boolean(mensagem_whatsapp) : true,
             mensagem_telegram: mensagem_telegram !== undefined ? Boolean(mensagem_telegram) : true
           }
@@ -8493,7 +8493,9 @@ class CondominioController {
             observacoes:
               req.body.observacoes !== undefined ? req.body.observacoes || null : atual.observacoes,
             path_avatar:
-              req.body.path_avatar !== undefined ? req.body.path_avatar || null : atual.path_avatar,
+              req.body.path_avatar !== undefined && !isAvatarProxyUrl(req.body.path_avatar)
+                ? req.body.path_avatar || null
+                : atual.path_avatar,
             mensagem_whatsapp:
               req.body.mensagem_whatsapp !== undefined
                 ? Boolean(req.body.mensagem_whatsapp)
