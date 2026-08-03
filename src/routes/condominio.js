@@ -2089,7 +2089,15 @@ router.post(
 		body('id_unidade')
 			.optional({ nullable: true, checkFalsy: true })
 			.isInt({ min: 1 })
-			.withMessage('Campo id_unidade deve ser numérico e maior que zero.')
+			.withMessage('Campo id_unidade deve ser numérico e maior que zero.'),
+		body('mensagem_whatsapp')
+			.optional({ nullable: true })
+			.isBoolean()
+			.withMessage('Campo mensagem_whatsapp deve ser booleano.'),
+		body('mensagem_telegram')
+			.optional({ nullable: true })
+			.isBoolean()
+			.withMessage('Campo mensagem_telegram deve ser booleano.')
 	],
 	validate,
 	controller.criarUsuario.bind(controller)
@@ -2172,7 +2180,15 @@ router.put(
 		body('id_unidade')
 			.optional({ nullable: true, checkFalsy: true })
 			.isInt({ min: 1 })
-			.withMessage('Campo id_unidade deve ser numérico e maior que zero.')
+			.withMessage('Campo id_unidade deve ser numérico e maior que zero.'),
+		body('mensagem_whatsapp')
+			.optional({ nullable: true })
+			.isBoolean()
+			.withMessage('Campo mensagem_whatsapp deve ser booleano.'),
+		body('mensagem_telegram')
+			.optional({ nullable: true })
+			.isBoolean()
+			.withMessage('Campo mensagem_telegram deve ser booleano.')
 	],
 	validate,
 	controller.editarUsuario.bind(controller)
@@ -2255,7 +2271,15 @@ router.patch(
 		body('id_unidade')
 			.optional({ nullable: true, checkFalsy: true })
 			.isInt({ min: 1 })
-			.withMessage('Campo id_unidade deve ser numérico e maior que zero.')
+			.withMessage('Campo id_unidade deve ser numérico e maior que zero.'),
+		body('mensagem_whatsapp')
+			.optional({ nullable: true })
+			.isBoolean()
+			.withMessage('Campo mensagem_whatsapp deve ser booleano.'),
+		body('mensagem_telegram')
+			.optional({ nullable: true })
+			.isBoolean()
+			.withMessage('Campo mensagem_telegram deve ser booleano.')
 	],
 	validate,
 	controller.editarUsuario.bind(controller)
