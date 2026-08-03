@@ -1,3 +1,5 @@
+const { signImageAccessToken } = require('./auth');
+
 const API_AVATAR_PREFIX = '/api/condominio/usuarios';
 
 const normalizeText = (value) => {
@@ -56,7 +58,7 @@ const getBlobReadToken = () => {
   return firstValid || null;
 };
 
-const buildAvatarProxyUrl = (req, idUsuario, pathAvatar) => {
+const buildAvatarProxyUrl = (req, idUsuario, pathAvatar, idCondominio = null) => {
   const avatarPath = normalizeText(pathAvatar);
   if (!avatarPath) {
     return null;
@@ -67,7 +69,12 @@ const buildAvatarProxyUrl = (req, idUsuario, pathAvatar) => {
     return null;
   }
 
-  const relativePath = `${API_AVATAR_PREFIX}/${id}/avatar`;
+  const imageToken = signImageAccessToken({
+    tipo: 'avatar_usuario',
+    id,
+    id_condominio: Number.parseInt(idCondominio ?? req?.id_condominio, 10) || null
+  });
+  const relativePath = `${API_AVATAR_PREFIX}/${id}/avatar?token=${imageToken}`;
   const forwardedHost = normalizeText(req?.headers?.['x-forwarded-host']);
   const host = forwardedHost || normalizeText(req?.get?.('host'));
   const forwardedProtoRaw = normalizeText(req?.headers?.['x-forwarded-proto']);
@@ -81,7 +88,7 @@ const buildAvatarProxyUrl = (req, idUsuario, pathAvatar) => {
   return `${protocol}://${host}${relativePath}`;
 };
 
-const buildDashboardImagemProxyUrl = (req, idRegistro, origemImagem) => {
+const buildDashboardImagemProxyUrl = (req, idRegistro, origemImagem, idCondominio = null) => {
   if (!normalizeText(origemImagem)) {
     return null;
   }
@@ -91,7 +98,12 @@ const buildDashboardImagemProxyUrl = (req, idRegistro, origemImagem) => {
     return null;
   }
 
-  const relativePath = `/api/condominio/dashboard/registros/${id}/imagem`;
+  const imageToken = signImageAccessToken({
+    tipo: 'dashboard_registro',
+    id,
+    id_condominio: Number.parseInt(idCondominio ?? req?.id_condominio, 10) || null
+  });
+  const relativePath = `/api/condominio/dashboard/registros/${id}/imagem?token=${imageToken}`;
   const forwardedHost = normalizeText(req?.headers?.['x-forwarded-host']);
   const host = forwardedHost || normalizeText(req?.get?.('host'));
   const forwardedProtoRaw = normalizeText(req?.headers?.['x-forwarded-proto']);
@@ -105,7 +117,7 @@ const buildDashboardImagemProxyUrl = (req, idRegistro, origemImagem) => {
   return `${protocol}://${host}${relativePath}`;
 };
 
-const buildConsumoImagemProxyUrl = (req, idRegistro, origemImagem) => {
+const buildConsumoImagemProxyUrl = (req, idRegistro, origemImagem, idCondominio = null) => {
   if (!normalizeText(origemImagem)) {
     return null;
   }
@@ -115,7 +127,12 @@ const buildConsumoImagemProxyUrl = (req, idRegistro, origemImagem) => {
     return null;
   }
 
-  const relativePath = `/api/condominio/consumo/registros/${id}/imagem`;
+  const imageToken = signImageAccessToken({
+    tipo: 'consumo_registro',
+    id,
+    id_condominio: Number.parseInt(idCondominio ?? req?.id_condominio, 10) || null
+  });
+  const relativePath = `/api/condominio/consumo/registros/${id}/imagem?token=${imageToken}`;
   const forwardedHost = normalizeText(req?.headers?.['x-forwarded-host']);
   const host = forwardedHost || normalizeText(req?.get?.('host'));
   const forwardedProtoRaw = normalizeText(req?.headers?.['x-forwarded-proto']);

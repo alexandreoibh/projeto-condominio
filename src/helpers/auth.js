@@ -1,5 +1,6 @@
 var jwt = require("jsonwebtoken");
 const JWT_SECRET = process.env.JWT_SECRET || 'dev_jwt_secret_change_me';
+const IMAGE_TOKEN_TTL = '5m';
 
 const extractTokenFromRequest = (req) => {
   const authHeader = req.header("Authorization") || req.header("authorization");
@@ -42,7 +43,7 @@ const extractTokenFromRequest = (req) => {
   return null;
 };
 
-module.exports = async (req, res, next) => {
+const auth = async (req, res, next) => {
   try {
     const token = extractTokenFromRequest(req);
 
@@ -52,6 +53,7 @@ module.exports = async (req, res, next) => {
 
     const verify = await jwt.verify(token, JWT_SECRET);
 
+    req.token = token;
     req.apelido = verify.apelido || verify.email || "";
     req.idcliente = verify.id || null;
     req.emailUsuario = verify.email || "";
@@ -68,3 +70,36 @@ module.exports = async (req, res, next) => {
     return res.status(401).send({ message: "Token inválido", detail: err.message });
   }
 };
+
+const signImageAccessToken = ({ tipo, id, id_condominio }) => {
+  return jwt.sign({ tipo, id, id_condominio }, JWT_SECRET, { expiresIn: IMAGE_TOKEN_TTL });
+};
+
+const verifyImageAccessToken = (token, tipoEsperado) => {
+  const payload = jwt.verify(token, JWT_SECRET, { maxAge: IMAGE_TOKEN_TTL });
+  if (!payload || payload.tipo !== tipoEsperado) {
+    throw new Error('Token de imagem não corresponde ao recurso solicitado.');
+  }
+  return payload;
+};
+
+const authOrImageToken = (tipoEsperado) => async (req, res, next) => {
+  const queryToken = req.query?.token ? String(req.query.token).trim() : null;
+
+  if (queryToken) {
+    try {
+      const payload = verifyImageAccessToken(queryToken, tipoEsperado);
+      req.id_condominio = payload.id_condominio || null;
+      return next();
+    } catch (imageTokenError) {
+      // token de imagem inválido/expirado — cai para o fluxo de auth normal abaixo
+    }
+  }
+
+  return auth(req, res, next);
+};
+
+module.exports = auth;
+module.exports.signImageAccessToken = signImageAccessToken;
+module.exports.verifyImageAccessToken = verifyImageAccessToken;
+module.exports.authOrImageToken = authOrImageToken;

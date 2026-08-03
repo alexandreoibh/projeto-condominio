@@ -5,6 +5,7 @@ const router = express.Router();
 const { body, param, query } = require('express-validator');
 const CondominioController = require('../controllers/condominioController');
 const auth = require('../helpers/auth');
+const { authOrImageToken } = require('../helpers/auth');
 const validate = require('../helpers/validate');
 
 const controller = new CondominioController();
@@ -325,7 +326,7 @@ router.get(
 );
 router.get(
 	'/consumo/registros/:id(\\d+)/imagem',
-	auth,
+	authOrImageToken('consumo_registro'),
 	[param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.')],
 	validate,
 	controller.buscarImagemConsumoRegistro.bind(controller)
@@ -1036,7 +1037,7 @@ router.post(
 );
 router.get(
 	'/dashboard/registros/:id(\\d+)/imagem',
-	auth,
+	authOrImageToken('dashboard_registro'),
 	[param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.')],
 	validate,
 	controller.buscarImagemDashboardRegistro.bind(controller)
@@ -1868,7 +1869,7 @@ router.post(
 
 router.get(
 	'/usuarios/:id(\\d+)/avatar',
-	auth,
+	authOrImageToken('avatar_usuario'),
 	[param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.')],
 	validate,
 	controller.baixarAvatarUsuario.bind(controller)
