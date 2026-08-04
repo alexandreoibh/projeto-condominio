@@ -40,6 +40,48 @@ const publicRegistrationKeyGuard = (req, res, next) => {
 	return next();
 };
 
+const cronQueueKeyGuard = (req, res, next) => {
+	const expectedKey = process.env.CRON_QUEUE_KEY;
+	const providedKey = req.header('X-Cron-Queue-Key') || req.header('x-cron-queue-key');
+
+	if (!expectedKey || !providedKey) {
+		return res.status(401).json({ message: 'Não autorizado.' });
+	}
+
+	const expectedBuffer = Buffer.from(String(expectedKey));
+	const providedBuffer = Buffer.from(String(providedKey));
+
+	if (
+		expectedBuffer.length !== providedBuffer.length ||
+		!crypto.timingSafeEqual(expectedBuffer, providedBuffer)
+	) {
+		return res.status(401).json({ message: 'Não autorizado.' });
+	}
+
+	return next();
+};
+
+const telegramWebhookSecretGuard = (req, res, next) => {
+	const expectedKey = process.env.TELEGRAM_WEBHOOK_SECRET;
+	const providedKey = req.header('X-Telegram-Bot-Api-Secret-Token');
+
+	if (!expectedKey || !providedKey) {
+		return res.status(401).json({ message: 'Não autorizado.' });
+	}
+
+	const expectedBuffer = Buffer.from(String(expectedKey));
+	const providedBuffer = Buffer.from(String(providedKey));
+
+	if (
+		expectedBuffer.length !== providedBuffer.length ||
+		!crypto.timingSafeEqual(expectedBuffer, providedBuffer)
+	) {
+		return res.status(401).json({ message: 'Não autorizado.' });
+	}
+
+	return next();
+};
+
 const authOrInviteToken = (req, res, next) => {
 	const inviteToken =
 		req.body?.invite_token ||
@@ -2852,6 +2894,70 @@ router.delete(
 	[param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.')],
 	validate,
 	controller.excluirEspaco.bind(controller)
+);
+
+router.post(
+	'/mensagens/fila',
+	auth,
+	[
+		body('id_usuario_destino')
+			.notEmpty()
+			.withMessage('Campo id_usuario_destino é obrigatório.')
+			.bail()
+			.isInt({ min: 1 })
+			.withMessage('Campo id_usuario_destino deve ser numérico e maior que zero.'),
+		body('tipo')
+			.notEmpty()
+			.withMessage('Campo tipo é obrigatório.')
+			.bail()
+			.isIn(['whatsapp', 'telegram'])
+			.withMessage('Campo tipo deve ser "whatsapp" ou "telegram".'),
+		body('mensagem_bruta')
+			.notEmpty()
+			.withMessage('Campo mensagem_bruta é obrigatório.')
+			.bail()
+			.isLength({ max: 2000 })
+			.withMessage('Campo mensagem_bruta deve ter no máximo 2000 caracteres.'),
+		body('modulo')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 100 })
+			.withMessage('Campo modulo deve ter no máximo 100 caracteres.')
+	],
+	validate,
+	controller.criarMensagemFila.bind(controller)
+);
+
+router.post(
+	'/mensagens/fila/processar',
+	cronQueueKeyGuard,
+	controller.processarFilaMensagens.bind(controller)
+);
+
+router.post(
+	'/telegram/gerar-vinculo',
+	auth,
+	controller.gerarVinculoTelegram.bind(controller)
+);
+
+router.post(
+	'/telegram/webhook',
+	telegramWebhookSecretGuard,
+	controller.telegramWebhook.bind(controller)
+);
+
+router.post(
+	'/telegram/configurar-webhook',
+	auth,
+	[
+		body('webhook_url')
+			.notEmpty()
+			.withMessage('Campo webhook_url é obrigatório.')
+			.bail()
+			.isURL({ require_protocol: true })
+			.withMessage('Campo webhook_url deve ser uma URL válida.')
+	],
+	validate,
+	controller.configurarWebhookTelegram.bind(controller)
 );
 
 module.exports = router;

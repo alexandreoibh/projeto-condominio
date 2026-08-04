@@ -69,6 +69,7 @@ async function despacharWhatsapp(payload) {
   }
 
   console.error(`[whatsappDispatch] Falha após ${MAX_RETRIES} tentativas ref=${ref}:`, lastError?.message);
+  throw lastError || new Error('Falha ao despachar mensagem WhatsApp.');
 }
 
 module.exports = { despacharWhatsapp };

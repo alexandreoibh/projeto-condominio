@@ -8,6 +8,8 @@ const fetch = require('node-fetch');
 const { QueryTypes } = require('sequelize');
 const pushNotificationService = require('../service/pushNotificationService');
 const { despacharEmail, despacharEmailReserva } = require('../service/emailDispatchService');
+const { despacharWhatsapp } = require('../service/whatsappDispatchService');
+const { despacharTelegram } = require('../service/telegramDispatchService');
 const { waitUntil } = require('@vercel/functions');
 const { buildAvatarProxyUrl, buildConsumoImagemProxyUrl, buildDashboardImagemProxyUrl, getBlobReadToken, isAvatarProxyUrl, resolveBlobUrl } = require('../helpers/avatarProxy');
 
@@ -120,6 +122,45 @@ class CondominioController {
     });
 
     return uploadResult?.url || uploadResult?.pathname || blobPath;
+  }
+
+  async _enfileirarMensagem({ id_condominio, id_usuario_criacao, id_usuario_destino, tipo, mensagem_bruta, modulo }) {
+    const insert = await postgres.query(
+      `INSERT INTO "condominio-bh".tb_mensagens_fila (
+          id_condominio,
+          id_usuario_criacao,
+          id_usuario_destino,
+          tipo,
+          mensagem_bruta,
+          modulo,
+          status,
+          created_at,
+          updated_at
+      ) VALUES (
+          :id_condominio,
+          :id_usuario_criacao,
+          :id_usuario_destino,
+          :tipo,
+          :mensagem_bruta,
+          :modulo,
+          1,
+          now(),
+          now()
+      )
+      RETURNING id, id_condominio, id_usuario_criacao, id_usuario_destino, tipo, mensagem_bruta, modulo, status, created_at`,
+      {
+        replacements: {
+          id_condominio,
+          id_usuario_criacao: id_usuario_criacao || null,
+          id_usuario_destino: id_usuario_destino || null,
+          tipo,
+          mensagem_bruta,
+          modulo: modulo || null
+        }
+      }
+    );
+
+    return insert[0][0];
   }
 
   _cleanupPublicRegistrationAttempts(now = Date.now()) {
@@ -8568,6 +8609,7 @@ class CondominioController {
             tu.observacoes,
             tu.mensagem_whatsapp,
             tu.mensagem_telegram,
+            tu.chat_id_telegram,
             tu.created_at,
             tu.updated_at
           FROM "condominio-bh"."tb-usuarios" tu
@@ -8593,11 +8635,14 @@ class CondominioController {
 
       const usuarioData = usuario[0];
       const avatarUrl = buildAvatarProxyUrl(req, usuarioData.id, usuarioData.path_avatar);
+      const telegramVinculado = Boolean(usuarioData.chat_id_telegram);
+      delete usuarioData.chat_id_telegram;
 
       return res.status(200).json({
         data: {
           ...usuarioData,
-          avatar_url: avatarUrl
+          avatar_url: avatarUrl,
+          telegram_vinculado: telegramVinculado
         }
       });
     } catch (error) {
@@ -12216,6 +12261,323 @@ class CondominioController {
     } catch (error) {
       return res.status(500).json({
         message: 'Falha ao excluir espaço.',
+        detail: error.message
+      });
+    }
+  }
+
+  async criarMensagemFila(req, res) {
+    try {
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      if (!idCondominioToken) {
+        return res.status(403).json({
+          message: 'Token sem id_condominio para enfileirar mensagem.'
+        });
+      }
+
+      const { id_usuario_destino, tipo, mensagem_bruta, modulo } = req.body;
+
+      const tipoNormalizado = String(tipo || '').trim().toLowerCase();
+      if (!['whatsapp', 'telegram'].includes(tipoNormalizado)) {
+        return res.status(422).json({
+          message: 'Campo tipo deve ser "whatsapp" ou "telegram".'
+        });
+      }
+
+      if (!mensagem_bruta || !String(mensagem_bruta).trim()) {
+        return res.status(422).json({
+          message: 'Campo mensagem_bruta é obrigatório.'
+        });
+      }
+
+      const registro = await this._enfileirarMensagem({
+        id_condominio: idCondominioToken,
+        id_usuario_criacao: this._toInt(req.idcliente, null),
+        id_usuario_destino: this._toInt(id_usuario_destino, null),
+        tipo: tipoNormalizado,
+        mensagem_bruta: String(mensagem_bruta).trim(),
+        modulo: modulo || null
+      });
+
+      return res.status(201).json({
+        message: 'Mensagem enfileirada com sucesso.',
+        data: registro
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao enfileirar mensagem.',
+        detail: error.message
+      });
+    }
+  }
+
+  async processarFilaMensagens(req, res) {
+    try {
+      const pendentes = await postgres.query(
+        `SELECT id, id_condominio, id_usuario_destino, tipo, mensagem_bruta, mensagem_tratada_ia
+           FROM "condominio-bh".tb_mensagens_fila
+          WHERE status = 1
+          ORDER BY created_at ASC
+          LIMIT 50`,
+        { type: QueryTypes.SELECT }
+      );
+
+      if (!pendentes || pendentes.length === 0) {
+        return res.status(200).json({ processadas: 0, sucesso: 0, falha: 0 });
+      }
+
+      let sucesso = 0;
+      let falha = 0;
+
+      for (const item of pendentes) {
+        try {
+          const reserva = await postgres.query(
+            `UPDATE "condominio-bh".tb_mensagens_fila
+                SET updated_at = now()
+              WHERE id = :id
+                AND status = 1
+            RETURNING id`,
+            { replacements: { id: item.id }, type: QueryTypes.UPDATE }
+          );
+
+          if (!reserva[0] || reserva[0].length === 0) {
+            // outra chamada concorrente já pegou esta linha entre o SELECT e agora
+            continue;
+          }
+
+          const destinatarioRows = await postgres.query(
+            `SELECT telefone, chat_id_telegram
+               FROM "condominio-bh"."tb-usuarios"
+              WHERE id = :id
+                AND id_condominio = :id_condominio
+              LIMIT 1`,
+            {
+              replacements: { id: item.id_usuario_destino, id_condominio: item.id_condominio },
+              type: QueryTypes.SELECT
+            }
+          );
+
+          const mensagemFinal = item.mensagem_tratada_ia || item.mensagem_bruta;
+
+          if (item.tipo === 'whatsapp') {
+            const telefone = destinatarioRows?.[0]?.telefone;
+            if (!telefone) {
+              throw new Error('Usuário destino sem telefone cadastrado.');
+            }
+            await despacharWhatsapp({ telefones: [telefone], mensagem: mensagemFinal, _ref: `fila_${item.id}` });
+          } else {
+            const chatId = destinatarioRows?.[0]?.chat_id_telegram;
+            if (!chatId) {
+              throw new Error('TELEGRAM_NAO_VINCULADO: usuário ainda não vinculou o Telegram.');
+            }
+            await despacharTelegram({ chat_id: chatId, mensagem: mensagemFinal, _ref: `fila_${item.id}` });
+          }
+
+          await postgres.query(
+            `UPDATE "condominio-bh".tb_mensagens_fila
+                SET status = 2,
+                    falha = NULL,
+                    data_cron_execucao = now(),
+                    updated_at = now()
+              WHERE id = :id`,
+            { replacements: { id: item.id }, type: QueryTypes.UPDATE }
+          );
+          sucesso += 1;
+        } catch (itemError) {
+          await postgres.query(
+            `UPDATE "condominio-bh".tb_mensagens_fila
+                SET status = 3,
+                    falha = :falha,
+                    data_cron_execucao = now(),
+                    updated_at = now()
+              WHERE id = :id`,
+            {
+              replacements: { id: item.id, falha: String(itemError.message || itemError).slice(0, 800) },
+              type: QueryTypes.UPDATE
+            }
+          );
+          falha += 1;
+        }
+      }
+
+      return res.status(200).json({
+        processadas: sucesso + falha,
+        sucesso,
+        falha
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao processar fila de mensagens.',
+        detail: error.message
+      });
+    }
+  }
+
+  async gerarVinculoTelegram(req, res) {
+    try {
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      const idUsuarioToken = this._toInt(req.idcliente, null);
+
+      if (!idCondominioToken || !idUsuarioToken) {
+        return res.status(403).json({
+          message: 'Token sem id_condominio/id_usuário para gerar vínculo do Telegram.'
+        });
+      }
+
+      const botUsername = process.env.TELEGRAM_BOT_USERNAME || 'emorador_bot';
+      const codigo = crypto.randomBytes(12).toString('hex');
+      const expiraEm = new Date(Date.now() + 15 * 60 * 1000);
+
+      await postgres.query(
+        `INSERT INTO "condominio-bh".tb_telegram_vinculo_codigos (
+            codigo,
+            id_usuario,
+            id_condominio,
+            expira_em,
+            created_at
+        ) VALUES (
+            :codigo,
+            :id_usuario,
+            :id_condominio,
+            :expira_em,
+            now()
+        )`,
+        {
+          replacements: {
+            codigo,
+            id_usuario: idUsuarioToken,
+            id_condominio: idCondominioToken,
+            expira_em: expiraEm
+          }
+        }
+      );
+
+      return res.status(201).json({
+        codigo,
+        link: `https://t.me/${botUsername}?start=${codigo}`,
+        expira_em: expiraEm
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao gerar vínculo do Telegram.',
+        detail: error.message
+      });
+    }
+  }
+
+  async telegramWebhook(req, res) {
+    try {
+      const mensagem = req.body?.message;
+      const texto = String(mensagem?.text || '').trim();
+      const chatId = mensagem?.chat?.id ? String(mensagem.chat.id) : null;
+
+      const match = texto.match(/^\/start\s+(\S+)/);
+      if (!match || !chatId) {
+        return res.status(200).json({ ok: true });
+      }
+
+      const codigo = match[1];
+
+      const vinculoRows = await postgres.query(
+        `SELECT id, id_usuario, id_condominio
+           FROM "condominio-bh".tb_telegram_vinculo_codigos
+          WHERE codigo = :codigo
+            AND usado_em IS NULL
+            AND expira_em > now()
+          LIMIT 1`,
+        {
+          replacements: { codigo },
+          type: QueryTypes.SELECT
+        }
+      );
+
+      if (!vinculoRows || vinculoRows.length === 0) {
+        console.warn(`[telegramWebhook] Código de vínculo inválido/expirado: ${codigo}`);
+        return res.status(200).json({ ok: true });
+      }
+
+      const vinculo = vinculoRows[0];
+
+      await postgres.query(
+        `UPDATE "condominio-bh".tb_telegram_vinculo_codigos
+            SET usado_em = now()
+          WHERE id = :id`,
+        { replacements: { id: vinculo.id }, type: QueryTypes.UPDATE }
+      );
+
+      await postgres.query(
+        `UPDATE "condominio-bh"."tb-usuarios"
+            SET chat_id_telegram = :chat_id,
+                updated_at = now()
+          WHERE id = :id
+            AND id_condominio = :id_condominio`,
+        {
+          replacements: {
+            chat_id: chatId,
+            id: vinculo.id_usuario,
+            id_condominio: vinculo.id_condominio
+          },
+          type: QueryTypes.UPDATE
+        }
+      );
+
+      try {
+        await despacharTelegram({
+          chat_id: chatId,
+          mensagem: 'Vínculo confirmado! Você receberá notificações do e-Morador por aqui.',
+          _ref: `vinculo_${vinculo.id}`
+        });
+      } catch (avisoError) {
+        console.error('[telegramWebhook] Falha ao enviar mensagem de confirmação:', avisoError.message);
+      }
+
+      return res.status(200).json({ ok: true });
+    } catch (error) {
+      console.error('[telegramWebhook] Erro ao processar update:', error.message);
+      return res.status(200).json({ ok: true });
+    }
+  }
+
+  async configurarWebhookTelegram(req, res) {
+    try {
+      const idPerfilToken = this._toInt(req.IdPerfil, null);
+      if (idPerfilToken !== 1) {
+        return res.status(403).json({ message: 'Apenas Admin pode configurar o webhook do Telegram.' });
+      }
+
+      const botToken = process.env.TELEGRAM_BOT_TOKEN;
+      const webhookSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
+      const webhookUrl = req.body?.webhook_url;
+
+      if (!botToken) {
+        return res.status(500).json({ message: 'TELEGRAM_BOT_TOKEN não configurado.' });
+      }
+      if (!webhookSecret) {
+        return res.status(500).json({ message: 'TELEGRAM_WEBHOOK_SECRET não configurado.' });
+      }
+      if (!webhookUrl) {
+        return res.status(422).json({ message: 'Campo webhook_url é obrigatório.' });
+      }
+
+      const resp = await fetch(`https://api.telegram.org/bot${botToken}/setWebhook`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: webhookUrl, secret_token: webhookSecret })
+      });
+
+      const data = await resp.json();
+
+      if (!resp.ok || !data?.ok) {
+        return res.status(502).json({
+          message: 'Falha ao configurar webhook do Telegram.',
+          detail: data?.description || `HTTP ${resp.status}`
+        });
+      }
+
+      return res.status(200).json({ message: 'Webhook do Telegram configurado com sucesso.', data });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao configurar webhook do Telegram.',
         detail: error.message
       });
     }
