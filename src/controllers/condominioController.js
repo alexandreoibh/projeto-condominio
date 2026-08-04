@@ -12425,8 +12425,25 @@ class CondominioController {
       }
 
       const botUsername = process.env.TELEGRAM_BOT_USERNAME || 'emorador_bot';
-      const codigo = crypto.randomBytes(12).toString('hex');
       const expiraEm = new Date(Date.now() + 15 * 60 * 1000);
+
+      let codigo = null;
+      for (let tentativa = 0; tentativa < 5 && !codigo; tentativa += 1) {
+        const candidato = String(crypto.randomInt(100000, 1000000));
+        const existente = await postgres.query(
+          `SELECT id FROM "condominio-bh".tb_telegram_vinculo_codigos
+            WHERE codigo = :codigo AND expira_em > now()
+            LIMIT 1`,
+          { replacements: { codigo: candidato }, type: QueryTypes.SELECT }
+        );
+        if (!existente || existente.length === 0) {
+          codigo = candidato;
+        }
+      }
+
+      if (!codigo) {
+        return res.status(500).json({ message: 'Falha ao gerar código de vínculo único, tente novamente.' });
+      }
 
       await postgres.query(
         `INSERT INTO "condominio-bh".tb_telegram_vinculo_codigos (
@@ -12471,12 +12488,30 @@ class CondominioController {
       const texto = String(mensagem?.text || '').trim();
       const chatId = mensagem?.chat?.id ? String(mensagem.chat.id) : null;
 
-      const match = texto.match(/^\/start\s+(\S+)/);
-      if (!match || !chatId) {
+      if (!chatId) {
         return res.status(200).json({ ok: true });
       }
 
-      const codigo = match[1];
+      const matchStart = texto.match(/^\/start\s+(\S+)/);
+      const matchManual = /^\d{6}$/.test(texto) ? texto : null;
+      const codigo = matchStart?.[1] || matchManual;
+
+      if (!codigo) {
+        // /start sem código, ou qualquer outra mensagem que não seja um código de 6 dígitos
+        if (texto && texto !== '/start') {
+          try {
+            await despacharTelegram({
+              chat_id: chatId,
+              mensagem:
+                'Não reconheci esse código. Copie o código de 6 dígitos mostrado no app e envie aqui, ou gere um novo em Meu Perfil → Notificações → Telegram.',
+              _ref: `webhook_orientacao_${chatId}`
+            });
+          } catch (avisoError) {
+            console.error('[telegramWebhook] Falha ao enviar mensagem de orientação:', avisoError.message);
+          }
+        }
+        return res.status(200).json({ ok: true });
+      }
 
       const vinculoRows = await postgres.query(
         `SELECT id, id_usuario, id_condominio
@@ -12493,6 +12528,16 @@ class CondominioController {
 
       if (!vinculoRows || vinculoRows.length === 0) {
         console.warn(`[telegramWebhook] Código de vínculo inválido/expirado: ${codigo}`);
+        try {
+          await despacharTelegram({
+            chat_id: chatId,
+            mensagem:
+              'Esse código expirou ou já foi usado. Gere um novo em Meu Perfil → Notificações → Telegram e tente novamente.',
+            _ref: `webhook_expirado_${chatId}`
+          });
+        } catch (avisoError) {
+          console.error('[telegramWebhook] Falha ao enviar mensagem de código expirado:', avisoError.message);
+        }
         return res.status(200).json({ ok: true });
       }
 
