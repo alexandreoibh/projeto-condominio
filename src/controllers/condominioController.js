@@ -2021,7 +2021,7 @@ class CondominioController {
             cr.updated_at,
             cu.id AS id_unidade,
             cu.unidades_bloco AS unidade_bloco,
-            cu.bloco AS unidade_bloco_torre,
+            cu.bloco AS unidade_bloco_torre
           FROM "condominio-bh".tb_consumo_registros cr
           INNER JOIN "condominio-bh"."tb-usuarios" tu
             ON tu.id = cr.id_usuario
