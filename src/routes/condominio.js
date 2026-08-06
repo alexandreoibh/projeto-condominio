@@ -102,6 +102,11 @@ const authOrInviteToken = (req, res, next) => {
 
 router.get('/status', controller.status.bind(controller));
 router.get(
+	'/planos/publicos',
+	publicRegistrationKeyGuard,
+	controller.listarPlanosPublicos.bind(controller)
+);
+router.get(
 	'/fatura/planos',
 	auth,
 	[

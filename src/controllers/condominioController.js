@@ -701,6 +701,39 @@ class CondominioController {
     }
   }
 
+  async listarPlanosPublicos(req, res) {
+    try {
+      const data = await postgres.query(
+        `SELECT
+            fp.id,
+            fp.nome,
+            fp.valor,
+            fp.limite_usuarios,
+            fp.limite_unidades,
+            fp.possui_relatorios,
+            fp.possui_financeiro,
+            fp.possui_notificacoes,
+            fp.possui_app,
+            fp.suporte,
+            fp.descricao
+          FROM "condominio-bh".tb_fatura_planos fp
+          WHERE fp.ativo = true
+          ORDER BY fp.valor ASC, fp.id ASC`,
+        { type: QueryTypes.SELECT }
+      );
+
+      return res.status(200).json({
+        total: data.length,
+        data
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao listar planos públicos.',
+        detail: error.message
+      });
+    }
+  }
+
   async listarFaturasPagamentos(req, res) {
     try {
       const idPerfilToken = this._toInt(req.IdPerfil, null);
