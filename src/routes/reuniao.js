@@ -1,6 +1,7 @@
 ﻿"use strict";
 
 const express = require("express");
+const multer = require("multer");
 const router = express.Router();
 const { body, param, query } = require("express-validator");
 const ReuniaoController = require("../controllers/reuniaoController");
@@ -8,6 +9,10 @@ const auth = require("../helpers/auth");
 const validate = require("../helpers/validate");
 
 const controller = new ReuniaoController();
+const uploadAnexo = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024 }
+});
 
 // GET /api/reuniao — lista reunioes com filtros opcionais
 router.get(
@@ -201,6 +206,50 @@ router.get(
   [param("id").isInt({ min: 1 }).withMessage("Parametro id invalido.")],
   validate,
   controller.listarPresencas.bind(controller)
+);
+
+// GET /api/reuniao/anexo/download — baixa um anexo do blob privado
+router.get(
+  "/anexo/download",
+  auth,
+  controller.downloadAnexoReuniao.bind(controller)
+);
+
+// GET /api/reuniao/:id/anexo — lista anexos da reuniao
+router.get(
+  "/:id(\\d+)/anexo",
+  auth,
+  [param("id").isInt({ min: 1 }).withMessage("Parametro id invalido.")],
+  validate,
+  controller.listarAnexosReuniao.bind(controller)
+);
+
+// POST /api/reuniao/:id/anexo — envia um anexo para a reuniao (somente gestor)
+router.post(
+  "/:id(\\d+)/anexo",
+  auth,
+  uploadAnexo.single("arquivo"),
+  [
+    param("id").isInt({ min: 1 }).withMessage("Parametro id invalido."),
+    body("tipo")
+      .optional({ nullable: true, checkFalsy: true })
+      .isIn(["ata", "edital", "outro"])
+      .withMessage("tipo deve ser: ata, edital ou outro.")
+  ],
+  validate,
+  controller.uploadAnexoReuniao.bind(controller)
+);
+
+// DELETE /api/reuniao/:id/anexo/:id_anexo — remove um anexo (somente gestor)
+router.delete(
+  "/:id(\\d+)/anexo/:id_anexo(\\d+)",
+  auth,
+  [
+    param("id").isInt({ min: 1 }).withMessage("Parametro id invalido."),
+    param("id_anexo").isInt({ min: 1 }).withMessage("Parametro id_anexo invalido.")
+  ],
+  validate,
+  controller.excluirAnexoReuniao.bind(controller)
 );
 
 module.exports = router;

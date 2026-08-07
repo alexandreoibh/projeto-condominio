@@ -1,6 +1,7 @@
 ﻿"use strict";
 
 const { QueryTypes } = require("sequelize");
+const { put, del } = require("@vercel/blob");
 const postgres = require("../database/postgres");
 const pushNotificationService = require("../service/pushNotificationService");
 const { despacharEmail } = require("../service/emailDispatchService");
@@ -12,10 +13,15 @@ const FILTROS_DESTINATARIO = new Set(["todos", "inquilinos", "proprietarios"]);
 const TIPO_MORADOR_POR_FILTRO = { inquilinos: "inquilino", proprietarios: "proprietario" };
 const STATUS_REUNIAO_ABERTA = ["CRIADA", "CONVOCADA", "EM_ANDAMENTO"];
 const PERFIS_SEMPRE_VEEM_CONVOCACAO = new Set(["Sindico", "Sub-Sindico"]);
+const PERFIS_GESTAO = new Set(["Admin", "Sindico", "Sub-Sindico"]);
 class ReuniaoController {
   _toInt(value, fallback) {
     const parsed = Number.parseInt(value, 10);
     return Number.isNaN(parsed) ? fallback : parsed;
+  }
+
+  _isGestor(req) {
+    return PERFIS_GESTAO.has(req.nomePerfil);
   }
 
   _normalizarTextoOuNull(value, maxLength = null) {
@@ -601,6 +607,169 @@ class ReuniaoController {
       return res.status(200).json({ id_reuniao: idReuniao, resumo, presencas });
     } catch (error) {
       return res.status(500).json({ message: "Erro ao listar presencas.", detail: error.message });
+    }
+  }
+
+  async listarAnexosReuniao(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: "Token sem id_condominio." });
+
+      const idReuniao = this._toInt(req.params.id, null);
+      if (!idReuniao) return res.status(400).json({ message: "Parametro id invalido." });
+
+      const [reuniao] = await postgres.query(
+        `SELECT id FROM "condominio-bh".tb_reuniao WHERE id = :id AND id_condominio = :id_condominio LIMIT 1`,
+        { replacements: { id: idReuniao, id_condominio: idCondominio }, type: QueryTypes.SELECT }
+      );
+      if (!reuniao) return res.status(404).json({ message: "Reuniao nao encontrada." });
+
+      const data = await postgres.query(
+        `SELECT id, tipo, nome_arquivo, caminho_arquivo, data_envio
+           FROM "condominio-bh".tb_reuniao_anexo
+          WHERE id_reuniao = :id_reuniao
+          ORDER BY data_envio DESC`,
+        { replacements: { id_reuniao: idReuniao }, type: QueryTypes.SELECT }
+      );
+
+      return res.status(200).json({ data });
+    } catch (error) {
+      return res.status(500).json({ message: "Falha ao listar anexos da reuniao.", detail: error.message });
+    }
+  }
+
+  async uploadAnexoReuniao(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: "Token sem id_condominio." });
+      if (!this._isGestor(req)) return res.status(403).json({ message: "Acesso negado." });
+      if (!req.file) return res.status(400).json({ message: "Arquivo nao enviado." });
+
+      const idReuniao = this._toInt(req.params.id, null);
+      if (!idReuniao) return res.status(400).json({ message: "Parametro id invalido." });
+
+      const tipoPermitidos = new Set(["ata", "edital", "outro"]);
+      const tipo = tipoPermitidos.has(req.body.tipo) ? req.body.tipo : "outro";
+
+      const [reuniao] = await postgres.query(
+        `SELECT id FROM "condominio-bh".tb_reuniao WHERE id = :id AND id_condominio = :id_condominio LIMIT 1`,
+        { replacements: { id: idReuniao, id_condominio: idCondominio }, type: QueryTypes.SELECT }
+      );
+      if (!reuniao) return res.status(404).json({ message: "Reuniao nao encontrada." });
+
+      const arquivo = req.file;
+      const ext = (arquivo.originalname.split(".").pop() || "bin").toLowerCase();
+      const ambiente = process.env.NODE_ENV === "production" ? "prod" : "dev";
+      const nomeArquivo = `${Date.now()}_${Math.random().toString(36).substr(2, 8)}.${ext}`;
+      const blobPath = `${ambiente}/condominios/${idCondominio}/reunioes/${idReuniao}/${nomeArquivo}`;
+
+      const uploadResult = await put(blobPath, arquivo.buffer, { access: "private", contentType: arquivo.mimetype });
+      const caminhoArquivo = uploadResult?.url || blobPath;
+
+      const [docRows] = await postgres.query(
+        `INSERT INTO "condominio-bh".tb_reuniao_anexo
+            (id_reuniao, tipo, nome_arquivo, caminho_arquivo, id_usuario_cadastro, data_envio)
+           VALUES (:id_reuniao, :tipo, :nome_arquivo, :caminho_arquivo, :id_usuario_cadastro, now())
+           RETURNING *`,
+        {
+          replacements: {
+            id_reuniao: idReuniao,
+            tipo,
+            nome_arquivo: arquivo.originalname,
+            caminho_arquivo: caminhoArquivo,
+            id_usuario_cadastro: this._toInt(req.idcliente, null)
+          }
+        }
+      );
+
+      return res.status(201).json(docRows[0]);
+    } catch (error) {
+      return res.status(500).json({ message: "Falha ao fazer upload do anexo.", detail: error.message });
+    }
+  }
+
+  async excluirAnexoReuniao(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: "Token sem id_condominio." });
+      if (!this._isGestor(req)) return res.status(403).json({ message: "Acesso negado." });
+
+      const idReuniao = this._toInt(req.params.id, null);
+      const idAnexo = this._toInt(req.params.id_anexo, null);
+      if (!idReuniao || !idAnexo) return res.status(400).json({ message: "Parametro invalido." });
+
+      const [anexo] = await postgres.query(
+        `SELECT anexo.id, anexo.caminho_arquivo
+           FROM "condominio-bh".tb_reuniao_anexo anexo
+           JOIN "condominio-bh".tb_reuniao r ON r.id = anexo.id_reuniao
+          WHERE anexo.id = :id_anexo AND anexo.id_reuniao = :id_reuniao AND r.id_condominio = :id_condominio`,
+        {
+          replacements: { id_anexo: idAnexo, id_reuniao: idReuniao, id_condominio: idCondominio },
+          type: QueryTypes.SELECT
+        }
+      );
+
+      if (!anexo) return res.status(404).json({ message: "Anexo nao encontrado." });
+
+      try {
+        await del(anexo.caminho_arquivo);
+      } catch (_) {
+        // remocao do blob e melhor esforco
+      }
+
+      await postgres.query(
+        `DELETE FROM "condominio-bh".tb_reuniao_anexo WHERE id = :id`,
+        { replacements: { id: idAnexo } }
+      );
+
+      return res.status(200).json({ message: "Anexo removido." });
+    } catch (error) {
+      return res.status(500).json({ message: "Falha ao remover anexo.", detail: error.message });
+    }
+  }
+
+  _extrairIdReuniaoDoPath(url) {
+    const match = String(url || "").match(/\/reunioes\/(\d+)\//);
+    return match ? this._toInt(match[1], null) : null;
+  }
+
+  async downloadAnexoReuniao(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: "Token sem id_condominio." });
+
+      const url = String(req.query.url || "");
+      const baseBlobUrl = process.env.BLOB_STORAGE_URL || "";
+
+      if (!url || !baseBlobUrl || !url.startsWith(baseBlobUrl) || !url.includes("/reunioes/")) {
+        return res.status(400).json({ message: "Parametro url invalido." });
+      }
+
+      const idReuniaoNaUrl = this._extrairIdReuniaoDoPath(url);
+      const [reuniao] = await postgres.query(
+        `SELECT id FROM "condominio-bh".tb_reuniao WHERE id = :id AND id_condominio = :id_condominio LIMIT 1`,
+        { replacements: { id: idReuniaoNaUrl, id_condominio: idCondominio }, type: QueryTypes.SELECT }
+      );
+      if (!reuniao) {
+        return res.status(403).json({ message: "Sem permissao para baixar este anexo." });
+      }
+
+      const blobResponse = await fetch(url, {
+        headers: { Authorization: `Bearer ${process.env.BLOB_READ_WRITE_TOKEN}` }
+      });
+
+      if (!blobResponse.ok) {
+        return res.status(blobResponse.status).json({ message: "Falha ao obter o anexo." });
+      }
+
+      const nomeArquivo = url.split("/").pop() || "anexo";
+      const buffer = Buffer.from(await blobResponse.arrayBuffer());
+
+      res.setHeader("Content-Type", blobResponse.headers.get("content-type") || "application/octet-stream");
+      res.setHeader("Content-Disposition", `inline; filename="${nomeArquivo}"`);
+      return res.status(200).send(buffer);
+    } catch (error) {
+      return res.status(500).json({ message: "Falha ao baixar anexo.", detail: error.message });
     }
   }
 }
