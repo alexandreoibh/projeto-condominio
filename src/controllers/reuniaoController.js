@@ -625,10 +625,10 @@ class ReuniaoController {
       if (!reuniao) return res.status(404).json({ message: "Reuniao nao encontrada." });
 
       const data = await postgres.query(
-        `SELECT id, tipo, nome_arquivo, caminho_arquivo, data_envio
+        `SELECT id, tipo, nome_arquivo, url, created_at
            FROM "condominio-bh".tb_reuniao_anexo
           WHERE id_reuniao = :id_reuniao
-          ORDER BY data_envio DESC`,
+          ORDER BY created_at DESC`,
         { replacements: { id_reuniao: idReuniao }, type: QueryTypes.SELECT }
       );
 
@@ -668,16 +668,15 @@ class ReuniaoController {
 
       const [docRows] = await postgres.query(
         `INSERT INTO "condominio-bh".tb_reuniao_anexo
-            (id_reuniao, tipo, nome_arquivo, caminho_arquivo, id_usuario_cadastro, data_envio)
-           VALUES (:id_reuniao, :tipo, :nome_arquivo, :caminho_arquivo, :id_usuario_cadastro, now())
+            (id_reuniao, tipo, nome_arquivo, url, created_at)
+           VALUES (:id_reuniao, :tipo, :nome_arquivo, :url, now())
            RETURNING *`,
         {
           replacements: {
             id_reuniao: idReuniao,
             tipo,
             nome_arquivo: arquivo.originalname,
-            caminho_arquivo: caminhoArquivo,
-            id_usuario_cadastro: this._toInt(req.idcliente, null)
+            url: caminhoArquivo
           }
         }
       );
@@ -699,7 +698,7 @@ class ReuniaoController {
       if (!idReuniao || !idAnexo) return res.status(400).json({ message: "Parametro invalido." });
 
       const [anexo] = await postgres.query(
-        `SELECT anexo.id, anexo.caminho_arquivo
+        `SELECT anexo.id, anexo.url
            FROM "condominio-bh".tb_reuniao_anexo anexo
            JOIN "condominio-bh".tb_reuniao r ON r.id = anexo.id_reuniao
           WHERE anexo.id = :id_anexo AND anexo.id_reuniao = :id_reuniao AND r.id_condominio = :id_condominio`,
@@ -712,7 +711,7 @@ class ReuniaoController {
       if (!anexo) return res.status(404).json({ message: "Anexo nao encontrado." });
 
       try {
-        await del(anexo.caminho_arquivo);
+        await del(anexo.url);
       } catch (_) {
         // remocao do blob e melhor esforco
       }
