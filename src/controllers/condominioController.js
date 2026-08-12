@@ -4750,6 +4750,10 @@ class CondominioController {
 
       // Notificação por e-mail acionada pelo switch "Notificar ... por E-mail" da tela
       if (enviarEmailNotificacao) {
+        console.log(
+          `[emailDispatch][dashboard-registro] Disparo solicitado — registro=${idCodigoRegistro} id_usuario_autor=${idUsuarioFinal} id_condominio=${idCondominioFinal}`
+        );
+
         waitUntil((async () => {
           try {
             const autorRows = await postgres.query(
@@ -4765,13 +4769,13 @@ class CondominioController {
             const idPerfilAutor = this._toInt(autorRows?.[0]?.tipo_perfil_id, null);
 
             // Morador cria → avisa Síndico/Sub-Síndico; demais perfis criam → avisa Moradores
-            const perfisDestino = idPerfilAutor === 2 ? [3, 4] : [2];
+            const perfisDestino = idPerfilAutor === 2 ? ['3', '4'] : ['2'];
 
             const destinatarios = await postgres.query(
               `SELECT DISTINCT email
                  FROM "condominio-bh"."tb-usuarios"
                 WHERE id_condominio = :id_condominio
-                  AND tipo_perfil_id IN (:perfis)
+                  AND COALESCE(tipo_perfil_id::text, '0') IN (:perfis)
                   AND email IS NOT NULL AND email <> ''
                   AND COALESCE(status, '') IN ('ativo', 'Ativo')`,
               {
@@ -4780,8 +4784,17 @@ class CondominioController {
               }
             );
 
+            console.log(
+              `[emailDispatch][dashboard-registro] id_perfil_autor=${idPerfilAutor ?? 'null'} perfis_destino=[${perfisDestino.join(',')}] destinatarios_encontrados=${destinatarios.length}`
+            );
+
             const emailsDestino = [...new Set(destinatarios.map((d) => d.email).filter(Boolean))];
-            if (emailsDestino.length === 0) return;
+            if (emailsDestino.length === 0) {
+              console.warn(
+                `[emailDispatch][dashboard-registro] Nenhum destinatário ativo com e-mail para perfis [${perfisDestino.join(',')}] no condomínio ${idCondominioFinal} — e-mail não disparado.`
+              );
+              return;
+            }
 
             const [tipoRow] = await postgres.query(
               `SELECT descricao FROM "condominio-bh".tb_dashboard_tipo WHERE id = :id LIMIT 1`,
