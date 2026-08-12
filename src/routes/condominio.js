@@ -1077,7 +1077,9 @@ router.post(
 		body('encomenda_bloco')
 			.optional({ nullable: true })
 			.isLength({ max: 50 })
-			.withMessage('Campo encomenda_bloco deve ter no máximo 50 caracteres.')
+			.withMessage('Campo encomenda_bloco deve ter no máximo 50 caracteres.'),
+		body('enviar_email')
+			.optional({ nullable: true, checkFalsy: true })
 	],
 	validate,
 	controller.criarDashboardRegistro.bind(controller)

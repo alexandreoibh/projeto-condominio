@@ -4484,6 +4484,7 @@ class CondominioController {
           : null;
 
       const tipoRegistro = this._toInt(req.body.tipo, 0);
+      const enviarEmailNotificacao = ['1', 1, true, 'true'].includes(req.body.enviar_email);
 
       const insert = await postgres.query(
         `INSERT INTO "condominio-bh".tb_dashboard_registro (
@@ -4743,6 +4744,67 @@ class CondominioController {
             });
           } catch (emailErr) {
             console.error('[emailDispatch] Erro encomenda:', emailErr?.message);
+          }
+        })());
+      }
+
+      // Notificação por e-mail acionada pelo switch "Notificar ... por E-mail" da tela
+      if (enviarEmailNotificacao) {
+        waitUntil((async () => {
+          try {
+            const autorRows = await postgres.query(
+              `SELECT tipo_perfil_id
+                 FROM "condominio-bh"."tb-usuarios"
+                WHERE id = :id AND id_condominio = :id_condominio
+                LIMIT 1`,
+              {
+                replacements: { id: idUsuarioFinal, id_condominio: idCondominioFinal },
+                type: QueryTypes.SELECT
+              }
+            );
+            const idPerfilAutor = this._toInt(autorRows?.[0]?.tipo_perfil_id, null);
+
+            // Morador cria → avisa Síndico/Sub-Síndico; demais perfis criam → avisa Moradores
+            const perfisDestino = idPerfilAutor === 2 ? [3, 4] : [2];
+
+            const destinatarios = await postgres.query(
+              `SELECT DISTINCT email
+                 FROM "condominio-bh"."tb-usuarios"
+                WHERE id_condominio = :id_condominio
+                  AND tipo_perfil_id IN (:perfis)
+                  AND email IS NOT NULL AND email <> ''
+                  AND COALESCE(status, '') IN ('ativo', 'Ativo')`,
+              {
+                replacements: { id_condominio: idCondominioFinal, perfis: perfisDestino },
+                type: QueryTypes.SELECT
+              }
+            );
+
+            const emailsDestino = [...new Set(destinatarios.map((d) => d.email).filter(Boolean))];
+            if (emailsDestino.length === 0) return;
+
+            const [tipoRow] = await postgres.query(
+              `SELECT descricao FROM "condominio-bh".tb_dashboard_tipo WHERE id = :id LIMIT 1`,
+              { replacements: { id: tipoRegistro }, type: QueryTypes.SELECT }
+            );
+            const [condominioRow] = await postgres.query(
+              `SELECT nome FROM "condominio-bh"."tb-condominios" WHERE id = :id LIMIT 1`,
+              { replacements: { id: idCondominioFinal }, type: QueryTypes.SELECT }
+            );
+
+            await despacharEmail({
+              _ref: `dashboard_registro_${registroCriado?.id}`,
+              template: 'dashboard_registro_notificacao',
+              emails: emailsDestino,
+              registro: {
+                titulo: String(registroCriado?.titulo || ''),
+                tipo: tipoRow?.descricao || '',
+                descricao: String(registroCriado?.descricao || ''),
+                condominio_nome: condominioRow?.nome || ''
+              }
+            });
+          } catch (emailErr) {
+            console.error('[emailDispatch] Erro registro dashboard:', emailErr?.message);
           }
         })());
       }
