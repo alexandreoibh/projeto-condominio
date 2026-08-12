@@ -29,6 +29,10 @@ async function despacharTelegram(payload) {
     text: payload.mensagem
   };
 
+  if (payload.parse_mode) {
+    body.parse_mode = payload.parse_mode;
+  }
+
   const ref = payload._id_agenda ?? payload._ref ?? '?';
 
   let lastError;

@@ -81,6 +81,27 @@ class CondominioController {
       .toLowerCase();
   }
 
+  _iconeModuloTelegram(modulo) {
+    const MAPA_MODULO = {
+      encomenda: { icone: '\ud83d\udce6', rotulo: 'Encomenda' },
+      reuniao: { icone: '\ud83d\uddd3\ufe0f', rotulo: 'Reuni\u00e3o' },
+      aviso: { icone: '\ud83d\udce2', rotulo: 'Aviso' },
+      ocorrencia: { icone: '\u26a0\ufe0f', rotulo: 'Ocorr\u00eancia' },
+      financeiro: { icone: '\ud83d\udcb0', rotulo: 'Financeiro' },
+      visitante: { icone: '\ud83d\udeaa', rotulo: 'Visitante' }
+    };
+
+    const chave = this._normalizarPerfil(modulo);
+    return MAPA_MODULO[chave] || { icone: '\ud83d\udd14', rotulo: 'Notifica\u00e7\u00e3o' };
+  }
+
+  _escapeHtmlTelegram(value) {
+    return String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
   async _uploadImagemBlob(arquivo, idCondominio, subPath, origemImagemAtual = null) {
     const { put } = require('@vercel/blob');
     const path = require('path');
@@ -12422,7 +12443,7 @@ class CondominioController {
   async processarFilaMensagens(req, res) {
     try {
       const pendentes = await postgres.query(
-        `SELECT id, id_condominio, id_usuario_destino, tipo, mensagem_bruta, mensagem_tratada_ia
+        `SELECT id, id_condominio, id_usuario_criacao, id_usuario_destino, tipo, modulo, mensagem_bruta, mensagem_tratada_ia
            FROM "condominio-bh".tb_mensagens_fila
           WHERE status = 1
           ORDER BY created_at ASC
@@ -12454,7 +12475,7 @@ class CondominioController {
           }
 
           const destinatarioRows = await postgres.query(
-            `SELECT telefone, chat_id_telegram
+            `SELECT telefone, chat_id_telegram, nome, sobrenome, apartamento, bloco, tipo_perfil_id
                FROM "condominio-bh"."tb-usuarios"
               WHERE id = :id
                 AND id_condominio = :id_condominio
@@ -12465,7 +12486,8 @@ class CondominioController {
             }
           );
 
-          const mensagemFinal = item.mensagem_tratada_ia || item.mensagem_bruta;
+          let mensagemFinal = item.mensagem_tratada_ia || item.mensagem_bruta;
+          let parseModeTelegram = null;
 
           if (item.tipo === 'whatsapp') {
             const telefone = destinatarioRows?.[0]?.telefone;
@@ -12478,7 +12500,95 @@ class CondominioController {
             if (!chatId) {
               throw new Error('TELEGRAM_NAO_VINCULADO: usuário ainda não vinculou o Telegram.');
             }
-            await despacharTelegram({ chat_id: chatId, mensagem: mensagemFinal, _ref: `fila_${item.id}` });
+
+            if (!item.mensagem_tratada_ia) {
+              try {
+                const destinatario = destinatarioRows[0];
+                const destinatarioNomeCompleto = [destinatario?.nome, destinatario?.sobrenome]
+                  .filter(Boolean)
+                  .join(' ')
+                  .trim() || 'morador';
+
+                let remetenteNomeCompleto = 'e-Morador';
+                let remetentePerfil = null;
+                if (item.id_usuario_criacao) {
+                  const remetenteRows = await postgres.query(
+                    `SELECT tu.nome, tu.sobrenome, p.nome AS perfil_nome
+                       FROM "condominio-bh"."tb-usuarios" tu
+                       LEFT JOIN "condominio-bh".tb_sgw_perfil p
+                         ON p.id::text = tu.tipo_perfil_id::text
+                      WHERE tu.id = :id AND tu.id_condominio = :id_condominio
+                      LIMIT 1`,
+                    {
+                      replacements: { id: item.id_usuario_criacao, id_condominio: item.id_condominio },
+                      type: QueryTypes.SELECT
+                    }
+                  );
+                  const remetente = remetenteRows?.[0];
+                  if (remetente) {
+                    remetenteNomeCompleto =
+                      [remetente.nome, remetente.sobrenome].filter(Boolean).join(' ').trim() || remetenteNomeCompleto;
+                    remetentePerfil = remetente.perfil_nome || null;
+                  }
+                }
+
+                const [condominioRow] = await postgres.query(
+                  `SELECT nome FROM "condominio-bh"."tb-condominios" WHERE id = :id LIMIT 1`,
+                  { replacements: { id: item.id_condominio }, type: QueryTypes.SELECT }
+                );
+                const condominioNome = condominioRow?.nome || 'seu condomínio';
+
+                const { icone, rotulo } = this._iconeModuloTelegram(item.modulo);
+
+                const linhaLocalizacao = destinatario?.apartamento
+                  ? ` — Apto ${this._escapeHtmlTelegram(destinatario.apartamento)}${
+                      destinatario?.bloco ? `, Bloco ${this._escapeHtmlTelegram(destinatario.bloco)}` : ''
+                    }`
+                  : '';
+
+                const linhas = [
+                  `Olá ${this._escapeHtmlTelegram(destinatarioNomeCompleto)} 👋, do ${this._escapeHtmlTelegram(condominioNome)}.`,
+                  `Eu sou o e-Morador e tenho uma nova notificação para você:`,
+                  '',
+                  `${icone} <b>${this._escapeHtmlTelegram(rotulo)}</b>`,
+                  '',
+                  `✍️ <b>Enviado por:</b> ${this._escapeHtmlTelegram(remetenteNomeCompleto)}${
+                    remetentePerfil ? ` (${this._escapeHtmlTelegram(remetentePerfil)})` : ''
+                  }`,
+                  `📍 <b>Para:</b> ${this._escapeHtmlTelegram(destinatarioNomeCompleto)}${linhaLocalizacao}`,
+                  `🏢 <b>Condomínio:</b> ${this._escapeHtmlTelegram(condominioNome)}`,
+                  '',
+                  `💬 ${this._escapeHtmlTelegram(item.mensagem_bruta)}`
+                ];
+
+                const mensagemEnriquecida = linhas.join('\n');
+
+                await postgres.query(
+                  `UPDATE "condominio-bh".tb_mensagens_fila
+                      SET mensagem_tratada_ia = :mensagem_tratada_ia,
+                          updated_at = now()
+                    WHERE id = :id`,
+                  {
+                    replacements: { id: item.id, mensagem_tratada_ia: mensagemEnriquecida },
+                    type: QueryTypes.UPDATE
+                  }
+                );
+
+                mensagemFinal = mensagemEnriquecida;
+                parseModeTelegram = 'HTML';
+              } catch (formatarError) {
+                console.error('[telegramDispatch] Falha ao formatar mensagem enriquecida, usando texto simples:', formatarError.message);
+              }
+            } else {
+              parseModeTelegram = 'HTML';
+            }
+
+            await despacharTelegram({
+              chat_id: chatId,
+              mensagem: mensagemFinal,
+              parse_mode: parseModeTelegram,
+              _ref: `fila_${item.id}`
+            });
           }
 
           await postgres.query(
