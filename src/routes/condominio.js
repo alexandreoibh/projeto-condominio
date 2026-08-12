@@ -1079,7 +1079,19 @@ router.post(
 			.isLength({ max: 50 })
 			.withMessage('Campo encomenda_bloco deve ter no máximo 50 caracteres.'),
 		body('enviar_email')
-			.optional({ nullable: true, checkFalsy: true })
+			.optional({ nullable: true, checkFalsy: true }),
+		body('unidade_bloco')
+			.optional({ nullable: true })
+			.isLength({ max: 50 })
+			.withMessage('Campo unidade_bloco deve ter no máximo 50 caracteres.'),
+		body('unidade_apartamento')
+			.optional({ nullable: true })
+			.isLength({ max: 50 })
+			.withMessage('Campo unidade_apartamento deve ter no máximo 50 caracteres.'),
+		body('unidade_label_bloco')
+			.optional({ nullable: true })
+			.isLength({ max: 50 })
+			.withMessage('Campo unidade_label_bloco deve ter no máximo 50 caracteres.')
 	],
 	validate,
 	controller.criarDashboardRegistro.bind(controller)

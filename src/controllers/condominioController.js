@@ -4826,6 +4826,15 @@ class CondominioController {
               { replacements: { id: idCondominioFinal }, type: QueryTypes.SELECT }
             );
 
+            // Unidade de origem só faz sentido quando quem criou o registro é Morador
+            const dadosUnidade = idPerfilAutor === 2
+              ? {
+                  unidade_bloco: this._normalizarTextoOuNull(req.body.unidade_bloco),
+                  unidade_apartamento: this._normalizarTextoOuNull(req.body.unidade_apartamento),
+                  unidade_label_bloco: this._normalizarTextoOuNull(req.body.unidade_label_bloco)
+                }
+              : {};
+
             await despacharEmail({
               _ref: `dashboard_registro_${registroCriado?.id}`,
               template: 'dashboard_registro_notificacao',
@@ -4834,7 +4843,8 @@ class CondominioController {
                 titulo: String(registroCriado?.titulo || ''),
                 tipo: tipoRow?.descricao || '',
                 descricao: String(registroCriado?.descricao || ''),
-                condominio_nome: condominioRow?.nome || ''
+                condominio_nome: condominioRow?.nome || '',
+                ...dadosUnidade
               }
             });
           } catch (emailErr) {
