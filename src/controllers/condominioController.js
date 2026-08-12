@@ -102,6 +102,16 @@ class CondominioController {
       .replace(/>/g, '&gt;');
   }
 
+  _statusLabelDashboardRegistro(status) {
+    const MAPA_STATUS = {
+      ativo: 'Em Andamento',
+      inativo: 'Finalizado'
+    };
+
+    const chave = this._normalizarPerfil(status);
+    return MAPA_STATUS[chave] || status;
+  }
+
   async _uploadImagemBlob(arquivo, idCondominio, subPath, origemImagemAtual = null) {
     const { put } = require('@vercel/blob');
     const path = require('path');
@@ -4319,7 +4329,8 @@ class CondominioController {
 
       const dataComImagem = data.map((item) => ({
         ...item,
-        imagem_url: buildDashboardImagemProxyUrl(req, item.id, item.origem)
+        imagem_url: buildDashboardImagemProxyUrl(req, item.id, item.origem),
+        status_label: this._statusLabelDashboardRegistro(item.status)
       }));
 
       return res.status(200).json({
@@ -4435,7 +4446,8 @@ class CondominioController {
       return res.status(200).json({
         data: {
           ...registro[0],
-          imagem_url: buildDashboardImagemProxyUrl(req, registro[0].id, registro[0].origem)
+          imagem_url: buildDashboardImagemProxyUrl(req, registro[0].id, registro[0].origem),
+          status_label: this._statusLabelDashboardRegistro(registro[0].status)
         }
       });
     } catch (error) {
