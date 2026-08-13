@@ -4228,8 +4228,6 @@ class CondominioController {
         replacements.status = statusFiltro.toLowerCase();
       } else if (exibicaoDashboard === 1) {
         whereParts.push("lower(dr.status) = 'ativo'");
-      } else if (ehMorador) {
-        whereParts.push("lower(dr.status) IN ('ativo', 'inativo')");
       }
 
       if (exibicaoDashboard !== null) {
