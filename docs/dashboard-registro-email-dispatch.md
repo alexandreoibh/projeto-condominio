@@ -43,7 +43,7 @@ Serviço externo resolve o template e envia o e-mail de verdade
 
 O disparo roda via `waitUntil()` (`@vercel/functions`), depois de `transaction.commit()` — não bloqueia nem depende do front esperar.
 
-Este e-mail é **independente** do e-mail de encomenda já existente (`tipoRegistro === 3`, template `encomenda_notificacao`, disparado sempre que há `apartamento` informado, sem depender de `enviar_email`). Um registro de Encomenda criado com `enviar_email: 1` dispara os dois e-mails: o de encomenda (moradores do apartamento) e este genérico (destinatários por perfil).
+Este e-mail é **independente** do e-mail de encomenda já existente (`tipoRegistro === 3`, template `encomenda_notificacao`, disparado sempre que há `apartamento` informado, sem depender de `enviar_email`) — mas **não dispara para registros de Encomenda** (`tipoRegistro === 3`), mesmo com `enviar_email: 1`. A regra de destinatários deste e-mail genérico é por perfil de quem criou o registro, não por unidade, então rodaria para o condomínio inteiro numa Encomenda; o e-mail de encomenda já cobre esse caso corretamente (filtrado por apartamento/bloco). Um registro de Encomenda criado com `enviar_email: 1` dispara **só** o e-mail de encomenda.
 
 ## Regra de destinatários
 

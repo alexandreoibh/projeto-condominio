@@ -4780,7 +4780,8 @@ class CondominioController {
       }
 
       // Notificação por e-mail acionada pelo switch "Notificar ... por E-mail" da tela
-      if (enviarEmailNotificacao) {
+      // Encomenda (tipo 3) já tem o e-mail dedicado acima, filtrado por unidade — não duplicar com o genérico
+      if (enviarEmailNotificacao && tipoRegistro !== 3) {
         console.log(
           `[emailDispatch][dashboard-registro] Disparo solicitado — registro=${idCodigoRegistro} id_usuario_autor=${idUsuarioFinal} id_condominio=${idCondominioFinal}`
         );
