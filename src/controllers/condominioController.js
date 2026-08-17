@@ -4224,8 +4224,17 @@ class CondominioController {
       const statusFiltro = req.query.status !== undefined ? String(req.query.status).trim() : '';
 
       if (statusFiltro !== '') {
-        whereParts.push('lower(dr.status) = :status');
-        replacements.status = statusFiltro.toLowerCase();
+        const statusTokens = [...new Set(
+          statusFiltro
+            .split(',')
+            .map((item) => item.trim().toLowerCase())
+            .filter((item) => item !== '')
+        )];
+
+        if (statusTokens.length > 0) {
+          whereParts.push('lower(dr.status) IN (:status_list)');
+          replacements.status_list = statusTokens;
+        }
       } else if (exibicaoDashboard === 1) {
         whereParts.push("lower(dr.status) = 'ativo'");
       }
@@ -5035,6 +5044,151 @@ class CondominioController {
       const registroAtualizado = update[0][0];
       const idCondominioFinal = this._toInt(registroAtualizado?.id_condominio, null);
       const tipoFinal = this._toInt(registroAtualizado?.tipo ?? atual.tipo, 0);
+
+      const statusAnterior = String(atual.status || '').trim().toLowerCase();
+      const statusFinal = String(registroAtualizado?.status || '').trim().toLowerCase();
+
+      if (tipoFinal === 3 && statusFinal === 'entregue' && statusAnterior !== 'entregue') {
+        const apartamentoFinal = this._normalizarTextoOuNull(registroAtualizado?.apartamento);
+        const blocoFinal = this._normalizarTextoOuNull(registroAtualizado?.bloco);
+        const idUsuarioRegistrando = this._toInt(req.idcliente, null);
+
+        try {
+          const tipoNotificacaoRows = await postgres.query(
+            `SELECT id
+               FROM "condominio-bh".tb_notificacao_tipo
+              WHERE codigo::text = '8' OR id = 8
+              ORDER BY CASE WHEN codigo::text = '8' THEN 0 ELSE 1 END
+              LIMIT 1`,
+            { type: QueryTypes.SELECT }
+          );
+
+          const idNotificacaoTipo = this._toInt(tipoNotificacaoRows?.[0]?.id, null);
+
+          let empresaEntregaMensagem = this._normalizarTextoOuNull(registroAtualizado?.empresa_entrega);
+          if (empresaEntregaMensagem && /^\d+$/.test(empresaEntregaMensagem)) {
+            const empresaRows = await postgres.query(
+              `SELECT empresa
+                 FROM "condominio-bh".tb_dashboard_empresas
+                WHERE id = :id
+                LIMIT 1`,
+              {
+                replacements: { id: this._toInt(empresaEntregaMensagem, null) },
+                type: QueryTypes.SELECT
+              }
+            );
+
+            const nomeEmpresa = this._normalizarTextoOuNull(empresaRows?.[0]?.empresa);
+            if (nomeEmpresa) {
+              empresaEntregaMensagem = nomeEmpresa;
+            }
+          }
+
+          const moradoresDestino = apartamentoFinal
+            ? await postgres.query(
+                `SELECT tu.id, tu.email
+                   FROM "condominio-bh"."tb-usuarios" tu
+                  WHERE tu.id_condominio = :id_condominio
+                    AND COALESCE(tu.apartamento, '') = :apartamento
+                    AND (:bloco IS NULL OR COALESCE(tu.bloco, '') = :bloco)
+                    AND COALESCE(tu.status, '') IN ('ativo', 'Ativo')`,
+                {
+                  replacements: { id_condominio: idCondominioFinal, apartamento: apartamentoFinal, bloco: blocoFinal },
+                  type: QueryTypes.SELECT
+                }
+              )
+            : [];
+
+          const idsUsuariosDestino = [...new Set((moradoresDestino || []).map((r) => this._toInt(r.id, null)).filter(Boolean))];
+
+          if (idNotificacaoTipo && idUsuarioRegistrando && idsUsuariosDestino.length > 0) {
+            const mensagemNotificacao = [
+              'Encomenda retirada',
+              apartamentoFinal ? `apto ${apartamentoFinal}` : null,
+              blocoFinal ? `bloco ${blocoFinal}` : null,
+              empresaEntregaMensagem ? `empresa ${empresaEntregaMensagem}` : null
+            ]
+              .filter((item) => item)
+              .join(' - ');
+
+            for (const idUsuarioDestino of idsUsuariosDestino) {
+              await postgres.query(
+                `INSERT INTO "condominio-bh".tb_notificacao_log (
+                    id_notificacao_tipo,
+                    id_usuario,
+                    mensagem,
+                    id_usuario_pedido,
+                    id_condominio,
+                    id_codigo
+                 ) VALUES (
+                    :id_notificacao_tipo,
+                    :id_usuario,
+                    :mensagem,
+                    :id_usuario_pedido,
+                    :id_condominio,
+                    :id_codigo
+                 )`,
+                {
+                  replacements: {
+                    id_notificacao_tipo: idNotificacaoTipo,
+                    id_usuario: idUsuarioDestino,
+                    mensagem: mensagemNotificacao,
+                    id_usuario_pedido: idUsuarioRegistrando,
+                    id_condominio: idCondominioFinal,
+                    id_codigo: id
+                  }
+                }
+              );
+            }
+
+            const resultadoPush = await pushNotificationService.enviarParaUsuarios(idsUsuariosDestino, {
+              title: '📦 Encomenda retirada',
+              body: 'Sua encomenda foi retirada da portaria.',
+              sound: 'default',
+              data: {
+                tipo: 'encomenda',
+                id,
+                rota: '/encomendas'
+              }
+            });
+
+            if (resultadoPush?.invalid?.length > 0) {
+              console.warn('[push][encomenda-entregue] tokens inválidos:', resultadoPush.invalid);
+            }
+          } else if (!idNotificacaoTipo) {
+            console.warn('[notificacao][encomenda-entregue] Tipo de notificação 8 não encontrado na tb_notificacao_tipo.');
+          }
+
+          const emailsMoradores = [...new Set((moradoresDestino || []).map((r) => r.email).filter(Boolean))];
+          if (emailsMoradores.length > 0) {
+            waitUntil((async () => {
+              try {
+                const [condominioRow] = await postgres.query(
+                  `SELECT nome FROM "condominio-bh"."tb-condominios" WHERE id = :id LIMIT 1`,
+                  { replacements: { id: idCondominioFinal }, type: QueryTypes.SELECT }
+                );
+
+                await despacharEmailReserva({
+                  _id_agenda: id,
+                  template: 'encomenda_notificacao',
+                  emails: emailsMoradores,
+                  encomenda: {
+                    apartamento: apartamentoFinal || '',
+                    bloco: blocoFinal || '',
+                    empresa_entrega: empresaEntregaMensagem || '',
+                    titulo: String(registroAtualizado?.titulo || ''),
+                    condominio_nome: condominioRow?.nome || ''
+                  }
+                });
+              } catch (emailErr) {
+                console.error('[emailDispatch] Erro encomenda entregue:', emailErr?.message);
+              }
+            })());
+          }
+        } catch (notificacaoError) {
+          console.error('[notificacao][encomenda-entregue] Falha ao processar notificação:', notificacaoError?.message);
+        }
+      }
 
       const arquivoImagem =
         req.files?.imagem?.[0] ||
