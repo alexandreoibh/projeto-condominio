@@ -8,6 +8,7 @@ const fetch = require('node-fetch');
 const { QueryTypes } = require('sequelize');
 const pushNotificationService = require('../service/pushNotificationService');
 const { despacharEmail, despacharEmailReserva } = require('../service/emailDispatchService');
+const { despacharEncomendaEntregaEmail } = require('../service/encomendaEntregaEmailService');
 const { despacharWhatsapp } = require('../service/whatsappDispatchService');
 const { despacharTelegram } = require('../service/telegramDispatchService');
 const { waitUntil } = require('@vercel/functions');
@@ -5168,16 +5169,14 @@ class CondominioController {
                   { replacements: { id: idCondominioFinal }, type: QueryTypes.SELECT }
                 );
 
-                await despacharEmailReserva({
-                  _id_agenda: id,
-                  template: 'encomenda_notificacao',
+                await despacharEncomendaEntregaEmail({
                   emails: emailsMoradores,
                   encomenda: {
                     apartamento: apartamentoFinal || '',
                     bloco: blocoFinal || '',
+                    condominio_nome: condominioRow?.nome || '',
                     empresa_entrega: empresaEntregaMensagem || '',
-                    titulo: String(registroAtualizado?.titulo || ''),
-                    condominio_nome: condominioRow?.nome || ''
+                    id_registro: String(id)
                   }
                 });
               } catch (emailErr) {

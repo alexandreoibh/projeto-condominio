@@ -151,6 +151,7 @@ Três Maps no `CondominioController` sobrevivem apenas enquanto o processo estiv
 - **emailDispatchService** — envia para URL externa configurada em `EMAIL_DISPATCH_URL`; retry automático 3× em erros 5xx, sem retry em 4xx
   - Templates conhecidos: `balancete_publicado` (publicação de balancete), `reuniao_convocacao` (convocação de reunião), `reserva_status`/`reserva_lembrete` (reservas de espaço), `encomenda_notificacao` (encomenda registrada no dashboard, para moradores do apartamento), `dashboard_registro_notificacao` (switch "Notificar ... por E-mail" da tela de Registro do Dashboard — ver `docs/dashboard-registro-email-dispatch.md`; regra de destinatários por perfil de quem criou: Morador → Síndico/Sub-Síndico (3, 4); demais perfis → Moradores (2), mesma regra do canal Telegram desta tela)
 - **whatsappDispatchService** — envia mensagens de WhatsApp via URL externa configurada em `WHATSAPP_DISPATCH_URL` (endpoint PHP `public-whatsapp-dispatch.php`, que fala com a Evolution API); mesmo padrão de retry do `emailDispatchService`. Payload `{ telefones, mensagem }` — **sem** `id_condominio`, pois existe apenas **uma instância WhatsApp para o sistema inteiro** (não por condomínio). Infraestrutura pronta (`despacharWhatsapp()`), ainda sem chamadas automáticas nos fluxos existentes (convite, cobrança, reunião, lembrete) — integração call-site-a-call-site é trabalho futuro. Persistência do status de conexão fica em `"condominio-bh".tb_whatsapp_instancia` (registro único, sempre `id = 1`), exposta via `GET|POST /api/whatsapp/instancia` (fora do prefixo `/api/condominio`, `whatsappController.js`/`routes/whatsapp.js`).
+- **encomendaEntregaEmailService** — envia para URL externa configurada em `ENCOMENDA_ENTREGA_EMAIL_URL` (endpoint PHP dedicado `encomenda-entrega-email.php`, distinto de `public-email-dispatch.php`); mesmo padrão de retry do `emailDispatchService`, reaproveita `PUBLIC_EMAIL_DISPATCH_KEY`. Payload `{ emails, encomenda: { apartamento, bloco, condominio_nome, empresa_entrega, id_registro } }`, sem `template` (o serviço externo só monta o texto e envia). Chamado por `editarDashboardRegistro` (`condominioController.js`) quando um registro de Encomenda (`tipo=3`) transiciona para `status='entregue'` — ver `docs/encomenda-entrega-email-dispatch.md`.
 - **bcryptjs** — hash de senhas
 - **node-fetch** — chamadas HTTP internas
 - **node-cron** — agendamento do lembrete de reservas (carregado em `server.js`)
@@ -171,6 +172,7 @@ Três Maps no `CondominioController` sobrevivem apenas enquanto o processo estiv
 | `PUBLIC_EMAIL_DISPATCH_KEY` | Bearer token do serviço de e-mails |
 | `WHATSAPP_DISPATCH_URL` | URL do serviço de despacho de WhatsApp (`public-whatsapp-dispatch.php`, front PHP/Evolution API) |
 | `PUBLIC_WHATSAPP_DISPATCH_KEY` | Bearer token do serviço de WhatsApp — opcional; se ausente, usa `PUBLIC_EMAIL_DISPATCH_KEY` como fallback |
+| `ENCOMENDA_ENTREGA_EMAIL_URL` | URL do serviço de e-mail de "encomenda entregue" (`encomenda-entrega-email.php`, endpoint PHP dedicado, separado de `public-email-dispatch.php`) |
 
 ## Convenções
 
