@@ -5049,10 +5049,21 @@ class CondominioController {
       const statusAnterior = String(atual.status || '').trim().toLowerCase();
       const statusFinal = String(registroAtualizado?.status || '').trim().toLowerCase();
 
+      console.log(
+        '[diag-encomenda-entregue] id=%s tipoFinal=%s statusAnterior=%s statusFinal=%s condicaoDisparo=%s',
+        id, tipoFinal, statusAnterior, statusFinal,
+        tipoFinal === 3 && statusFinal === 'entregue' && statusAnterior !== 'entregue'
+      );
+
       if (tipoFinal === 3 && statusFinal === 'entregue' && statusAnterior !== 'entregue') {
         const apartamentoFinal = this._normalizarTextoOuNull(registroAtualizado?.apartamento);
         const blocoFinal = this._normalizarTextoOuNull(registroAtualizado?.bloco);
         const idUsuarioRegistrando = this._toInt(req.idcliente, null);
+
+        console.log(
+          '[diag-encomenda-entregue] Entrou no bloco de notificação. apartamentoFinal=%s blocoFinal=%s idCondominioFinal=%s',
+          apartamentoFinal, blocoFinal, idCondominioFinal
+        );
 
         try {
           const tipoNotificacaoRows = await postgres.query(
@@ -5099,6 +5110,8 @@ class CondominioController {
                 }
               )
             : [];
+
+          console.log('[diag-encomenda-entregue] moradoresDestino.length=%s', moradoresDestino?.length ?? 0);
 
           const idsUsuariosDestino = [...new Set((moradoresDestino || []).map((r) => this._toInt(r.id, null)).filter(Boolean))];
 
@@ -5162,6 +5175,7 @@ class CondominioController {
 
           const emailsMoradores = [...new Set((moradoresDestino || []).map((r) => r.email).filter(Boolean))];
           if (emailsMoradores.length > 0) {
+            console.log('[diag-encomenda-entregue] Disparando waitUntil para %s e-mail(s): %o', emailsMoradores.length, emailsMoradores);
             waitUntil((async () => {
               try {
                 const [condominioRow] = await postgres.query(
@@ -5180,12 +5194,14 @@ class CondominioController {
                   }
                 });
               } catch (emailErr) {
-                console.error('[emailDispatch] Erro encomenda entregue:', emailErr?.message);
+                console.error('[emailDispatch] Erro encomenda entregue:', emailErr?.stack || emailErr?.message);
               }
             })());
+          } else {
+            console.warn('[diag-encomenda-entregue] emailsMoradores vazio — e-mail NÃO será disparado.');
           }
         } catch (notificacaoError) {
-          console.error('[notificacao][encomenda-entregue] Falha ao processar notificação:', notificacaoError?.message);
+          console.error('[notificacao][encomenda-entregue] Falha ao processar notificação:', notificacaoError?.stack || notificacaoError?.message);
         }
       }
 
