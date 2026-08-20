@@ -2413,6 +2413,10 @@ router.post(
 			.optional({ nullable: true, checkFalsy: true })
 			.isFloat({ min: 0 })
 			.withMessage('Campo taxa_reserva deve ser numérico.'),
+		body('custo_limpeza')
+			.optional({ nullable: true, checkFalsy: true })
+			.isFloat({ min: 0 })
+			.withMessage('Campo custo_limpeza deve ser numérico.'),
 		body('max_res_unid_ano')
 			.optional({ nullable: true, checkFalsy: true })
 			.isInt({ min: 0 })
@@ -2497,6 +2501,10 @@ router.put(
 			.optional({ nullable: true, checkFalsy: true })
 			.isFloat({ min: 0 })
 			.withMessage('Campo taxa_reserva deve ser numérico.'),
+		body('custo_limpeza')
+			.optional({ nullable: true, checkFalsy: true })
+			.isFloat({ min: 0 })
+			.withMessage('Campo custo_limpeza deve ser numérico.'),
 		body('max_res_unid_ano')
 			.optional({ nullable: true, checkFalsy: true })
 			.isInt({ min: 0 })

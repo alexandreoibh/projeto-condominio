@@ -4933,6 +4933,11 @@ class CondominioController {
 
   async editarDashboardRegistro(req, res) {
     try {
+      console.log(
+        '[diag-encomenda-entregue] editarDashboardRegistro chamado. params.id=%s body.tipo=%s body.status=%s',
+        req.params.id, req.body?.tipo, req.body?.status
+      );
+
       const id = this._toInt(req.params.id, null);
       if (!id) {
         return res.status(400).json({ message: 'Id do registro inválido.' });
@@ -4954,6 +4959,11 @@ class CondominioController {
       }
 
       const atual = atualRows[0];
+
+      console.log(
+        '[diag-encomenda-entregue] Registro atual ANTES do update: id=%s tipo=%s status=%s apartamento=%s bloco=%s',
+        atual.id, atual.tipo, atual.status, atual.apartamento, atual.bloco
+      );
 
       const update = await postgres.query(
         `UPDATE "condominio-bh".tb_dashboard_registro
@@ -5043,6 +5053,12 @@ class CondominioController {
       );
 
       const registroAtualizado = update[0][0];
+
+      console.log(
+        '[diag-encomenda-entregue] Registro APÓS update: tipo=%s status=%s apartamento=%s bloco=%s',
+        registroAtualizado?.tipo, registroAtualizado?.status, registroAtualizado?.apartamento, registroAtualizado?.bloco
+      );
+
       const idCondominioFinal = this._toInt(registroAtualizado?.id_condominio, null);
       const tipoFinal = this._toInt(registroAtualizado?.tipo ?? atual.tipo, 0);
 
@@ -9276,6 +9292,7 @@ class CondominioController {
         domingo,
         periodo_modo,
         taxa_reserva,
+        custo_limpeza,
         max_res_unid_ano,
         max_dias_permite_agendar,
         bloqueia_outras_salas
@@ -9304,6 +9321,7 @@ class CondominioController {
           domingo,
           periodo_modo,
           taxa_reserva,
+          custo_limpeza,
           max_res_unid_ano,
           max_dias_permite_agendar,
           sala_bloqueia_outras,
@@ -9331,6 +9349,7 @@ class CondominioController {
           :domingo,
           :periodo_modo,
           :taxa_reserva,
+          :custo_limpeza,
           :max_res_unid_ano,
           :max_dias_permite_agendar,
           :sala_bloqueia_outras,
@@ -9361,6 +9380,7 @@ class CondominioController {
             domingo: domingo ?? 0,
             periodo_modo: periodo_modo || null,
             taxa_reserva: taxa_reserva || null,
+            custo_limpeza: custo_limpeza || null,
             max_res_unid_ano: max_res_unid_ano ?? null,
             max_dias_permite_agendar: max_dias_permite_agendar ?? null,
             sala_bloqueia_outras: bloqueia_outras_salas ?? 0
@@ -9415,6 +9435,7 @@ class CondominioController {
         domingo,
         periodo_modo,
         taxa_reserva,
+        custo_limpeza,
         max_res_unid_ano,
         max_dias_permite_agendar,
         bloqueia_outras_salas
@@ -9442,6 +9463,7 @@ class CondominioController {
                 domingo = :domingo,
                 periodo_modo = :periodo_modo,
                 taxa_reserva = :taxa_reserva,
+                custo_limpeza = :custo_limpeza,
                 max_res_unid_ano = :max_res_unid_ano,
                 max_dias_permite_agendar = :max_dias_permite_agendar,
                 sala_bloqueia_outras = :sala_bloqueia_outras,
@@ -9473,6 +9495,7 @@ class CondominioController {
             domingo: domingo ?? 0,
             periodo_modo: periodo_modo || null,
             taxa_reserva: taxa_reserva || null,
+            custo_limpeza: custo_limpeza || null,
             max_res_unid_ano: max_res_unid_ano ?? null,
             max_dias_permite_agendar: max_dias_permite_agendar ?? null,
             sala_bloqueia_outras: bloqueia_outras_salas ?? 0
