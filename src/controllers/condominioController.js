@@ -7067,6 +7067,7 @@ class CondominioController {
             tc.email AS email_condominio,
             e.nome AS nome_espaco,
             ea.taxa_reserva,
+            ea.custo_limpeza,
             est.descricao_status AS descricao_status,
             tu_cadastro.nome || ' ' || tu_cadastro.sobrenome AS nome_usuario_cadastro
           FROM "condominio-bh".tb_espaco_agenda ea
@@ -9817,7 +9818,8 @@ class CondominioController {
             e.localizacao AS espaco_localizacao,
             e.sala_bloqueia_outras AS bloqueia_outras_salas,
               COALESCE(ea.taxa_reserva, e.taxa_reserva) AS taxa_reserva,
-            tt.descricao_status 
+              COALESCE(ea.custo_limpeza, e.custo_limpeza) AS custo_limpeza,
+            tt.descricao_status
           FROM "condominio-bh".tb_espaco_agenda ea
           INNER JOIN "condominio-bh".tb_espaco e
              ON e.id = ea.id_espaco
@@ -10244,7 +10246,7 @@ class CondominioController {
       }
 
       const espaco = await postgres.query(
-        `SELECT id, nome, periodo_modo, taxa_reserva, max_res_unid_ano, max_dias_permite_agendar, sala_bloqueia_outras
+        `SELECT id, nome, periodo_modo, taxa_reserva, custo_limpeza, max_res_unid_ano, max_dias_permite_agendar, sala_bloqueia_outras
            FROM "condominio-bh".tb_espaco
           WHERE id = :idEspaco
             AND id_condominio = :idCondominio
@@ -10263,6 +10265,11 @@ class CondominioController {
         espaco[0].taxa_reserva === undefined || espaco[0].taxa_reserva === null
           ? null
           : Number(espaco[0].taxa_reserva);
+
+      const custoLimpezaAgenda =
+        espaco[0].custo_limpeza === undefined || espaco[0].custo_limpeza === null
+          ? null
+          : Number(espaco[0].custo_limpeza);
 
       const periodo_manha = Math.max(this._toInt(req.body.periodo_manha, 0), 0) ? 1 : 0;
       const periodo_tarde = Math.max(this._toInt(req.body.periodo_tarde, 0), 0) ? 1 : 0;
@@ -10518,6 +10525,7 @@ class CondominioController {
              id_usuario,
              id_usuario_cadastro,
              taxa_reserva,
+             custo_limpeza,
              status,
              observacoes,
              periodo_manha,
@@ -10533,6 +10541,7 @@ class CondominioController {
              :id_usuario,
              :id_usuario_cadastro,
              :taxa_reserva,
+             :custo_limpeza,
              :status,
              :observacoes,
              :periodo_manha,
@@ -10551,6 +10560,7 @@ class CondominioController {
               id_usuario: idUsuarioReserva,
               id_usuario_cadastro: idUsuarioCadastro,
               taxa_reserva: taxaReservaAgenda,
+              custo_limpeza: custoLimpezaAgenda,
               status,
               observacoes,
               periodo_manha,
