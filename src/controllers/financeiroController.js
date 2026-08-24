@@ -204,7 +204,19 @@ class FinanceiroController {
                   EXISTS (
                     SELECT 1 FROM "condominio-bh".tb_fin_receitas_documentos rd
                      WHERE rd.id_receita = r.id AND rd.tipo = 'comprovante'
-                  ) AS tem_anexo_comprovante
+                  ) AS tem_anexo_comprovante,
+                  COALESCE(
+                    (SELECT array_to_json(array_agg(row_to_json(sub) ORDER BY sub.created_at DESC))
+                       FROM (
+                         SELECT l.id, l.created_at, l.id_usuario_solicitante,
+                                tu2.nome AS nome_solicitante
+                           FROM "condominio-bh".tb_fin_2via_boleto_log l
+                           LEFT JOIN "condominio-bh"."tb-usuarios" tu2 ON tu2.id = l.id_usuario_solicitante
+                          WHERE l.id_receita = r.id
+                       ) sub
+                    ),
+                    '[]'::json
+                  ) AS solicitacoes_2via
              FROM "condominio-bh".tb_fin_receitas r
              LEFT JOIN "condominio-bh".tb_condominios_unidades tcu
                ON tcu.id = r.id_unidade AND tcu.id_condominio = r.id_condominio
