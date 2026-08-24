@@ -2083,44 +2083,67 @@ class FinanceiroController {
       const pendencias = idsConsulta.map((id) => porId.get(id));
       const consolidado = outrasPendenciasIds.length > 0;
 
+      const idUnidadeReceita = this._toInt(receitaPrincipal.id_unidade, null);
+      const moradoresUnidade = idUnidadeReceita
+        ? await postgres.query(
+            `SELECT tu.id, tu.nome, tu.email
+               FROM "condominio-bh"."tb-usuarios" tu
+              WHERE tu.id_unidade_predio = :id_unidade
+                AND tu.id_condominio = :id_condominio
+                AND tu.status IN ('ativo', 'Ativo')
+              ORDER BY tu.created_at ASC`,
+            { replacements: { id_unidade: idUnidadeReceita, id_condominio: idCondominio }, type: QueryTypes.SELECT }
+          )
+        : [];
+
+      const destinatarios = moradoresUnidade.length > 0
+        ? moradoresUnidade.map((m) => ({ id_usuario: this._toInt(m.id, null), nome: m.nome, email: m.email }))
+        : (receitaPrincipal.id_usuario
+            ? [{ id_usuario: this._toInt(receitaPrincipal.id_usuario, null), nome: receitaPrincipal.usuario_nome, email: receitaPrincipal.usuario_email }]
+            : []);
+
       res.status(200).json({
         message: 'Cobrança disparada.',
         ...(consolidado ? { pendencias_incluidas: idsConsulta } : {}),
       });
 
+      const idsUsuariosPush = [...new Set(destinatarios.map((d) => d.id_usuario).filter(Boolean))];
+
       setImmediate(async () => {
         for (const pendencia of pendencias) {
-          if (!pendencia.id_usuario) continue;
+          if (idsUsuariosPush.length === 0) continue;
 
           const mensagemIndividual = `Você possui débito pendente: ${pendencia.descricao} — vencido em ${pendencia.data_vencimento}.`;
           try {
-            await pushNotificationService.enviarParaUsuarios([pendencia.id_usuario], {
+            await pushNotificationService.enviarParaUsuarios(idsUsuariosPush, {
               title: 'Aviso de Inadimplência',
               body: mensagemIndividual,
               data: { tipo: 'financeiro', id_receita: pendencia.id },
             });
-            await postgres.query(
-              `INSERT INTO "condominio-bh".tb_fin_cobranca_log
-                  (id_condominio, id_receita, id_usuario, id_usuario_solicitante, canal, mensagem, observacao, enviou_anexo)
-                 VALUES (:id_condominio, :id_receita, :id_usuario, :id_usuario_solicitante, 'push', :mensagem, :observacao, false)`,
-              {
-                replacements: {
-                  id_condominio: idCondominio,
-                  id_receita: pendencia.id,
-                  id_usuario: this._toInt(pendencia.id_usuario, null),
-                  id_usuario_solicitante: idSolicitante,
-                  mensagem: mensagemIndividual,
-                  observacao,
-                },
-              }
-            );
+            for (const idUsuarioDestino of idsUsuariosPush) {
+              await postgres.query(
+                `INSERT INTO "condominio-bh".tb_fin_cobranca_log
+                    (id_condominio, id_receita, id_usuario, id_usuario_solicitante, canal, mensagem, observacao, enviou_anexo)
+                   VALUES (:id_condominio, :id_receita, :id_usuario, :id_usuario_solicitante, 'push', :mensagem, :observacao, false)`,
+                {
+                  replacements: {
+                    id_condominio: idCondominio,
+                    id_receita: pendencia.id,
+                    id_usuario: idUsuarioDestino,
+                    id_usuario_solicitante: idSolicitante,
+                    mensagem: mensagemIndividual,
+                    observacao,
+                  },
+                }
+              );
+            }
           } catch (pushErr) {
             console.error(`[cobrarInadimplente] Erro no push (receita ${pendencia.id}):`, pushErr?.message);
           }
         }
       });
 
-      const emails = [...new Set(pendencias.map((p) => p.usuario_email).filter(Boolean))];
+      const emails = [...new Set(destinatarios.map((d) => d.email).filter(Boolean))];
       if (emails.length > 0) {
         waitUntil((async () => {
           try {
@@ -2160,24 +2183,27 @@ class FinanceiroController {
               ...(boletosParaEmail.length > 0 ? { link: boletosParaEmail[0] } : {}),
             });
 
+            const idsUsuariosEmail = [...new Set(destinatarios.map((d) => d.id_usuario).filter(Boolean))];
             for (const pendencia of pendencias) {
-              await postgres.query(
-                `INSERT INTO "condominio-bh".tb_fin_cobranca_log
-                    (id_condominio, id_receita, id_usuario, id_usuario_solicitante, canal, mensagem, observacao, enviou_anexo, path_anexo)
-                   VALUES (:id_condominio, :id_receita, :id_usuario, :id_usuario_solicitante, 'email', :mensagem, :observacao, :enviou_anexo, :path_anexo)`,
-                {
-                  replacements: {
-                    id_condominio: idCondominio,
-                    id_receita: pendencia.id,
-                    id_usuario: this._toInt(pendencia.id_usuario, null),
-                    id_usuario_solicitante: idSolicitante,
-                    mensagem: mensagemCobranca,
-                    observacao,
-                    enviou_anexo: anexosUrls.length > 0,
-                    path_anexo: anexosUrls.length > 0 ? anexosUrls.join('\n') : null,
-                  },
-                }
-              );
+              for (const idUsuarioDestino of idsUsuariosEmail) {
+                await postgres.query(
+                  `INSERT INTO "condominio-bh".tb_fin_cobranca_log
+                      (id_condominio, id_receita, id_usuario, id_usuario_solicitante, canal, mensagem, observacao, enviou_anexo, path_anexo)
+                     VALUES (:id_condominio, :id_receita, :id_usuario, :id_usuario_solicitante, 'email', :mensagem, :observacao, :enviou_anexo, :path_anexo)`,
+                  {
+                    replacements: {
+                      id_condominio: idCondominio,
+                      id_receita: pendencia.id,
+                      id_usuario: idUsuarioDestino,
+                      id_usuario_solicitante: idSolicitante,
+                      mensagem: mensagemCobranca,
+                      observacao,
+                      enviou_anexo: anexosUrls.length > 0,
+                      path_anexo: anexosUrls.length > 0 ? anexosUrls.join('\n') : null,
+                    },
+                  }
+                );
+              }
             }
           } catch (emailErr) {
             console.error('[cobrarInadimplente] Erro no e-mail:', emailErr?.message);
