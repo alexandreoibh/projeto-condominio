@@ -556,6 +556,62 @@ class FinanceiroController {
         }
       );
 
+      if (tipo === 'boleto') {
+        waitUntil((async () => {
+          try {
+            const [receita] = await postgres.query(
+              `SELECT r.id, r.id_unidade, r.valor, r.valor_fundo_reserva, r.competencia,
+                      tcu.unidades_bloco AS unidade_bloco,
+                      us.nome AS morador_nome,
+                      c.nome AS condominio_nome
+                 FROM "condominio-bh".tb_fin_receitas r
+                 LEFT JOIN "condominio-bh".tb_condominios_unidades tcu
+                   ON tcu.id = r.id_unidade AND tcu.id_condominio = r.id_condominio
+                 LEFT JOIN "condominio-bh"."tb-usuarios" us
+                   ON us.id = r.id_usuario
+                 LEFT JOIN "condominio-bh"."tb-condominios" c ON c.id = r.id_condominio
+                WHERE r.id = :id AND r.id_condominio = :id_condominio`,
+              { replacements: { id: idReceita, id_condominio: idCondominio }, type: QueryTypes.SELECT }
+            );
+            if (!receita) return;
+
+            const moradoresUnidade = receita.id_unidade
+              ? await postgres.query(
+                  `SELECT tu.email
+                     FROM "condominio-bh"."tb-usuarios" tu
+                    WHERE tu.id_unidade_predio = :id_unidade
+                      AND tu.id_condominio = :id_condominio
+                      AND tu.status IN ('ativo', 'Ativo')`,
+                  { replacements: { id_unidade: receita.id_unidade, id_condominio: idCondominio }, type: QueryTypes.SELECT }
+                )
+              : [];
+
+            const emails = [...new Set(moradoresUnidade.map((m) => m.email).filter(Boolean))];
+            if (emails.length === 0) return;
+
+            const valorTotal = Number(receita.valor || 0) + Number(receita.valor_fundo_reserva || 0);
+            const competenciaFormatada = receita.competencia
+              ? new Date(receita.competencia).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })
+              : '';
+
+            await despacharEmail({
+              _ref: `boleto_anexado_${idCondominio}_${idReceita}`,
+              template: 'boleto_anexado',
+              emails,
+              boleto: {
+                morador_nome: receita.morador_nome || '',
+                unidade: receita.unidade_bloco || '',
+                competencia: competenciaFormatada,
+                valor: valorTotal,
+                condominio_nome: receita.condominio_nome || '',
+              },
+            });
+          } catch (emailErr) {
+            console.error('[uploadDocumentoReceita] Erro ao enviar e-mail boleto_anexado:', emailErr?.message);
+          }
+        })());
+      }
+
       return res.status(201).json(docRows[0]);
     } catch (error) {
       return res.status(500).json({ message: 'Falha ao fazer upload do documento.', detail: error.message });
