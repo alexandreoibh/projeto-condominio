@@ -209,7 +209,16 @@ class FinanceiroController {
              LEFT JOIN "condominio-bh".tb_condominios_unidades tcu
                ON tcu.id = r.id_unidade AND tcu.id_condominio = r.id_condominio
              LEFT JOIN "condominio-bh"."tb-usuarios" us
-               ON us.id = r.id_usuario
+               ON us.id = COALESCE(
+                 r.id_usuario,
+                 (SELECT tu.id
+                    FROM "condominio-bh"."tb-usuarios" tu
+                   WHERE tu.id_unidade_predio = r.id_unidade
+                     AND tu.id_condominio = r.id_condominio
+                     AND tu.status IN ('ativo', 'Ativo')
+                   ORDER BY tu.created_at ASC
+                   LIMIT 1)
+               )
             WHERE ${whereClause}
             ORDER BY ${orderByClause}
             LIMIT :limit OFFSET :offset`,
