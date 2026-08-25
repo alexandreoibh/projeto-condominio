@@ -6506,7 +6506,22 @@ class CondominioController {
                     ORDER BY r3.publicado_em DESC, r3.id DESC
                     LIMIT 1
                  )
-            ) AS aceite_regulamento_ativo_em
+            ) AS aceite_regulamento_ativo_em,
+            (
+              SELECT row_to_json(resumo)
+                FROM (
+                  SELECT
+                    CASE WHEN COUNT(*) > 0 THEN 'atrasado' ELSE 'em_dia' END AS status,
+                    COUNT(*)::int AS qtde_boletos_em_aberto,
+                    COALESCE(SUM(r.valor + COALESCE(r.valor_fundo_reserva, 0)), 0)::numeric AS saldo_total_devedor,
+                    COALESCE(MAX(CURRENT_DATE - r.data_vencimento), 0)::int AS dias_atraso
+                  FROM "condominio-bh".tb_fin_receitas r
+                 WHERE r.id_unidade = tu.id_unidade_predio
+                   AND r.id_condominio = tu.id_condominio
+                   AND r.situacao = 'em_aberto'
+                   AND r.data_vencimento < CURRENT_DATE
+                ) resumo
+            ) AS situacao_financeira
           FROM "condominio-bh"."tb-usuarios" tu
           LEFT JOIN "condominio-bh"."tb-condominios" tc
             ON tc.id = tu.id_condominio
