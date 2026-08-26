@@ -6468,6 +6468,7 @@ class CondominioController {
             tu.status,
             tu.apartamento,
             tu.bloco,
+            tu.id_unidade_predio AS id_unidade,
             tu.mensagem_whatsapp,
             tu.mensagem_telegram,
             tu.created_at,
