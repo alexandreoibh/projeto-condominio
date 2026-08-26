@@ -6526,7 +6526,7 @@ class CondominioController {
           LEFT JOIN "condominio-bh"."tb-condominios" tc
             ON tc.id = tu.id_condominio
           WHERE ${whereClause}
-          ORDER BY tu.nome ASC, tu.id DESC
+          ORDER BY NULLIF(tu.apartamento, '')::int ASC NULLS LAST, tu.nome ASC, tu.id DESC
           LIMIT :limit OFFSET :offset`,
         {
           replacements: {
