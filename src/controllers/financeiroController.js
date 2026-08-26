@@ -577,11 +577,12 @@ class FinanceiroController {
 
             const moradoresUnidade = receita.id_unidade
               ? await postgres.query(
-                  `SELECT tu.email
+                  `SELECT tu.nome, tu.email
                      FROM "condominio-bh"."tb-usuarios" tu
                     WHERE tu.id_unidade_predio = :id_unidade
                       AND tu.id_condominio = :id_condominio
-                      AND tu.status IN ('ativo', 'Ativo')`,
+                      AND tu.status IN ('ativo', 'Ativo')
+                    ORDER BY tu.created_at ASC`,
                   { replacements: { id_unidade: receita.id_unidade, id_condominio: idCondominio }, type: QueryTypes.SELECT }
                 )
               : [];
@@ -599,7 +600,7 @@ class FinanceiroController {
               template: 'boleto_anexado',
               emails,
               boleto: {
-                morador_nome: receita.morador_nome || '',
+                morador_nome: receita.morador_nome || moradoresUnidade[0]?.nome || '',
                 unidade: receita.unidade_bloco || '',
                 competencia: competenciaFormatada,
                 valor: valorTotal,
