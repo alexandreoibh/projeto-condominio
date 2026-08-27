@@ -10988,6 +10988,115 @@ class CondominioController {
           }
         );
 
+        if (idStatus === 3 && !updatedRow.id_receita_gerada && !updatedRow.id_despesa_gerada) {
+          const dadosReserva = await postgres.query(
+            `SELECT e.nome AS espaco_nome, tu.nome AS morador_nome, tu.id_unidade_predio AS id_unidade
+               FROM "condominio-bh".tb_espaco e, "condominio-bh"."tb-usuarios" tu
+              WHERE e.id = :id_espaco AND tu.id = :id_usuario`,
+            { replacements: { id_espaco: updatedRow.id_espaco, id_usuario: updatedRow.id_usuario }, transaction, type: QueryTypes.SELECT }
+          );
+          const espacoNome = dadosReserva[0]?.espaco_nome || '';
+          const moradorNome = dadosReserva[0]?.morador_nome || '';
+          const idUnidadeMorador = dadosReserva[0]?.id_unidade || null;
+
+          const dataEvento = updatedRow.data_agendamento
+            ? new Date(updatedRow.data_agendamento).toISOString().slice(0, 10)
+            : new Date().toISOString().slice(0, 10);
+          const competenciaEvento = `${dataEvento.slice(0, 7)}-01`;
+
+          let idReceitaGerada = null;
+          const valorTaxaReserva = Number(updatedRow.taxa_reserva || 0);
+          if (valorTaxaReserva > 0) {
+            const grupoReceita = await postgres.query(
+              `SELECT nome, origem FROM "condominio-bh".tb_fin_grupo_receita WHERE id = 14 LIMIT 1`,
+              { transaction, type: QueryTypes.SELECT }
+            );
+            const [insertReceita] = await postgres.query(
+              `INSERT INTO "condominio-bh".tb_fin_receitas (
+                  id_condominio, id_unidade, id_usuario, id_usuario_cadastro, categoria, descricao, valor,
+                  competencia, data_vencimento, data_pagamento, situacao,
+                  id_grupo_receita, id_categoria, grupo_receita, created_at, updated_at
+                ) VALUES (
+                  :id_condominio, :id_unidade, :id_usuario, :id_usuario_cadastro, :categoria, :descricao, :valor,
+                  :competencia::date, :data_vencimento::date, :data_pagamento::date, 'pago',
+                  14, '14', :grupo_receita, now(), now()
+                ) RETURNING id`,
+              {
+                replacements: {
+                  id_condominio: idCondominioToken,
+                  id_unidade: idUnidadeMorador,
+                  id_usuario: updatedRow.id_usuario,
+                  id_usuario_cadastro: idUsuarioTratamento,
+                  categoria: grupoReceita[0]?.nome || 'Locação de Área Comum',
+                  descricao: `Locação de Área Comum - ${espacoNome} - ${moradorNome}`,
+                  valor: valorTaxaReserva,
+                  competencia: competenciaEvento,
+                  data_vencimento: dataEvento,
+                  data_pagamento: dataEvento,
+                  grupo_receita: grupoReceita[0]?.origem || 'MORADOR',
+                },
+                transaction,
+              }
+            );
+            idReceitaGerada = insertReceita[0]?.id || null;
+          }
+
+          let idDespesaGerada = null;
+          const valorCustoLimpeza = Number(updatedRow.custo_limpeza || 0);
+          if (valorCustoLimpeza > 0) {
+            const [insertDespesa] = await postgres.query(
+              `INSERT INTO "condominio-bh".tb_fin_despesas (
+                  id_condominio, fornecedor, categoria, descricao, valor,
+                  competencia, data_despesa, data_pagamento, situacao, created_at, updated_at
+                ) VALUES (
+                  :id_condominio, 'Fornecedor Diversos', 'Salão de Festas', :descricao, :valor,
+                  :competencia::date, :data_despesa::date, :data_pagamento::date, 'pago', now(), now()
+                ) RETURNING id`,
+              {
+                replacements: {
+                  id_condominio: idCondominioToken,
+                  descricao: `Custo de Limpeza - ${espacoNome} - ${moradorNome}`,
+                  valor: valorCustoLimpeza,
+                  competencia: competenciaEvento,
+                  data_despesa: dataEvento,
+                  data_pagamento: dataEvento,
+                },
+                transaction,
+              }
+            );
+            idDespesaGerada = insertDespesa[0]?.id || null;
+          }
+
+          if (idReceitaGerada || idDespesaGerada) {
+            await postgres.query(
+              `UPDATE "condominio-bh".tb_espaco_agenda
+                  SET id_receita_gerada = COALESCE(:id_receita_gerada, id_receita_gerada),
+                      id_despesa_gerada = COALESCE(:id_despesa_gerada, id_despesa_gerada)
+                WHERE id = :id`,
+              { replacements: { id: idAgenda, id_receita_gerada: idReceitaGerada, id_despesa_gerada: idDespesaGerada }, transaction }
+            );
+            updatedRow.id_receita_gerada = idReceitaGerada || updatedRow.id_receita_gerada;
+            updatedRow.id_despesa_gerada = idDespesaGerada || updatedRow.id_despesa_gerada;
+          }
+        }
+
+        if (idStatus === 5 && (updatedRow.id_receita_gerada || updatedRow.id_despesa_gerada)) {
+          if (updatedRow.id_receita_gerada) {
+            await postgres.query(
+              `UPDATE "condominio-bh".tb_fin_receitas SET situacao = 'cancelado', updated_at = now()
+                WHERE id = :id AND id_condominio = :id_condominio`,
+              { replacements: { id: updatedRow.id_receita_gerada, id_condominio: idCondominioToken }, transaction }
+            );
+          }
+          if (updatedRow.id_despesa_gerada) {
+            await postgres.query(
+              `UPDATE "condominio-bh".tb_fin_despesas SET situacao = 'cancelado', updated_at = now()
+                WHERE id = :id AND id_condominio = :id_condominio`,
+              { replacements: { id: updatedRow.id_despesa_gerada, id_condominio: idCondominioToken }, transaction }
+            );
+          }
+        }
+
         const statusNormalizado = this._normalizarPerfil(statusDescricao);
         const statusEhAprovacao = statusNormalizado.includes('aprov');
         const statusEhReprovacao =
