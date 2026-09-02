@@ -560,8 +560,9 @@ class FinanceiroController {
         waitUntil((async () => {
           try {
             const [receita] = await postgres.query(
-              `SELECT r.id, r.id_unidade, r.valor, r.valor_fundo_reserva, r.competencia,
+              `SELECT r.id, r.id_unidade, r.valor, r.valor_fundo_reserva, r.competencia, r.data_vencimento,
                       tcu.unidades_bloco AS unidade_bloco,
+                      COALESCE(us.bloco, tcu.bloco::text) AS bloco,
                       us.nome AS morador_nome,
                       c.nome AS condominio_nome
                  FROM "condominio-bh".tb_fin_receitas r
@@ -594,6 +595,9 @@ class FinanceiroController {
             const competenciaFormatada = receita.competencia
               ? new Date(receita.competencia).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })
               : '';
+            const dataVencimentoFormatada = receita.data_vencimento
+              ? new Date(receita.data_vencimento).toISOString().slice(0, 10)
+              : '';
 
             await despacharEmail({
               _ref: `boleto_anexado_${idCondominio}_${idReceita}`,
@@ -602,8 +606,10 @@ class FinanceiroController {
               boleto: {
                 morador_nome: receita.morador_nome || moradoresUnidade[0]?.nome || '',
                 unidade: receita.unidade_bloco || '',
+                bloco: receita.bloco || '',
                 competencia: competenciaFormatada,
                 valor: valorTotal,
+                data_vencimento: dataVencimentoFormatada,
                 condominio_nome: receita.condominio_nome || '',
               },
             });
