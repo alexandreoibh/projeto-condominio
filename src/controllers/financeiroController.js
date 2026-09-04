@@ -2582,6 +2582,9 @@ class FinanceiroController {
       if (!periodo) return res.status(422).json({ message: 'competencia (ou periodo) é obrigatório.' });
 
       const enviarEmail = String(req.body.enviar_email) === '1';
+      const mensagemPersonalizada = typeof req.body.mensagem === 'string' && req.body.mensagem.trim() !== ''
+        ? req.body.mensagem.trim()
+        : null;
       const idPublicadoPor = this._toInt(req.idcliente, null);
       const replacements = { id_condominio: idCondominio, periodo };
 
@@ -2753,6 +2756,7 @@ class FinanceiroController {
                   _ref: `balancete_${idCondominio}_${periodo}`,
                   template: 'balancete_publicado',
                   emails: destinatarios.map((d) => d.email),
+                  ...(mensagemPersonalizada ? { mensagem: mensagemPersonalizada } : {}),
                   balancete: {
                     competencia: competenciaFormatada,
                     condominio_nome: destinatarios[0]?.condominio_nome || '',
