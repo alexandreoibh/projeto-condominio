@@ -2444,7 +2444,10 @@ class FinanceiroController {
               COALESCE(SUM(CASE WHEN situacao = 'pago' THEN valor_fundo_reserva ELSE 0 END), 0)::numeric AS fundo_reserva_pago,
               COALESCE(SUM(CASE WHEN situacao = 'em_aberto' THEN valor_fundo_reserva ELSE 0 END), 0)::numeric AS fundo_reserva_pendente,
               COALESCE(SUM(CASE WHEN situacao = 'em_aberto' AND data_vencimento < CURRENT_DATE THEN valor + COALESCE(valor_fundo_reserva, 0) ELSE 0 END), 0)::numeric AS inadimplente,
-              COALESCE(SUM(CASE WHEN situacao = 'em_aberto' AND data_vencimento >= CURRENT_DATE THEN valor + COALESCE(valor_fundo_reserva, 0) ELSE 0 END), 0)::numeric AS a_receber_no_prazo
+              COALESCE(SUM(CASE WHEN situacao = 'em_aberto' AND data_vencimento >= CURRENT_DATE THEN valor + COALESCE(valor_fundo_reserva, 0) ELSE 0 END), 0)::numeric AS a_receber_no_prazo,
+              COUNT(CASE WHEN situacao = 'em_aberto' AND data_vencimento < CURRENT_DATE THEN 1 END)::int AS qtd_inadimplente,
+              COUNT(CASE WHEN situacao = 'em_aberto' AND data_vencimento >= CURRENT_DATE THEN 1 END)::int AS qtd_a_receber_no_prazo,
+              COUNT(CASE WHEN situacao = 'em_aberto' THEN 1 END)::int AS qtd_em_aberto
              FROM "condominio-bh".tb_fin_receitas
             WHERE id_condominio = :id_condominio
               AND EXTRACT(YEAR FROM competencia) = :ano`,
@@ -2555,6 +2558,9 @@ class FinanceiroController {
               total: Number(receitasAno[0]?.pendente || 0) + Number(receitasAno[0]?.fundo_reserva_pendente || 0),
               inadimplente: Number(receitasAno[0]?.inadimplente || 0),
               a_receber_no_prazo: Number(receitasAno[0]?.a_receber_no_prazo || 0),
+              qtd_total: Number(receitasAno[0]?.qtd_em_aberto || 0),
+              qtd_inadimplente: Number(receitasAno[0]?.qtd_inadimplente || 0),
+              qtd_a_receber_no_prazo: Number(receitasAno[0]?.qtd_a_receber_no_prazo || 0),
             },
           },
           despesas: {
