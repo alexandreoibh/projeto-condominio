@@ -1457,12 +1457,19 @@ class CondominioController {
             cr.id_usuario_cadastro,
             cr.origem_imagem,
             cr.created_at,
-            cr.updated_at
+            cr.updated_at,
+            tu.bloco AS torre,
+            tu.apartamento,
+            c.nome AS nome_condominio,
+            c.cnpj AS cnpj_condominio,
+            c.email AS email_condominio
           FROM "condominio-bh".tb_consumo_registros cr
           LEFT JOIN "condominio-bh".tb_consumo_tipo ct
             ON ct.id = cr.id_tipo_consumo
           LEFT JOIN "condominio-bh"."tb-usuarios" tu
             ON tu.id = cr.id_usuario
+          LEFT JOIN "condominio-bh"."tb-condominios" c
+            ON c.id = cr.id_condominio
           WHERE ${whereClause}
           ORDER BY cr.competencia DESC, cr.id DESC
           LIMIT :limit OFFSET :offset`,
