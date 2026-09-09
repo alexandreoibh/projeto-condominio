@@ -272,7 +272,11 @@ router.get(
 		query('periodoFim')
 			.optional({ nullable: true, checkFalsy: true })
 			.isISO8601()
-			.withMessage('Parâmetro periodoFim deve estar em formato de data válido.')
+			.withMessage('Parâmetro periodoFim deve estar em formato de data válido.'),
+		query('id_condominio')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Parâmetro id_condominio deve ser numérico e maior que zero.')
 	],
 	validate,
 	controller.listarConsumoRegistros.bind(controller)

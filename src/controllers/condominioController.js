@@ -1356,10 +1356,27 @@ class CondominioController {
 
   async listarConsumoRegistros(req, res) {
     try {
+      const idPerfilToken = this._toInt(req.IdPerfil, null);
       const idCondominioToken = this._toInt(req.id_condominio, null);
-      if (!idCondominioToken) {
+      const ehAdmin = idPerfilToken === 1;
+
+      if (!ehAdmin && !idCondominioToken) {
         return res.status(403).json({
           message: 'Token sem id_condominio para listar registros de consumo.'
+        });
+      }
+
+      const idCondominioFiltro = this._toInt(req.query.id_condominio, null);
+      if (idCondominioFiltro && !ehAdmin && idCondominioFiltro !== idCondominioToken) {
+        return res.status(403).json({
+          message: 'Sem permissão para consultar registros de consumo de outro condomínio.'
+        });
+      }
+
+      const idCondominioRef = idCondominioFiltro || idCondominioToken;
+      if (!idCondominioRef) {
+        return res.status(400).json({
+          message: 'Parâmetro id_condominio é obrigatório para contas Admin.'
         });
       }
 
@@ -1372,7 +1389,7 @@ class CondominioController {
         "UPPER(COALESCE(cr.status, '')) = 'ATIVO'"
       ];
       const replacements = {
-        id_condominio: idCondominioToken,
+        id_condominio: idCondominioRef,
         limit: pageSize,
         offset
       };
