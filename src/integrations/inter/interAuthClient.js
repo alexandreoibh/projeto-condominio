@@ -5,6 +5,14 @@ const postgres = require('../../database/postgres');
 const credentialCipher = require('../shared/credentialCipher');
 const { requisitarToken } = require('./interHttpClient');
 
+// Sem escopo explícito, o Inter emite um access_token que não carrega
+// permissão para os endpoints de negócio (ex: /banking/v2/saldo responde
+// 401 mesmo com token "válido") — confirmado ao investigar um 401 em
+// produção que só ocorria na chamada de saldo, nunca na autenticação em
+// si. Lista de escopos cobre as operações já implementadas (saldo/extrato
+// via Fase 6, boleto via Fase 4); ampliar aqui ao adicionar PIX.
+const ESCOPO_PADRAO = 'boleto-cobranca.read boleto-cobranca.write extrato.read saldo.read';
+
 // Cache L1 por processo — evita round-trip ao Postgres dentro da mesma
 // invocação/instância quente. A fonte de verdade fica no banco (colunas
 // access_token_cifrado/access_token_expira_em de tb_fin_integracao_bancaria),
@@ -54,6 +62,7 @@ async function obterAccessToken(credencial) {
     clientSecret,
     certificadoBase64,
     chavePrivadaBase64,
+    escopo: ESCOPO_PADRAO,
   });
 
   const expiraEm = new Date(Date.now() + resultado.expires_in * 1000);
@@ -89,7 +98,7 @@ async function obterAccessToken(credencial) {
  */
 async function testarConexao({ ambiente, clientId, clientSecret, certificadoBase64, chavePrivadaBase64 }) {
   try {
-    await requisitarToken({ ambiente, clientId, clientSecret, certificadoBase64, chavePrivadaBase64 });
+    await requisitarToken({ ambiente, clientId, clientSecret, certificadoBase64, chavePrivadaBase64, escopo: ESCOPO_PADRAO });
     return { ok: true };
   } catch (err) {
     return { ok: false, erro: err.message };
