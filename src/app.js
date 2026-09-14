@@ -22,6 +22,7 @@ const reuniaoRoute = require('./routes/reuniao');
 const financeiroRoute = require('./routes/financeiro');
 const manutencaoRoute = require('./routes/manutencao');
 const whatsappRoute = require('./routes/whatsapp');
+const integracaoBancariaRoute = require('./routes/integracaoBancaria');
 // ******************Gestor fim********************************************* 
 
 
@@ -42,6 +43,7 @@ app.use('/api/reuniao', reuniaoRoute);
 app.use('/api/condominio/financeiro', financeiroRoute);
 app.use('/api/condominio/manutencao', manutencaoRoute);
 app.use('/api/whatsapp', whatsappRoute);
+app.use('/api/condominio/financeiro/integracao-bancaria', integracaoBancariaRoute);
 
 app.use('/login', loginRoute);
 app.use('/service/back-cond.php', loginRoute);
