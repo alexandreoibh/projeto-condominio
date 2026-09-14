@@ -38,9 +38,10 @@ router.post(
   controller.conectarInter.bind(controller)
 );
 
-// ── Testar / Desativar ──────────────────────────────────────────────────────
+// ── Testar / Saldo / Desativar ───────────────────────────────────────────────
 
 router.post('/:id/testar', auth, controller.testarIntegracao.bind(controller));
+router.get('/:id/saldo', auth, controller.consultarSaldo.bind(controller));
 router.delete('/:id', auth, controller.desativarIntegracao.bind(controller));
 
 module.exports = router;

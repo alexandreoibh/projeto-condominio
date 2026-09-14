@@ -1,8 +1,10 @@
 'use strict';
 
-// Endpoints e base URL a confirmar contra a documentação oficial do Inter
-// Developers (Swagger) antes de implementar as Fases 4/5/6 — ver plano,
-// seção "Riscos". Valores abaixo são o melhor palpite estrutural atual.
+// Paths confirmados contra clientes de referência de terceiros que consomem
+// a API do Inter (ex: github.com/renatojdev/bancointer-python,
+// github.com/samuelmoraesf/mcp-banco-inter) — o WebFetch não consegue
+// renderizar o portal oficial (SPA client-side), então os paths foram
+// cruzados entre duas implementações independentes antes de usar aqui.
 const BASE_URLS = {
   sandbox: 'https://cdpj-sandbox.partners.uatinter.co',
   production: 'https://cdpj.partners.bancointer.com.br',

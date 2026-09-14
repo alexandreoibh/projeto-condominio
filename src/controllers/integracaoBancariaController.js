@@ -218,6 +218,31 @@ class IntegracaoBancariaController {
     }
   }
 
+  // ─── Consultar saldo ────────────────────────────────────────────────────
+
+  async consultarSaldo(req, res) {
+    try {
+      const id = this._normalizarTextoOuNull(req.params.id);
+      const [credencial] = await postgres.query(
+        `SELECT * FROM "condominio-bh".tb_fin_integracao_bancaria
+          WHERE id = :id AND id_condominio = :idCondominio AND ativo = true`,
+        { replacements: { id, idCondominio: req.id_condominio }, type: QueryTypes.SELECT }
+      );
+
+      if (!credencial) return res.status(404).json({ message: 'Integração não encontrada.' });
+
+      const provider = bankingProviderRegistry.getProvider(credencial.provider);
+      const resultado = await provider.consultarSaldo(credencial);
+
+      return res.status(200).json({
+        saldo: resultado.disponivel,
+        atualizado_em: resultado.atualizadoEm,
+      });
+    } catch (error) {
+      return res.status(502).json({ message: 'Falha ao consultar saldo bancário.', detail: error.message });
+    }
+  }
+
   // ─── Desativar ──────────────────────────────────────────────────────────
 
   async desativarIntegracao(req, res) {
