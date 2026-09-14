@@ -1789,6 +1789,10 @@ router.get(
 			.optional({ nullable: true, checkFalsy: true })
 			.isLength({ max: 30 })
 			.withMessage('Parâmetro status deve ter no máximo 30 caracteres.'),
+		query('cpf')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 20 })
+			.withMessage('Parâmetro cpf deve ter no máximo 20 caracteres.'),
 		query('tipo_morador')
 			.optional({ nullable: true, checkFalsy: true })
 			.isLength({ max: 100 })
@@ -1822,6 +1826,10 @@ router.get(
 			.optional({ nullable: true, checkFalsy: true })
 			.isLength({ max: 30 })
 			.withMessage('Parâmetro status deve ter no máximo 30 caracteres.'),
+		query('cpf')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 20 })
+			.withMessage('Parâmetro cpf deve ter no máximo 20 caracteres.'),
 		query('tipo_morador')
 			.optional({ nullable: true, checkFalsy: true })
 			.isLength({ max: 100 })

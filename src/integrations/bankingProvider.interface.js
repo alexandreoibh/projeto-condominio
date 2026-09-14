@@ -23,8 +23,9 @@
  * @property {(credencial: object, idExterno: string, motivo: string) => Promise<object>} cancelarCobranca
  * @property {(credencial: object, dataInicio: string, dataFim: string) => Promise<object[]>} consultarExtrato
  * @property {(credencial: object) => Promise<object>} consultarSaldo
- * @property {(credencial: object, payload: object) => Promise<{tipoEvento: string, idExterno: string, situacao: string, dadosBrutos: object}>} processarWebhook
- *   Interpreta o payload recebido no webhook e devolve a intenção de
+ * @property {(credencial: object, payload: object|object[]) => Promise<Array<{tipoEvento: string, idExterno: string, situacao: string, dadosBrutos: object}>>} processarWebhook
+ *   Interpreta o payload recebido no webhook (o Inter envia um array — um
+ *   evento pode conter várias cobranças) e devolve a lista de intenções de
  *   atualização — não escreve no banco diretamente, quem persiste é o
  *   handler da rota de webhook (mantém o provider testável isoladamente).
  */

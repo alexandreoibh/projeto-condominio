@@ -16,10 +16,21 @@ module.exports = {
         created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
         updated_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW()
       );
-
-      CREATE INDEX IF NOT EXISTS idx_recovery_tokens_usuario_expires
-        ON "condominio-bh".tb_recovery_tokens (id_usuario, expires_at);
     `);
+
+    // Postgres de produção está na 9.2 (EOL) — sem "CREATE INDEX IF NOT EXISTS"
+    // (só a partir do 9.5), por isso a checagem manual via pg_indexes abaixo.
+    const [indiceExistente] = await queryInterface.sequelize.query(`
+      SELECT 1 FROM pg_indexes
+       WHERE schemaname = 'condominio-bh'
+         AND indexname = 'idx_recovery_tokens_usuario_expires'
+    `);
+    if (indiceExistente.length === 0) {
+      await queryInterface.sequelize.query(`
+        CREATE INDEX idx_recovery_tokens_usuario_expires
+          ON "condominio-bh".tb_recovery_tokens (id_usuario, expires_at);
+      `);
+    }
   },
 
   async down(queryInterface) {

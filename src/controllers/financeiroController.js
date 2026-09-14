@@ -6,6 +6,7 @@ const postgres = require('../database/postgres');
 const pushNotificationService = require('../service/pushNotificationService');
 const { despacharEmail } = require('../service/emailDispatchService');
 const { waitUntil } = require('@vercel/functions');
+const bankingProviderRegistry = require('../integrations/bankingProviderRegistry');
 
 const PERFIS_GESTAO = new Set(['Admin', 'Sindico', 'Sub-Sindico']);
 
@@ -473,6 +474,182 @@ class FinanceiroController {
       return res.status(200).json({ message: 'Receita cancelada.' });
     } catch (error) {
       return res.status(500).json({ message: 'Falha ao excluir receita.', detail: error.message });
+    }
+  }
+
+  // ─── Boleto bancário (emissão real via API do banco conectado) ─────────────
+
+  async emitirBoletoBancario(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const idReceita = this._toInt(req.params.id, null);
+
+      const [receita] = await postgres.query(
+        `SELECT r.id, r.valor, r.valor_fundo_reserva, r.data_vencimento, r.situacao, r.id_usuario,
+                tu.nome AS morador_nome, tu.cpf AS morador_cpf,
+                tu.endereco_logradouro, tu.endereco_numero, tu.endereco_complemento,
+                tu.endereco_bairro, tu.endereco_cidade, tu.endereco_uf, tu.endereco_cep
+           FROM "condominio-bh".tb_fin_receitas r
+           LEFT JOIN "condominio-bh"."tb-usuarios" tu ON tu.id = r.id_usuario
+          WHERE r.id = :idReceita AND r.id_condominio = :idCondominio`,
+        { replacements: { idReceita, idCondominio }, type: QueryTypes.SELECT }
+      );
+
+      if (!receita) return res.status(404).json({ message: 'Receita não encontrada.' });
+      if (receita.situacao !== 'em_aberto') {
+        return res.status(422).json({ message: 'Só é possível emitir boleto para receitas em aberto.' });
+      }
+      if (!receita.morador_cpf) {
+        return res.status(422).json({ message: 'O morador vinculado a esta receita não possui CPF cadastrado — obrigatório para emissão de boleto.' });
+      }
+
+      const [credencial] = await postgres.query(
+        `SELECT * FROM "condominio-bh".tb_fin_integracao_bancaria
+          WHERE id_condominio = :idCondominio AND ativo = true AND status_conexao = 'ativo'
+          ORDER BY id DESC LIMIT 1`,
+        { replacements: { idCondominio }, type: QueryTypes.SELECT }
+      );
+
+      if (!credencial) {
+        return res.status(422).json({ message: 'Nenhuma integração bancária ativa para este condomínio.' });
+      }
+
+      const valorTotal = Number(receita.valor || 0) + Number(receita.valor_fundo_reserva || 0);
+      const cpfLimpo = String(receita.morador_cpf).replace(/\D/g, '');
+      const dadosCobranca = {
+        seuNumero: `REC${receita.id}`,
+        valorNominal: valorTotal,
+        dataVencimento: new Date(receita.data_vencimento).toISOString().slice(0, 10),
+        numDiasAgenda: 60,
+        pagador: {
+          cpfCnpj: cpfLimpo,
+          tipoPessoa: cpfLimpo.length > 11 ? 'JURIDICA' : 'FISICA',
+          nome: receita.morador_nome || 'Morador',
+          endereco: [receita.endereco_logradouro, receita.endereco_numero].filter(Boolean).join(', ') || 'Não informado',
+          bairro: receita.endereco_bairro || 'Não informado',
+          cidade: receita.endereco_cidade || 'Não informado',
+          uf: receita.endereco_uf || 'MG',
+          cep: (receita.endereco_cep || '00000000').replace(/\D/g, ''),
+        },
+      };
+
+      const provider = bankingProviderRegistry.getProvider(credencial.provider);
+      const { idExterno, payloadResposta } = await provider.emitirCobranca(credencial, dadosCobranca);
+
+      const detalhado = await provider.consultarCobranca(credencial, idExterno);
+
+      const [rows] = await postgres.query(
+        `INSERT INTO "condominio-bh".tb_fin_cobranca_bancaria
+           (id_condominio, id_receita, id_integracao_bancaria, provider, tipo_cobranca, situacao,
+            id_externo, nosso_numero, linha_digitavel, codigo_barras, pix_copia_cola, valor,
+            data_vencimento, payload_emissao, payload_resposta, id_usuario_solicitante)
+         VALUES (:idCondominio, :idReceita, :idIntegracao, :provider, 'boleto', 'emitida',
+                 :idExterno, :nossoNumero, :linhaDigitavel, :codigoBarras, :pixCopiaECola, :valor,
+                 :dataVencimento::date, :payloadEmissao, :payloadResposta, :idUsuarioSolicitante)
+         RETURNING id`,
+        {
+          replacements: {
+            idCondominio,
+            idReceita,
+            idIntegracao: credencial.id,
+            provider: credencial.provider,
+            idExterno,
+            nossoNumero: detalhado.boleto?.nossoNumero || null,
+            linhaDigitavel: detalhado.boleto?.linhaDigitavel || null,
+            codigoBarras: detalhado.boleto?.codigoBarras || null,
+            pixCopiaECola: detalhado.pix?.pixCopiaECola || null,
+            valor: valorTotal,
+            dataVencimento: dadosCobranca.dataVencimento,
+            payloadEmissao: JSON.stringify(dadosCobranca),
+            payloadResposta: JSON.stringify(detalhado),
+            idUsuarioSolicitante: this._toInt(req.idcliente, null),
+          },
+          type: QueryTypes.INSERT,
+        }
+      );
+
+      return res.status(200).json({
+        data: {
+          id: rows[0].id,
+          id_externo: idExterno,
+          nosso_numero: detalhado.boleto?.nossoNumero || null,
+          linha_digitavel: detalhado.boleto?.linhaDigitavel || null,
+          codigo_barras: detalhado.boleto?.codigoBarras || null,
+          pix_copia_cola: detalhado.pix?.pixCopiaECola || null,
+          valor: valorTotal,
+          data_vencimento: dadosCobranca.dataVencimento,
+          situacao: 'emitida',
+        },
+      });
+    } catch (error) {
+      return res.status(502).json({ message: 'Falha ao emitir boleto bancário.', detail: error.message });
+    }
+  }
+
+  async consultarBoletoBancario(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+
+      const idReceita = this._toInt(req.params.id, null);
+
+      const [cobranca] = await postgres.query(
+        `SELECT id, id_receita, provider, tipo_cobranca, situacao, id_externo, nosso_numero,
+                linha_digitavel, codigo_barras, pix_copia_cola, url_pdf, valor,
+                data_emissao, data_vencimento, data_pagamento
+           FROM "condominio-bh".tb_fin_cobranca_bancaria
+          WHERE id_receita = :idReceita AND id_condominio = :idCondominio
+          ORDER BY id DESC LIMIT 1`,
+        { replacements: { idReceita, idCondominio }, type: QueryTypes.SELECT }
+      );
+
+      if (!cobranca) return res.status(404).json({ message: 'Nenhum boleto bancário emitido para esta receita.' });
+
+      return res.status(200).json({ data: cobranca });
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao consultar boleto bancário.', detail: error.message });
+    }
+  }
+
+  async cancelarBoletoBancario(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const idReceita = this._toInt(req.params.id, null);
+      const motivo = this._normalizarTextoOuNull(req.body.motivo) || 'Cancelado pelo síndico';
+
+      const [cobranca] = await postgres.query(
+        `SELECT cb.id AS id_cobranca, cb.situacao, cb.id_externo, cb.provider AS cb_provider, ib.*
+           FROM "condominio-bh".tb_fin_cobranca_bancaria cb
+           JOIN "condominio-bh".tb_fin_integracao_bancaria ib ON ib.id = cb.id_integracao_bancaria
+          WHERE cb.id_receita = :idReceita AND cb.id_condominio = :idCondominio
+          ORDER BY cb.id DESC LIMIT 1`,
+        { replacements: { idReceita, idCondominio }, type: QueryTypes.SELECT }
+      );
+
+      if (!cobranca) return res.status(404).json({ message: 'Nenhum boleto bancário emitido para esta receita.' });
+      if (cobranca.situacao === 'cancelada' || cobranca.situacao === 'paga') {
+        return res.status(422).json({ message: `Boleto já está com situação "${cobranca.situacao}", não pode ser cancelado.` });
+      }
+
+      const provider = bankingProviderRegistry.getProvider(cobranca.cb_provider);
+      await provider.cancelarCobranca(cobranca, cobranca.id_externo, motivo);
+
+      await postgres.query(
+        `UPDATE "condominio-bh".tb_fin_cobranca_bancaria
+            SET situacao = 'cancelada', updated_at = NOW()
+          WHERE id = :id`,
+        { replacements: { id: cobranca.id_cobranca }, type: QueryTypes.UPDATE }
+      );
+
+      return res.status(200).json({ message: 'Boleto cancelado com sucesso.' });
+    } catch (error) {
+      return res.status(502).json({ message: 'Falha ao cancelar boleto bancário.', detail: error.message });
     }
   }
 

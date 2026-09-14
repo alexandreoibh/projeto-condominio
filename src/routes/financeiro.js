@@ -132,6 +132,35 @@ router.post(
   controller.solicitar2ViaBoleto.bind(controller)
 );
 
+// ── Boleto bancário (emissão real via API do banco conectado) ──────────────
+
+router.post(
+  '/receitas/:id/boleto-bancario',
+  auth,
+  [param('id').isInt({ min: 1 }).withMessage('id inválido.')],
+  validate,
+  controller.emitirBoletoBancario.bind(controller)
+);
+
+router.get(
+  '/receitas/:id/boleto-bancario',
+  auth,
+  [param('id').isInt({ min: 1 }).withMessage('id inválido.')],
+  validate,
+  controller.consultarBoletoBancario.bind(controller)
+);
+
+router.delete(
+  '/receitas/:id/boleto-bancario',
+  auth,
+  [
+    param('id').isInt({ min: 1 }).withMessage('id inválido.'),
+    body('motivo').optional({ nullable: true, checkFalsy: true }).isLength({ max: 255 }).withMessage('motivo deve ter no máximo 255 caracteres.'),
+  ],
+  validate,
+  controller.cancelarBoletoBancario.bind(controller)
+);
+
 router.get(
   '/receita-consolidado',
   auth,

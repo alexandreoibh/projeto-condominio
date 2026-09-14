@@ -65,7 +65,15 @@ async function requisitar({ ambiente, path, method, accessToken, certificadoBase
   try { data = texto ? JSON.parse(texto) : null; } catch { /* resposta não-JSON */ }
 
   if (!resp.ok) {
-    throw new BankingHttpError(data?.message || data?.detail || `HTTP ${resp.status} ao chamar Inter`, {
+    // O Inter retorna erros de validação em "violacoes" (razao/propriedade),
+    // não em "message" — sem isso a mensagem de erro fica genérica demais
+    // para diagnosticar (ex: "Verifique se os dados..." em vez do motivo real).
+    const violacoes = Array.isArray(data?.violacoes)
+      ? data.violacoes.map((v) => `${v.propriedade ? v.propriedade + ': ' : ''}${v.razao}`).join('; ')
+      : null;
+    const mensagem = violacoes || data?.message || data?.detail || `HTTP ${resp.status} ao chamar Inter`;
+
+    throw new BankingHttpError(mensagem, {
       status: resp.status,
       codigoProvider: data?.title || data?.code || null,
       retryable: resp.status >= 500,

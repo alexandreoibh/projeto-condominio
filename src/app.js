@@ -23,6 +23,7 @@ const financeiroRoute = require('./routes/financeiro');
 const manutencaoRoute = require('./routes/manutencao');
 const whatsappRoute = require('./routes/whatsapp');
 const integracaoBancariaRoute = require('./routes/integracaoBancaria');
+const webhookBancarioRoute = require('./routes/webhookBancario');
 // ******************Gestor fim********************************************* 
 
 
@@ -44,6 +45,7 @@ app.use('/api/condominio/financeiro', financeiroRoute);
 app.use('/api/condominio/manutencao', manutencaoRoute);
 app.use('/api/whatsapp', whatsappRoute);
 app.use('/api/condominio/financeiro/integracao-bancaria', integracaoBancariaRoute);
+app.use('/api/webhook/bancario', webhookBancarioRoute);
 
 app.use('/login', loginRoute);
 app.use('/service/back-cond.php', loginRoute);

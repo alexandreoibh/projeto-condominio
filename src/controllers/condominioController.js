@@ -6405,6 +6405,7 @@ class CondominioController {
       };
 
       const nomeFiltro = this._normalizarTextoOuNull(req.query.nome);
+      const cpfFiltro = this._normalizarTextoOuNull(req.query.cpf);
       const statusFiltro = this._normalizarTextoOuNull(req.query.status);
       const tipoMoradorFiltro = this._normalizarTextoOuNull(req.query.tipo_morador);
       const ativoQuery = req.query.ativo;
@@ -6439,6 +6440,11 @@ class CondominioController {
           OR TRIM(COALESCE(tu.nome, '') || ' ' || COALESCE(tu.sobrenome, '')) ILIKE :nome
         )`);
         replacementsBase.nome = `%${nomeFiltro}%`;
+      }
+
+      if (cpfFiltro) {
+        whereParts.push("regexp_replace(COALESCE(tu.cpf, ''), '\\D', '', 'g') = regexp_replace(:cpf, '\\D', '', 'g')");
+        replacementsBase.cpf = cpfFiltro;
       }
 
       if (statusFiltro) {
