@@ -13,6 +13,16 @@
  * para que quem chama (financeiroController, integracaoBancariaController)
  * nunca precise saber qual provider está por trás.
  *
+ * RESTRIÇÃO DE SEGURANÇA (vale para QUALQUER provider implementado aqui,
+ * não só Inter): o e-Morador só pode RECEBER dinheiro na conta do
+ * condomínio (emitir/consultar/cancelar cobrança, ler saldo/extrato).
+ * Nunca implementar métodos que movam dinheiro para fora da conta —
+ * pagamento de boleto/DARF/lote, TED, Pix de saída avulso, transferência.
+ * Ao integrar um novo banco, restrinja o escopo OAuth solicitado (se o
+ * provider usar OAuth) e o client HTTP de baixo nível àquele provider aos
+ * endpoints de cobrança/consulta — replicando a allowlist de path já usada
+ * em `inter/interHttpClient.js`.
+ *
  * @typedef {Object} BankingProvider
  * @property {(credencial: object) => Promise<{ok: boolean, erro?: string}>} testarConexao
  *   Faz só o passo de autenticação (OAuth/mTLS), sem operação de negócio —

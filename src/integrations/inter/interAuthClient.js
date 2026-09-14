@@ -9,9 +9,34 @@ const { requisitarToken } = require('./interHttpClient');
 // permissão para os endpoints de negócio (ex: /banking/v2/saldo responde
 // 401 mesmo com token "válido") — confirmado ao investigar um 401 em
 // produção que só ocorria na chamada de saldo, nunca na autenticação em
-// si. Lista de escopos cobre as operações já implementadas (saldo/extrato
-// via Fase 6, boleto via Fase 4); ampliar aqui ao adicionar PIX.
-const ESCOPO_PADRAO = 'boleto-cobranca.read boleto-cobranca.write extrato.read saldo.read';
+// si. Lista de escopos abaixo é um SUBCONJUNTO deliberado da String oficial
+// usada pela collection Postman publicada pelo Inter Developers
+// (Gera-token-certificado PRD/SANDBOX) — note que "saldo.read" (usado numa
+// versão anterior deste arquivo) NÃO existe na lista oficial; saldo é
+// coberto por "extrato.read".
+//
+// RESTRIÇÃO DE SEGURANÇA DELIBERADA (exigência de produto, não do Inter):
+// o e-Morador só pode RECEBER dinheiro (emitir/consultar/cancelar cobrança,
+// ler saldo/extrato) — NUNCA mover dinheiro para fora da conta do
+// condomínio. Por isso os escopos de pagamento/transferência de saída
+// (pagamento-pix.write, pagamento-boleto.write, pagamento-darf.write,
+// pagamento-lote.write, e "pix.write" — que no Inter cobre Pix avulso de
+// saída, distinto de "cobv.write" que é cobrança a receber) são
+// INTENCIONALMENTE omitidos daqui. Mesmo que o Inter algum dia aceite um
+// escopo mais amplo por engano de configuração da credencial, o código
+// deste projeto (interCobrancaService/interExtratoService) nunca deve
+// implementar chamada a esses endpoints de pagamento/transferência.
+const ESCOPO_PADRAO = [
+  'cob.write', 'cob.read',       // Pix cobrança imediata (receber)
+  'cobv.write', 'cobv.read',     // Pix cobrança com vencimento (receber)
+  'lotecobv.read',               // consulta de lote de cobrança — sem .write de lote (não usado)
+  'pix.read',                    // consultar Pix recebidos/devolução — sem pix.write (saída)
+  'webhook.write', 'webhook.read',
+  'payloadlocation.write', 'payloadlocation.read', // QR code de cobrança
+  'boleto-cobranca.read', 'boleto-cobranca.write', // emitir/consultar boleto (receber)
+  'extrato.read',
+  'webhook-banking.read', 'webhook-banking.write',
+].join(' ');
 
 // Cache L1 por processo — evita round-trip ao Postgres dentro da mesma
 // invocação/instância quente. A fonte de verdade fica no banco (colunas

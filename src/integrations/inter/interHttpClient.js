@@ -21,6 +21,37 @@ function _criarAgenteMtls(certificadoBase64, chavePrivadaBase64) {
   });
 }
 
+// RESTRIÇÃO DE SEGURANÇA DELIBERADA (exigência de produto): o e-Morador só
+// pode RECEBER dinheiro, nunca mover dinheiro para fora da conta do
+// condomínio. Esta allowlist bloqueia fisicamente qualquer chamada a
+// endpoints de pagamento/transferência de saída do Inter (/banking/v2/pagamento,
+// /banking/v2/pix de saída, DARF, lote de pagamento), mesmo que alguém
+// tente implementar isso no futuro por engano — é a segunda camada de
+// defesa, complementar à omissão desses escopos em interAuthClient.js.
+const PREFIXOS_PATH_PERMITIDOS = [
+  '/cobranca/v3/cobrancas', // emitir/consultar/cancelar boleto (receber)
+  '/banking/v2/extrato',    // consulta, somente leitura
+  '/banking/v2/saldo',      // consulta, somente leitura
+  '/banking/v2/webhooks',   // configurar webhook de banking (não move dinheiro)
+  '/pix/v2/cob',            // Pix cobrança imediata (receber)
+  '/pix/v2/cobv',           // Pix cobrança com vencimento (receber)
+  '/pix/v2/lotecobv',       // consulta de lote de cobrança com vencimento
+  '/pix/v2/loc',            // location/QR code de cobrança
+  '/pix/v2/pix',            // consulta de Pix recebidos/devolução
+  '/pix/v2/webhook',        // configurar webhook Pix
+];
+
+function _validarPathPermitido(path) {
+  const caminho = path.split('?')[0];
+  const permitido = PREFIXOS_PATH_PERMITIDOS.some((prefixo) => caminho.startsWith(prefixo));
+  if (!permitido) {
+    throw new Error(
+      `Chamada bloqueada por política de segurança: "${caminho}" não está na allowlist de endpoints permitidos ` +
+      `(o e-Morador não pode realizar pagamentos/transferências de saída via API do Inter).`
+    );
+  }
+}
+
 /**
  * Requisição autenticada (Bearer + mTLS) a um endpoint de negócio do Inter.
  * Não faz retry aqui — retry é decisão de negócio de quem chama.
@@ -36,6 +67,7 @@ function _criarAgenteMtls(certificadoBase64, chavePrivadaBase64) {
  * @param {object} [params.query]
  */
 async function requisitar({ ambiente, path, method, accessToken, certificadoBase64, chavePrivadaBase64, body, query }) {
+  _validarPathPermitido(path);
   const agent = _criarAgenteMtls(certificadoBase64, chavePrivadaBase64);
   const url = new URL(obterBaseUrl(ambiente) + path);
   if (query) {

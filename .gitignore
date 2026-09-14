@@ -4,6 +4,8 @@ node_modules/
 # src/uploads/topfundos
 # src/uploads/
 
+doc-uteis/
+
 node_modules.tar.gz
 .env
 .envDEV
