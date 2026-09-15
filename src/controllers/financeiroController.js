@@ -219,6 +219,30 @@ class FinanceiroController {
                          LIMIT 1
                       ) cb_sub
                   ) AS boleto_bancario,
+                  (
+                    -- Só expõe erro quando NÃO existe boleto válido mais
+                    -- recente (se já reemitiu com sucesso depois de uma
+                    -- falha, boleto_bancario acima prevalece e este campo
+                    -- fica null — evita o front mostrar erro obsoleto).
+                    -- payload_resposta é TEXT (não json/jsonb — Postgres 9.2
+                    -- de produção nem tem json_extract_path_text, que é do
+                    -- 9.3+), então devolvemos bruto e parseamos no Node.
+                    SELECT row_to_json(err_sub)
+                      FROM (
+                        SELECT cb.id AS id_tentativa,
+                               cb.payload_resposta AS payload_resposta_bruto,
+                               cb.created_at AS tentativa_em
+                          FROM "condominio-bh".tb_fin_cobranca_bancaria cb
+                         WHERE cb.id_receita = r.id AND cb.situacao = 'erro'
+                         ORDER BY cb.id DESC
+                         LIMIT 1
+                      ) err_sub
+                     WHERE NOT EXISTS (
+                       SELECT 1 FROM "condominio-bh".tb_fin_cobranca_bancaria cb2
+                        WHERE cb2.id_receita = r.id
+                          AND cb2.situacao IN ('emitida', 'paga', 'cancelada')
+                     )
+                  ) AS erro_emissao_boleto,
                   COALESCE(
                     (SELECT array_to_json(array_agg(row_to_json(sub) ORDER BY sub.created_at DESC))
                        FROM (
@@ -253,12 +277,28 @@ class FinanceiroController {
       ]);
 
       const total = totalRows[0]?.total || 0;
+      const dataComErroParseado = data.map((receita) => {
+        if (!receita.erro_emissao_boleto) return receita;
+        let mensagem = null;
+        try {
+          mensagem = JSON.parse(receita.erro_emissao_boleto.payload_resposta_bruto || '{}').erro || null;
+        } catch { /* payload malformado — segue com mensagem null */ }
+        return {
+          ...receita,
+          erro_emissao_boleto: {
+            id_tentativa: receita.erro_emissao_boleto.id_tentativa,
+            tentativa_em: receita.erro_emissao_boleto.tentativa_em,
+            mensagem,
+          },
+        };
+      });
+
       return res.status(200).json({
         page,
         pageSize,
         total,
         totalPages: total === 0 ? 0 : Math.ceil(total / pageSize),
-        data,
+        data: dataComErroParseado,
       });
     } catch (error) {
       return res.status(500).json({ message: 'Falha ao listar receitas.', detail: error.message });
@@ -618,6 +658,19 @@ class FinanceiroController {
         idCondominio, idReceita, valor: Number(receita.valor || 0) + Number(receita.valor_fundo_reserva || 0),
         dataVencimento: receita.data_vencimento, status: 422,
         message: 'O condomínio não possui endereço completo cadastrado — obrigatório para emissão de boleto.',
+      });
+    }
+    // O Inter recusa dataVencimento no passado ("O valor deve ser igual ou
+    // maior a data atual") — validamos aqui antes de gastar uma chamada ao
+    // banco, já que receitas retroativas são comuns (ex: lançamento avulso
+    // de um serviço já prestado, ou receita antiga sem boleto bancário).
+    const hojeISO = new Date().toISOString().slice(0, 10);
+    const vencimentoISO = new Date(receita.data_vencimento).toISOString().slice(0, 10);
+    if (vencimentoISO < hojeISO) {
+      return await this._registrarFalhaEmissaoBoleto({
+        idCondominio, idReceita, valor: Number(receita.valor || 0) + Number(receita.valor_fundo_reserva || 0),
+        dataVencimento: receita.data_vencimento, status: 422,
+        message: `Data de vencimento (${vencimentoISO}) está no passado — o banco não aceita emitir boleto com vencimento retroativo.`,
       });
     }
 

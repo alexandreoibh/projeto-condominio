@@ -8,6 +8,7 @@ const { waitUntil } = require('@vercel/functions');
 const postgres = require('../database/postgres');
 const bankingProviderRegistry = require('../integrations/bankingProviderRegistry');
 const webhookLogRepository = require('../integrations/shared/webhookLogRepository');
+const cobrancaBancariaRepository = require('../integrations/shared/cobrancaBancariaRepository');
 
 /**
  * Rota pública (sem middleware `auth`) — é chamada pelo banco, não por um
@@ -83,32 +84,7 @@ async function _processarEvento({ provider, logId, evento }) {
     idCondominio: cobranca.id_condominio,
   });
 
-  if (situacao === 'pago' && cobranca.situacao !== 'paga') {
-    await postgres.query(
-      `UPDATE "condominio-bh".tb_fin_cobranca_bancaria
-          SET situacao = 'paga', data_pagamento = NOW(), valor_pago = valor, updated_at = NOW()
-        WHERE id = :id`,
-      { replacements: { id: cobranca.id }, type: QueryTypes.UPDATE }
-    );
-
-    // Reaproveita o mesmo padrão de baixa manual já usado em
-    // financeiroController.atualizarReceita (UPDATE direto em
-    // tb_fin_receitas com situacao='pago' + data_pagamento) em vez de
-    // duplicar lógica de negócio.
-    await postgres.query(
-      `UPDATE "condominio-bh".tb_fin_receitas
-          SET situacao = 'pago', data_pagamento = NOW(), updated_at = NOW()
-        WHERE id = :idReceita AND id_condominio = :idCondominio`,
-      { replacements: { idReceita: cobranca.id_receita, idCondominio: cobranca.id_condominio }, type: QueryTypes.UPDATE }
-    );
-  } else if (situacao === 'cancelado' && cobranca.situacao !== 'cancelada') {
-    await postgres.query(
-      `UPDATE "condominio-bh".tb_fin_cobranca_bancaria
-          SET situacao = 'cancelada', updated_at = NOW()
-        WHERE id = :id`,
-      { replacements: { id: cobranca.id }, type: QueryTypes.UPDATE }
-    );
-  }
+  await cobrancaBancariaRepository.aplicarSituacao(cobranca, situacao);
 }
 
 module.exports = router;
