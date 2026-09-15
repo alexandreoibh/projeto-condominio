@@ -12,6 +12,7 @@ providers.set('inter', {
   emitirCobranca: require('./inter/interCobrancaService').emitirCobranca,
   consultarCobranca: require('./inter/interCobrancaService').consultarCobranca,
   cancelarCobranca: require('./inter/interCobrancaService').cancelarCobranca,
+  consultarCobrancaPdf: require('./inter/interCobrancaService').consultarCobrancaPdf,
   consultarExtrato: require('./inter/interExtratoService').consultarExtrato,
   consultarSaldo: require('./inter/interExtratoService').consultarSaldo,
   processarWebhook: require('./inter/interWebhookHandler').processarWebhook,

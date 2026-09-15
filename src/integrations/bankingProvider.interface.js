@@ -31,6 +31,9 @@
  *   Emite uma cobrança (boleto hoje, PIX futuramente) vinculada a uma receita.
  * @property {(credencial: object, idExterno: string) => Promise<object>} consultarCobranca
  * @property {(credencial: object, idExterno: string, motivo: string) => Promise<object>} cancelarCobranca
+ * @property {(credencial: object, idExterno: string) => Promise<Buffer>} consultarCobrancaPdf
+ *   Retorna o PDF do boleto já decodificado (Buffer) — geração sob demanda,
+ *   sem cache no nosso lado; quem chama decide como servir ao cliente.
  * @property {(credencial: object, dataInicio: string, dataFim: string) => Promise<object[]>} consultarExtrato
  * @property {(credencial: object) => Promise<object>} consultarSaldo
  * @property {(credencial: object, payload: object|object[]) => Promise<Array<{tipoEvento: string, idExterno: string, situacao: string, dadosBrutos: object}>>} processarWebhook

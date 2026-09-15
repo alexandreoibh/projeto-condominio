@@ -774,6 +774,41 @@ class FinanceiroController {
     }
   }
 
+  /**
+   * Gera o PDF sob demanda a cada chamada (sem cache no nosso lado) — o
+   * volume esperado (cliques manuais de 2ª via) não justifica a
+   * complexidade de invalidação de cache por ora.
+   */
+  async consultarBoletoBancarioPdf(req, res) {
+    try {
+      const idCondominio = this._toInt(req.id_condominio, null);
+      if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
+
+      const idReceita = this._toInt(req.params.id, null);
+
+      const [cobranca] = await postgres.query(
+        `SELECT cb.id_externo, ib.*
+           FROM "condominio-bh".tb_fin_cobranca_bancaria cb
+           JOIN "condominio-bh".tb_fin_integracao_bancaria ib ON ib.id = cb.id_integracao_bancaria
+          WHERE cb.id_receita = :idReceita AND cb.id_condominio = :idCondominio
+            AND cb.situacao IN ('emitida', 'paga', 'cancelada')
+          ORDER BY cb.id DESC LIMIT 1`,
+        { replacements: { idReceita, idCondominio }, type: QueryTypes.SELECT }
+      );
+
+      if (!cobranca) return res.status(404).json({ message: 'Nenhum boleto bancário emitido para esta receita.' });
+
+      const provider = bankingProviderRegistry.getProvider(cobranca.provider);
+      const pdfBuffer = await provider.consultarCobrancaPdf(cobranca, cobranca.id_externo);
+
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `inline; filename="boleto-receita-${idReceita}.pdf"`);
+      return res.status(200).send(pdfBuffer);
+    } catch (error) {
+      return res.status(502).json({ message: 'Falha ao gerar PDF do boleto bancário.', detail: error.message });
+    }
+  }
+
   async cancelarBoletoBancario(req, res) {
     try {
       const idCondominio = this._toInt(req.id_condominio, null);

@@ -150,6 +150,14 @@ router.get(
   controller.consultarBoletoBancario.bind(controller)
 );
 
+router.get(
+  '/receitas/:id/boleto-bancario/pdf',
+  auth,
+  [param('id').isInt({ min: 1 }).withMessage('id inválido.')],
+  validate,
+  controller.consultarBoletoBancarioPdf.bind(controller)
+);
+
 router.delete(
   '/receitas/:id/boleto-bancario',
   auth,

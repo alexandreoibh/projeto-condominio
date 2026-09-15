@@ -89,4 +89,29 @@ async function cancelarCobranca(credencial, idExterno, motivo) {
   });
 }
 
-module.exports = { emitirCobranca, consultarCobranca, cancelarCobranca };
+/**
+ * GET /cobranca/v3/cobrancas/{codigoSolicitacao}/pdf — resposta do Inter é
+ * `{ pdf: "<base64>" }` (confirmado na collection Postman oficial do Inter
+ * Developers). Retorna o Buffer já decodificado — quem chama decide como
+ * servir (ex: endpoint HTTP dedicado com Content-Type: application/pdf).
+ *
+ * @param {object} credencial
+ * @param {string} idExterno codigoSolicitacao.
+ * @returns {Promise<Buffer>}
+ */
+async function consultarCobrancaPdf(credencial, idExterno) {
+  const { accessToken, certificadoBase64, chavePrivadaBase64 } = await _headersMtls(credencial);
+
+  const resposta = await requisitar({
+    ambiente: credencial.ambiente,
+    path: `${PATHS.cobranca}/${idExterno}/pdf`,
+    method: 'GET',
+    accessToken,
+    certificadoBase64,
+    chavePrivadaBase64,
+  });
+
+  return Buffer.from(resposta.pdf, 'base64');
+}
+
+module.exports = { emitirCobranca, consultarCobranca, cancelarCobranca, consultarCobrancaPdf };
