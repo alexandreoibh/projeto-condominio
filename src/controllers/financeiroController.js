@@ -342,7 +342,31 @@ class FinanceiroController {
         }
       );
 
-      return res.status(201).json(rows[0]);
+      const receitaCriada = rows[0];
+
+      // Emissão automática de boleto bancário: toda receita com origem
+      // MORADOR (qualquer grupo de receita) e com pagador definido
+      // (id_usuario) dispara emissão automática — regra de produto, não
+      // configurável por grupo. Best-effort: a receita SEMPRE é criada
+      // mesmo se a emissão falhar (banco fora do ar, CPF do morador ou
+      // endereço do condomínio incompletos) — o síndico ainda tem o fluxo
+      // manual (upload de PDF) como fallback nesse caso.
+      let boletoBancario = null;
+      if (grupo.origem === 'MORADOR' && idUsuario) {
+        const resultadoBoleto = await this._emitirBoletoBancarioParaReceita({
+          idCondominio,
+          idReceita: receitaCriada.id,
+          idUsuarioSolicitante: this._toInt(req.idcliente, null),
+        }).catch((error) => ({ ok: false, status: 502, message: error.message }));
+
+        if (resultadoBoleto.ok) {
+          boletoBancario = resultadoBoleto.data;
+        } else {
+          console.warn(`[criarReceita] Emissão automática de boleto falhou para receita id=${receitaCriada.id}: ${resultadoBoleto.message}`);
+        }
+      }
+
+      return res.status(201).json({ ...receitaCriada, boleto_bancario: boletoBancario });
     } catch (error) {
       return res.status(500).json({ message: 'Falha ao criar receita.', detail: error.message });
     }
@@ -479,6 +503,157 @@ class FinanceiroController {
 
   // ─── Boleto bancário (emissão real via API do banco conectado) ─────────────
 
+  /**
+   * Lógica de negócio pura de emissão, reaproveitada tanto pelo endpoint
+   * HTTP `emitirBoletoBancario` quanto pela emissão automática disparada em
+   * `criarReceita`/`gerarReceitasRotina` — nunca escreve em `res`, sempre
+   * retorna um resultado estruturado para o chamador decidir o que fazer.
+   *
+   * Timeout curto (8s): a emissão automática acontece dentro do ciclo de
+   * criação da receita (síncrono, por decisão de produto) — se o Inter
+   * demorar mais que isso, tratamos como falha best-effort em vez de travar
+   * a criação da receita por um tempo indefinido.
+   *
+   * @param {object} params
+   * @param {number} params.idCondominio
+   * @param {number} params.idReceita
+   * @param {number|null} params.idUsuarioSolicitante
+   * @returns {Promise<{ok: true, data: object}|{ok: false, status: number, message: string}>}
+   */
+  async _emitirBoletoBancarioParaReceita({ idCondominio, idReceita, idUsuarioSolicitante }) {
+    const TIMEOUT_MS = 8000;
+
+    // Endereço de envio do boleto é o do CONDOMÍNIO (tb-condominios), não do
+    // morador — decisão de produto: o síndico cadastra um único endereço por
+    // condomínio, e cada morador é identificado pelo complemento (bloco +
+    // unidade), montado a partir de tb_condominios_unidades — mesma fonte já
+    // usada em solicitar2ViaBoleto para bloco/unidade. Note o nome da coluna
+    // com erro de digitação na tabela original: "logradrouro" (sem o 'g').
+    const [receita] = await postgres.query(
+      `SELECT r.id, r.valor, r.valor_fundo_reserva, r.data_vencimento, r.situacao, r.id_usuario,
+              tu.nome AS morador_nome, tu.cpf AS morador_cpf,
+              tcu.bloco AS unidade_bloco, tcu.unidades_bloco AS unidade_texto,
+              c.cep AS condominio_cep, c.logradrouro AS condominio_logradouro,
+              c.numero AS condominio_numero, c.bairro AS condominio_bairro,
+              c.cidade AS condominio_cidade, c.uf AS condominio_uf
+         FROM "condominio-bh".tb_fin_receitas r
+         LEFT JOIN "condominio-bh"."tb-usuarios" tu ON tu.id = r.id_usuario
+         LEFT JOIN "condominio-bh".tb_condominios_unidades tcu
+           ON tcu.id = r.id_unidade AND tcu.id_condominio = r.id_condominio
+         LEFT JOIN "condominio-bh"."tb-condominios" c ON c.id = r.id_condominio
+        WHERE r.id = :idReceita AND r.id_condominio = :idCondominio`,
+      { replacements: { idReceita, idCondominio }, type: QueryTypes.SELECT }
+    );
+
+    if (!receita) return { ok: false, status: 404, message: 'Receita não encontrada.' };
+    if (receita.situacao !== 'em_aberto') {
+      return { ok: false, status: 422, message: 'Só é possível emitir boleto para receitas em aberto.' };
+    }
+    if (!receita.morador_cpf) {
+      return { ok: false, status: 422, message: 'O morador vinculado a esta receita não possui CPF cadastrado — obrigatório para emissão de boleto.' };
+    }
+    if (!receita.condominio_logradouro || !receita.condominio_cep || !receita.condominio_cidade || !receita.condominio_uf) {
+      return { ok: false, status: 422, message: 'O condomínio não possui endereço completo cadastrado — obrigatório para emissão de boleto.' };
+    }
+
+    const [credencial] = await postgres.query(
+      `SELECT * FROM "condominio-bh".tb_fin_integracao_bancaria
+        WHERE id_condominio = :idCondominio AND ativo = true AND status_conexao = 'ativo'
+        ORDER BY id DESC LIMIT 1`,
+      { replacements: { idCondominio }, type: QueryTypes.SELECT }
+    );
+
+    if (!credencial) {
+      return { ok: false, status: 422, message: 'Nenhuma integração bancária ativa para este condomínio.' };
+    }
+
+    const valorTotal = Number(receita.valor || 0) + Number(receita.valor_fundo_reserva || 0);
+    const cpfLimpo = String(receita.morador_cpf).replace(/\D/g, '');
+    const complementoUnidade = [
+      receita.unidade_bloco ? `Bloco ${receita.unidade_bloco}` : null,
+      receita.unidade_texto ? `Apto ${receita.unidade_texto}` : null,
+    ].filter(Boolean).join(', ');
+
+    const dadosCobranca = {
+      seuNumero: `REC${receita.id}`,
+      valorNominal: valorTotal,
+      dataVencimento: new Date(receita.data_vencimento).toISOString().slice(0, 10),
+      numDiasAgenda: 60,
+      pagador: {
+        cpfCnpj: cpfLimpo,
+        tipoPessoa: cpfLimpo.length > 11 ? 'JURIDICA' : 'FISICA',
+        nome: receita.morador_nome || 'Morador',
+        endereco: [receita.condominio_logradouro, receita.condominio_numero].filter(Boolean).join(', '),
+        complemento: complementoUnidade || undefined,
+        bairro: receita.condominio_bairro || 'Não informado',
+        cidade: receita.condominio_cidade,
+        uf: receita.condominio_uf,
+        cep: String(receita.condominio_cep).replace(/\D/g, ''),
+      },
+    };
+
+    const provider = bankingProviderRegistry.getProvider(credencial.provider);
+
+    let idExterno;
+    try {
+      const resultadoEmissao = await Promise.race([
+        provider.emitirCobranca(credencial, dadosCobranca),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout ao emitir boleto (banco não respondeu em tempo hábil).')), TIMEOUT_MS)),
+      ]);
+      idExterno = resultadoEmissao.idExterno;
+    } catch (error) {
+      return { ok: false, status: 502, message: `Falha ao emitir boleto bancário: ${error.message}` };
+    }
+
+    const detalhado = await provider.consultarCobranca(credencial, idExterno);
+
+    const [rows] = await postgres.query(
+      `INSERT INTO "condominio-bh".tb_fin_cobranca_bancaria
+         (id_condominio, id_receita, id_integracao_bancaria, provider, tipo_cobranca, situacao,
+          id_externo, nosso_numero, linha_digitavel, codigo_barras, pix_copia_cola, valor,
+          data_vencimento, payload_emissao, payload_resposta, id_usuario_solicitante)
+       VALUES (:idCondominio, :idReceita, :idIntegracao, :provider, 'boleto', 'emitida',
+               :idExterno, :nossoNumero, :linhaDigitavel, :codigoBarras, :pixCopiaECola, :valor,
+               :dataVencimento::date, :payloadEmissao, :payloadResposta, :idUsuarioSolicitante)
+       RETURNING id`,
+      {
+        replacements: {
+          idCondominio,
+          idReceita,
+          idIntegracao: credencial.id,
+          provider: credencial.provider,
+          idExterno,
+          nossoNumero: detalhado.boleto?.nossoNumero || null,
+          linhaDigitavel: detalhado.boleto?.linhaDigitavel || null,
+          codigoBarras: detalhado.boleto?.codigoBarras || null,
+          pixCopiaECola: detalhado.pix?.pixCopiaECola || null,
+          valor: valorTotal,
+          dataVencimento: dadosCobranca.dataVencimento,
+          payloadEmissao: JSON.stringify(dadosCobranca),
+          payloadResposta: JSON.stringify(detalhado),
+          idUsuarioSolicitante: idUsuarioSolicitante || null,
+        },
+        type: QueryTypes.INSERT,
+      }
+    );
+
+    return {
+      ok: true,
+      data: {
+        id: rows[0].id,
+        provider: credencial.provider,
+        id_externo: idExterno,
+        nosso_numero: detalhado.boleto?.nossoNumero || null,
+        linha_digitavel: detalhado.boleto?.linhaDigitavel || null,
+        codigo_barras: detalhado.boleto?.codigoBarras || null,
+        pix_copia_cola: detalhado.pix?.pixCopiaECola || null,
+        valor: valorTotal,
+        data_vencimento: dadosCobranca.dataVencimento,
+        situacao: 'emitida',
+      },
+    };
+  }
+
   async emitirBoletoBancario(req, res) {
     try {
       const idCondominio = this._toInt(req.id_condominio, null);
@@ -486,104 +661,14 @@ class FinanceiroController {
       if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
 
       const idReceita = this._toInt(req.params.id, null);
-
-      const [receita] = await postgres.query(
-        `SELECT r.id, r.valor, r.valor_fundo_reserva, r.data_vencimento, r.situacao, r.id_usuario,
-                tu.nome AS morador_nome, tu.cpf AS morador_cpf,
-                tu.endereco_logradouro, tu.endereco_numero, tu.endereco_complemento,
-                tu.endereco_bairro, tu.endereco_cidade, tu.endereco_uf, tu.endereco_cep
-           FROM "condominio-bh".tb_fin_receitas r
-           LEFT JOIN "condominio-bh"."tb-usuarios" tu ON tu.id = r.id_usuario
-          WHERE r.id = :idReceita AND r.id_condominio = :idCondominio`,
-        { replacements: { idReceita, idCondominio }, type: QueryTypes.SELECT }
-      );
-
-      if (!receita) return res.status(404).json({ message: 'Receita não encontrada.' });
-      if (receita.situacao !== 'em_aberto') {
-        return res.status(422).json({ message: 'Só é possível emitir boleto para receitas em aberto.' });
-      }
-      if (!receita.morador_cpf) {
-        return res.status(422).json({ message: 'O morador vinculado a esta receita não possui CPF cadastrado — obrigatório para emissão de boleto.' });
-      }
-
-      const [credencial] = await postgres.query(
-        `SELECT * FROM "condominio-bh".tb_fin_integracao_bancaria
-          WHERE id_condominio = :idCondominio AND ativo = true AND status_conexao = 'ativo'
-          ORDER BY id DESC LIMIT 1`,
-        { replacements: { idCondominio }, type: QueryTypes.SELECT }
-      );
-
-      if (!credencial) {
-        return res.status(422).json({ message: 'Nenhuma integração bancária ativa para este condomínio.' });
-      }
-
-      const valorTotal = Number(receita.valor || 0) + Number(receita.valor_fundo_reserva || 0);
-      const cpfLimpo = String(receita.morador_cpf).replace(/\D/g, '');
-      const dadosCobranca = {
-        seuNumero: `REC${receita.id}`,
-        valorNominal: valorTotal,
-        dataVencimento: new Date(receita.data_vencimento).toISOString().slice(0, 10),
-        numDiasAgenda: 60,
-        pagador: {
-          cpfCnpj: cpfLimpo,
-          tipoPessoa: cpfLimpo.length > 11 ? 'JURIDICA' : 'FISICA',
-          nome: receita.morador_nome || 'Morador',
-          endereco: [receita.endereco_logradouro, receita.endereco_numero].filter(Boolean).join(', ') || 'Não informado',
-          bairro: receita.endereco_bairro || 'Não informado',
-          cidade: receita.endereco_cidade || 'Não informado',
-          uf: receita.endereco_uf || 'MG',
-          cep: (receita.endereco_cep || '00000000').replace(/\D/g, ''),
-        },
-      };
-
-      const provider = bankingProviderRegistry.getProvider(credencial.provider);
-      const { idExterno, payloadResposta } = await provider.emitirCobranca(credencial, dadosCobranca);
-
-      const detalhado = await provider.consultarCobranca(credencial, idExterno);
-
-      const [rows] = await postgres.query(
-        `INSERT INTO "condominio-bh".tb_fin_cobranca_bancaria
-           (id_condominio, id_receita, id_integracao_bancaria, provider, tipo_cobranca, situacao,
-            id_externo, nosso_numero, linha_digitavel, codigo_barras, pix_copia_cola, valor,
-            data_vencimento, payload_emissao, payload_resposta, id_usuario_solicitante)
-         VALUES (:idCondominio, :idReceita, :idIntegracao, :provider, 'boleto', 'emitida',
-                 :idExterno, :nossoNumero, :linhaDigitavel, :codigoBarras, :pixCopiaECola, :valor,
-                 :dataVencimento::date, :payloadEmissao, :payloadResposta, :idUsuarioSolicitante)
-         RETURNING id`,
-        {
-          replacements: {
-            idCondominio,
-            idReceita,
-            idIntegracao: credencial.id,
-            provider: credencial.provider,
-            idExterno,
-            nossoNumero: detalhado.boleto?.nossoNumero || null,
-            linhaDigitavel: detalhado.boleto?.linhaDigitavel || null,
-            codigoBarras: detalhado.boleto?.codigoBarras || null,
-            pixCopiaECola: detalhado.pix?.pixCopiaECola || null,
-            valor: valorTotal,
-            dataVencimento: dadosCobranca.dataVencimento,
-            payloadEmissao: JSON.stringify(dadosCobranca),
-            payloadResposta: JSON.stringify(detalhado),
-            idUsuarioSolicitante: this._toInt(req.idcliente, null),
-          },
-          type: QueryTypes.INSERT,
-        }
-      );
-
-      return res.status(200).json({
-        data: {
-          id: rows[0].id,
-          id_externo: idExterno,
-          nosso_numero: detalhado.boleto?.nossoNumero || null,
-          linha_digitavel: detalhado.boleto?.linhaDigitavel || null,
-          codigo_barras: detalhado.boleto?.codigoBarras || null,
-          pix_copia_cola: detalhado.pix?.pixCopiaECola || null,
-          valor: valorTotal,
-          data_vencimento: dadosCobranca.dataVencimento,
-          situacao: 'emitida',
-        },
+      const resultado = await this._emitirBoletoBancarioParaReceita({
+        idCondominio,
+        idReceita,
+        idUsuarioSolicitante: this._toInt(req.idcliente, null),
       });
+
+      if (!resultado.ok) return res.status(resultado.status).json({ message: resultado.message });
+      return res.status(200).json({ data: resultado.data });
     } catch (error) {
       return res.status(502).json({ message: 'Falha ao emitir boleto bancário.', detail: error.message });
     }

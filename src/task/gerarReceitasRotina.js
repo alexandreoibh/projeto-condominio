@@ -1,6 +1,9 @@
 const cron = require('node-cron');
 const { QueryTypes } = require('sequelize');
 const postgres = require('../database/postgres');
+const FinanceiroController = require('../controllers/financeiroController');
+
+const financeiroController = new FinanceiroController();
 
 function calcularVencimentoRotina(diaVencimento, ano, mes) {
   const ultimoDiaMes = new Date(ano, mes, 0).getDate();
@@ -72,7 +75,7 @@ async function gerarReceitasRotina() {
 
       const dataVencimento = calcularVencimentoRotina(rotina.dia_vencimento, ano, mes);
 
-      await postgres.query(
+      const [insertRows] = await postgres.query(
         `INSERT INTO "condominio-bh".tb_fin_receitas (
             id_condominio, id_unidade, id_usuario, id_usuario_cadastro, categoria, descricao, valor, valor_fundo_reserva,
             competencia, data_vencimento, data_pagamento, situacao,
@@ -83,7 +86,7 @@ async function gerarReceitasRotina() {
             :competencia::date, :data_vencimento::date, NULL, 'em_aberto',
             :id_grupo_receita, :id_categoria, :grupo_receita,
             :numero_documento, :observacao, :id_rotina, now(), now()
-          )`,
+          ) RETURNING id`,
         {
           replacements: {
             id_condominio: modelo.id_condominio,
@@ -105,7 +108,27 @@ async function gerarReceitasRotina() {
           },
         }
       );
-      console.log(`[gerarReceitasRotina] Receita gerada para rotina id=${rotina.id}, competência ${competenciaAtual}.`);
+      const idReceitaGerada = insertRows[0].id;
+      console.log(`[gerarReceitasRotina] Receita id=${idReceitaGerada} gerada para rotina id=${rotina.id}, competência ${competenciaAtual}.`);
+
+      // Emissão automática de boleto bancário — mesma regra de criarReceita:
+      // toda receita com origem MORADOR (qualquer grupo) e pagador definido
+      // dispara emissão automática. Best-effort: nunca interrompe a geração
+      // das demais receitas da rotina se a emissão falhar para uma delas.
+      if (modelo.grupo_receita === 'MORADOR' && modelo.id_usuario) {
+        try {
+          const resultadoBoleto = await financeiroController._emitirBoletoBancarioParaReceita({
+            idCondominio: modelo.id_condominio,
+            idReceita: idReceitaGerada,
+            idUsuarioSolicitante: modelo.id_usuario_cadastro,
+          });
+          if (!resultadoBoleto.ok) {
+            console.warn(`[gerarReceitasRotina] Emissão automática de boleto falhou para receita id=${idReceitaGerada}: ${resultadoBoleto.message}`);
+          }
+        } catch (boletoErr) {
+          console.error(`[gerarReceitasRotina] Erro ao emitir boleto automático para receita id=${idReceitaGerada}:`, boletoErr?.message);
+        }
+      }
     } catch (err) {
       console.error(`[gerarReceitasRotina] Erro ao processar rotina id=${rotina.id}:`, err?.message);
     }
