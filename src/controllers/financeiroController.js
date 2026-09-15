@@ -487,6 +487,38 @@ class FinanceiroController {
       if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
 
       const id = this._toInt(req.params.id, null);
+
+      // Bloqueia mudança de valor/vencimento quando já existe boleto
+      // emitido/pago no banco integrado — o backend não sincroniza edição
+      // de receita com o boleto real (o Inter não permite alterar valor de
+      // uma cobrança já registrada), então permitir editar aqui criaria
+      // duas fontes de verdade divergentes sem nenhum aviso. O síndico
+      // precisa cancelar o boleto bancário primeiro (DELETE
+      // /receitas/:id/boleto-bancario) para poder alterar esses campos.
+      const camposFinanceirosSensiveis = ['valor', 'valor_fundo_reserva', 'data_vencimento'];
+      const tentandoAlterarCamposSensiveis = camposFinanceirosSensiveis.some((campo) => req.body[campo] !== undefined);
+
+      if (tentandoAlterarCamposSensiveis) {
+        const [cobrancaAtiva] = await postgres.query(
+          `SELECT id, situacao FROM "condominio-bh".tb_fin_cobranca_bancaria
+            WHERE id_receita = :id AND id_condominio = :id_condominio
+              AND situacao IN ('emitida', 'paga')
+            ORDER BY id DESC LIMIT 1`,
+          { replacements: { id, id_condominio: idCondominio }, type: QueryTypes.SELECT }
+        );
+
+        if (cobrancaAtiva?.situacao === 'paga') {
+          return res.status(422).json({
+            message: 'Não é possível alterar valor ou data de vencimento: esta receita já foi paga via boleto bancário. Lance uma nova receita para o ajuste necessário.',
+          });
+        }
+        if (cobrancaAtiva) {
+          return res.status(422).json({
+            message: `Não é possível alterar valor ou data de vencimento: esta receita já possui um boleto bancário "${cobrancaAtiva.situacao}". Cancele o boleto antes de editar esses campos.`,
+          });
+        }
+      }
+
       const campos = ['updated_at = now()'];
       const replacements = { id, id_condominio: idCondominio };
 
