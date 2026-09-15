@@ -214,6 +214,7 @@ class FinanceiroController {
                                cb.situacao::text AS situacao
                           FROM "condominio-bh".tb_fin_cobranca_bancaria cb
                          WHERE cb.id_receita = r.id
+                           AND cb.situacao IN ('emitida', 'paga', 'cancelada')
                          ORDER BY cb.id DESC
                          LIMIT 1
                       ) cb_sub
@@ -516,6 +517,50 @@ class FinanceiroController {
   // ─── Boleto bancário (emissão real via API do banco conectado) ─────────────
 
   /**
+   * Registra uma tentativa de emissão frustrada como linha em
+   * tb_fin_cobranca_bancaria com situacao='erro' — sem isso, uma falha na
+   * emissão automática (disparada em criarReceita/gerarReceitasRotina)
+   * ficava visível só como console.warn efêmero, inconsultável em produção
+   * (Vercel/serverless não persiste log em arquivo). Com o registro, toda
+   * tentativa — sucesso ou falha — fica auditável na mesma tabela, e o
+   * síndico/suporte consegue diagnosticar sem depender do painel de logs.
+   *
+   * id_externo é preenchido com um marcador sintético (nunca colide com um
+   * codigoSolicitacao real do provider, que é sempre UUID) porque a coluna
+   * é NOT NULL e não houve resposta do banco para extrair um id de verdade.
+   *
+   * @returns {Promise<{ok: false, status: number, message: string}>}
+   */
+  async _registrarFalhaEmissaoBoleto({ idCondominio, idReceita, idIntegracao, provider, valor, dataVencimento, payloadEmissao, status, message }) {
+    try {
+      await postgres.query(
+        `INSERT INTO "condominio-bh".tb_fin_cobranca_bancaria
+           (id_condominio, id_receita, id_integracao_bancaria, provider, tipo_cobranca, situacao,
+            id_externo, valor, data_vencimento, payload_emissao, payload_resposta)
+         VALUES (:idCondominio, :idReceita, :idIntegracao, :provider, 'boleto', 'erro',
+                 :idExterno, :valor, :dataVencimento::date, :payloadEmissao, :payloadResposta)`,
+        {
+          replacements: {
+            idCondominio,
+            idReceita,
+            idIntegracao: idIntegracao || null,
+            provider: provider || 'desconhecido',
+            idExterno: `erro-${idReceita}-${Date.now()}`,
+            valor: valor || 0,
+            dataVencimento: dataVencimento || new Date().toISOString().slice(0, 10),
+            payloadEmissao: payloadEmissao ? JSON.stringify(payloadEmissao) : null,
+            payloadResposta: JSON.stringify({ erro: message }),
+          },
+          type: QueryTypes.INSERT,
+        }
+      );
+    } catch (logError) {
+      console.error(`[_registrarFalhaEmissaoBoleto] Falha ao registrar erro de emissão para receita id=${idReceita}:`, logError.message);
+    }
+    return { ok: false, status, message };
+  }
+
+  /**
    * Lógica de negócio pura de emissão, reaproveitada tanto pelo endpoint
    * HTTP `emitirBoletoBancario` quanto pela emissão automática disparada em
    * `criarReceita`/`gerarReceitasRotina` — nunca escreve em `res`, sempre
@@ -562,10 +607,18 @@ class FinanceiroController {
       return { ok: false, status: 422, message: 'Só é possível emitir boleto para receitas em aberto.' };
     }
     if (!receita.morador_cpf) {
-      return { ok: false, status: 422, message: 'O morador vinculado a esta receita não possui CPF cadastrado — obrigatório para emissão de boleto.' };
+      return await this._registrarFalhaEmissaoBoleto({
+        idCondominio, idReceita, valor: Number(receita.valor || 0) + Number(receita.valor_fundo_reserva || 0),
+        dataVencimento: receita.data_vencimento, status: 422,
+        message: 'O morador vinculado a esta receita não possui CPF cadastrado — obrigatório para emissão de boleto.',
+      });
     }
     if (!receita.condominio_logradouro || !receita.condominio_cep || !receita.condominio_cidade || !receita.condominio_uf) {
-      return { ok: false, status: 422, message: 'O condomínio não possui endereço completo cadastrado — obrigatório para emissão de boleto.' };
+      return await this._registrarFalhaEmissaoBoleto({
+        idCondominio, idReceita, valor: Number(receita.valor || 0) + Number(receita.valor_fundo_reserva || 0),
+        dataVencimento: receita.data_vencimento, status: 422,
+        message: 'O condomínio não possui endereço completo cadastrado — obrigatório para emissão de boleto.',
+      });
     }
 
     const [credencial] = await postgres.query(
@@ -576,7 +629,11 @@ class FinanceiroController {
     );
 
     if (!credencial) {
-      return { ok: false, status: 422, message: 'Nenhuma integração bancária ativa para este condomínio.' };
+      return await this._registrarFalhaEmissaoBoleto({
+        idCondominio, idReceita, valor: Number(receita.valor || 0) + Number(receita.valor_fundo_reserva || 0),
+        dataVencimento: receita.data_vencimento, status: 422,
+        message: 'Nenhuma integração bancária ativa para este condomínio.',
+      });
     }
 
     const valorTotal = Number(receita.valor || 0) + Number(receita.valor_fundo_reserva || 0);
@@ -614,7 +671,12 @@ class FinanceiroController {
       ]);
       idExterno = resultadoEmissao.idExterno;
     } catch (error) {
-      return { ok: false, status: 502, message: `Falha ao emitir boleto bancário: ${error.message}` };
+      return await this._registrarFalhaEmissaoBoleto({
+        idCondominio, idReceita, idIntegracao: credencial.id, provider: credencial.provider,
+        valor: valorTotal, dataVencimento: dadosCobranca.dataVencimento,
+        payloadEmissao: dadosCobranca, status: 502,
+        message: `Falha ao emitir boleto bancário: ${error.message}`,
+      });
     }
 
     const detalhado = await provider.consultarCobranca(credencial, idExterno);
@@ -699,6 +761,7 @@ class FinanceiroController {
                 data_emissao, data_vencimento, data_pagamento
            FROM "condominio-bh".tb_fin_cobranca_bancaria
           WHERE id_receita = :idReceita AND id_condominio = :idCondominio
+            AND situacao IN ('emitida', 'paga', 'cancelada')
           ORDER BY id DESC LIMIT 1`,
         { replacements: { idReceita, idCondominio }, type: QueryTypes.SELECT }
       );
