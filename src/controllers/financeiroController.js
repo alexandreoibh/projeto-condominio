@@ -206,6 +206,18 @@ class FinanceiroController {
                     SELECT 1 FROM "condominio-bh".tb_fin_receitas_documentos rd
                      WHERE rd.id_receita = r.id AND rd.tipo = 'comprovante'
                   ) AS tem_anexo_comprovante,
+                  (
+                    SELECT row_to_json(cb_sub)
+                      FROM (
+                        SELECT cb.provider::text AS provider,
+                               cb.id_externo::text AS id_externo,
+                               cb.situacao::text AS situacao
+                          FROM "condominio-bh".tb_fin_cobranca_bancaria cb
+                         WHERE cb.id_receita = r.id
+                         ORDER BY cb.id DESC
+                         LIMIT 1
+                      ) cb_sub
+                  ) AS boleto_bancario,
                   COALESCE(
                     (SELECT array_to_json(array_agg(row_to_json(sub) ORDER BY sub.created_at DESC))
                        FROM (
