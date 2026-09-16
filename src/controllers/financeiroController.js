@@ -2624,6 +2624,18 @@ class FinanceiroController {
       const receitaPrincipal = porId.get(idReceita);
       if (!receitaPrincipal) return res.status(404).json({ message: 'Receita inadimplente não encontrada.' });
 
+      // Mesmo filtro (situacao IN emitida/paga) já usado em listarReceitas e
+      // consultarBoletoBancario — pega a cobrança bancária vigente da
+      // receita principal, se houver, para incluir no e-mail de cobrança.
+      const [cobrancaBancaria] = await postgres.query(
+        `SELECT linha_digitavel, codigo_barras, pix_copia_cola
+           FROM "condominio-bh".tb_fin_cobranca_bancaria
+          WHERE id_receita = :idReceita AND id_condominio = :idCondominio
+            AND situacao IN ('emitida', 'paga')
+          ORDER BY id DESC LIMIT 1`,
+        { replacements: { idReceita, idCondominio }, type: QueryTypes.SELECT }
+      );
+
       if (outrasPendenciasIds.length > 0) {
         const naoEncontrados = outrasPendenciasIds.filter((id) => !porId.has(id));
         if (naoEncontrados.length > 0) {
@@ -2725,9 +2737,17 @@ class FinanceiroController {
               (url) => `${this._publicApiBaseUrl()}/api/condominio/financeiro/boletos/download?url=${encodeURIComponent(url)}`
             );
 
-            const details = {};
-            if (observacao) details['Observação'] = observacao;
-            if (boletosParaEmail.length > 0) details['Boletos'] = boletosParaEmail.join('\n');
+            // `details` carrega só os pares chave→valor de exibição já
+            // existentes (nunca observação/anexos, que agora são campos
+            // dedicados no payload — ver docs/public-email-dispatch.md).
+            const details = {
+              'Condomínio': receitaPrincipal.condominio_nome || '',
+              'Morador': receitaPrincipal.usuario_nome || '',
+              'Descrição': consolidado ? `${pendencias.length} pendências consolidadas` : (receitaPrincipal.descricao || ''),
+              'Valor': `R$ ${valorTotal.toFixed(2)}`,
+              'Dias de atraso': String(diasAtrasoMax),
+              'Vencimento': receitaPrincipal.data_vencimento,
+            };
             if (consolidado) {
               details['Pendências consolidadas'] = pendencias
                 .map((p) => `${p.descricao} — R$ ${(Number(p.valor || 0) + Number(p.valor_fundo_reserva || 0)).toFixed(2)} — venceu ${p.data_vencimento}`)
@@ -2745,8 +2765,17 @@ class FinanceiroController {
                 data_vencimento: receitaPrincipal.data_vencimento,
                 dias_atraso: diasAtrasoMax,
                 condominio_nome: receitaPrincipal.condominio_nome || '',
+                ...(cobrancaBancaria ? {
+                  boleto_bancario: {
+                    linha_digitavel: cobrancaBancaria.linha_digitavel || null,
+                    codigo_barras: cobrancaBancaria.codigo_barras || null,
+                    pix_copia_cola: cobrancaBancaria.pix_copia_cola || null,
+                  },
+                } : {}),
               },
-              ...(Object.keys(details).length > 0 ? { details } : {}),
+              ...(observacao ? { observacao } : {}),
+              ...(boletosParaEmail.length > 0 ? { anexos_urls: boletosParaEmail } : {}),
+              details,
               ...(boletosParaEmail.length > 0 ? { link: boletosParaEmail[0] } : {}),
             });
 
