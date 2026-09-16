@@ -557,7 +557,42 @@ class FinanceiroController {
       );
 
       if (!rows[0]) return res.status(404).json({ message: 'Receita não encontrada.' });
-      return res.status(200).json(rows[0]);
+      const receitaAtualizada = rows[0];
+
+      // Auto-recuperação: se a receita é MORADOR, está em aberto, tem
+      // pagador definido, e NÃO existe boleto válido vinculado (nunca
+      // emitiu, ou só há tentativas com situacao='erro' — ex: a edição
+      // acabou de corrigir o motivo do erro, como data_vencimento
+      // retroativa), tenta emitir agora. Best-effort: nunca falha a
+      // resposta principal do PUT por causa disso.
+      let boletoBancario = null;
+      if (receitaAtualizada.grupo_receita === 'MORADOR'
+        && receitaAtualizada.situacao === 'em_aberto'
+        && receitaAtualizada.id_usuario) {
+        const [cobrancaValida] = await postgres.query(
+          `SELECT id FROM "condominio-bh".tb_fin_cobranca_bancaria
+            WHERE id_receita = :id AND id_condominio = :id_condominio
+              AND situacao IN ('emitida', 'paga')
+            LIMIT 1`,
+          { replacements: { id, id_condominio: idCondominio }, type: QueryTypes.SELECT }
+        );
+
+        if (!cobrancaValida) {
+          const resultadoBoleto = await this._emitirBoletoBancarioParaReceita({
+            idCondominio,
+            idReceita: id,
+            idUsuarioSolicitante: this._toInt(req.idcliente, null),
+          }).catch((error) => ({ ok: false, status: 502, message: error.message }));
+
+          if (resultadoBoleto.ok) {
+            boletoBancario = resultadoBoleto.data;
+          } else {
+            console.warn(`[atualizarReceita] Tentativa automática de emissão de boleto falhou para receita id=${id}: ${resultadoBoleto.message}`);
+          }
+        }
+      }
+
+      return res.status(200).json({ ...receitaAtualizada, boleto_bancario: boletoBancario });
     } catch (error) {
       return res.status(500).json({ message: 'Falha ao atualizar receita.', detail: error.message });
     }
