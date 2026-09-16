@@ -173,6 +173,115 @@ class IntegracaoBancariaController {
     }
   }
 
+  // ─── Conectar Itaú (client_id/client_secret + certificado opcional) ────
+
+  async conectarItau(req, res) {
+    try {
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const clientId = this._normalizarTextoOuNull(req.body.client_id);
+      const clientSecret = this._normalizarTextoOuNull(req.body.client_secret);
+      const ambiente = this._normalizarTextoOuNull(req.body.ambiente) || 'production';
+
+      if (!clientId || !clientSecret) {
+        return res.status(422).json({ message: 'client_id e client_secret são obrigatórios.' });
+      }
+      if (!AMBIENTES_VALIDOS.has(ambiente)) {
+        return res.status(422).json({ message: 'ambiente deve ser "sandbox" ou "production".' });
+      }
+
+      // TODO confirmar contra sandbox real se o Itaú exige certificado mTLS
+      // (diferente do Inter, onde é sempre obrigatório) — por ora, opcional.
+      const arquivoCertificado = req.files?.certificado?.[0];
+      const arquivoChave = req.files?.chave_privada?.[0];
+      const certificadoBase64 = arquivoCertificado ? arquivoCertificado.buffer.toString('base64') : null;
+      const chavePrivadaBase64 = arquivoChave ? arquivoChave.buffer.toString('base64') : null;
+
+      const provider = bankingProviderRegistry.getProvider('itau');
+      const teste = await provider.testarConexao({
+        ambiente,
+        clientId,
+        clientSecret,
+        certificadoBase64: certificadoBase64 || undefined,
+        chavePrivadaBase64: chavePrivadaBase64 || undefined,
+      });
+
+      if (!teste.ok) {
+        return res.status(422).json({ message: 'Não foi possível validar a conexão com o Itaú.', detail: teste.erro });
+      }
+
+      const clientSecretCifrado = credentialCipher.encrypt(clientSecret);
+      const certificadoCifrado = certificadoBase64 ? credentialCipher.encrypt(certificadoBase64) : null;
+      const chavePrivadaCifrada = chavePrivadaBase64 ? credentialCipher.encrypt(chavePrivadaBase64) : null;
+
+      const [existente] = await postgres.query(
+        `SELECT id FROM "condominio-bh".tb_fin_integracao_bancaria
+          WHERE id_condominio = :idCondominio AND provider = 'itau' AND ambiente = :ambiente`,
+        { replacements: { idCondominio: req.id_condominio, ambiente }, type: QueryTypes.SELECT }
+      );
+
+      let idIntegracao;
+      if (existente) {
+        idIntegracao = existente.id;
+        await postgres.query(
+          `UPDATE "condominio-bh".tb_fin_integracao_bancaria
+              SET client_id = :clientId,
+                  client_secret_cifrado = :clientSecretCifrado,
+                  certificado_cifrado = :certificadoCifrado,
+                  chave_privada_cifrada = :chavePrivadaCifrada,
+                  status_conexao = 'ativo',
+                  ultimo_erro = NULL,
+                  ultima_verificacao_em = NOW(),
+                  access_token_cifrado = NULL,
+                  access_token_expira_em = NULL,
+                  ativo = true,
+                  updated_at = NOW()
+            WHERE id = :id`,
+          {
+            replacements: { id: idIntegracao, clientId, clientSecretCifrado, certificadoCifrado, chavePrivadaCifrada },
+            type: QueryTypes.UPDATE,
+          }
+        );
+      } else {
+        const [rows] = await postgres.query(
+          `INSERT INTO "condominio-bh".tb_fin_integracao_bancaria
+             (id_condominio, provider, ambiente, client_id, client_secret_cifrado,
+              certificado_cifrado, chave_privada_cifrada, status_conexao,
+              ultima_verificacao_em, id_usuario_cadastro)
+           VALUES (:idCondominio, 'itau', :ambiente, :clientId, :clientSecretCifrado,
+                   :certificadoCifrado, :chavePrivadaCifrada, 'ativo',
+                   NOW(), :idUsuarioCadastro)
+           RETURNING id`,
+          {
+            replacements: {
+              idCondominio: req.id_condominio,
+              ambiente,
+              clientId,
+              clientSecretCifrado,
+              certificadoCifrado,
+              chavePrivadaCifrada,
+              idUsuarioCadastro: req.idcliente,
+            },
+            type: QueryTypes.INSERT,
+          }
+        );
+        idIntegracao = rows[0].id;
+      }
+
+      const [linhaFinal] = await postgres.query(
+        `SELECT id, provider, ambiente, client_id, conta_corrente, agencia, chave_pix,
+                status_conexao, ultimo_erro, ultima_verificacao_em, ativo, created_at, updated_at
+           FROM "condominio-bh".tb_fin_integracao_bancaria
+          WHERE id = :id`,
+        { replacements: { id: idIntegracao }, type: QueryTypes.SELECT }
+      );
+
+      return res.status(200).json({ data: this._serializar(linhaFinal) });
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao conectar integração bancária.', detail: error.message });
+    }
+  }
+
   // ─── Testar conexão sob demanda ────────────────────────────────────────
 
   async testarIntegracao(req, res) {
@@ -240,6 +349,35 @@ class IntegracaoBancariaController {
       });
     } catch (error) {
       return res.status(502).json({ message: 'Falha ao consultar saldo bancário.', detail: error.message });
+    }
+  }
+
+  // ─── Consultar extrato ──────────────────────────────────────────────────
+
+  async consultarExtrato(req, res) {
+    try {
+      const id = this._normalizarTextoOuNull(req.params.id);
+      const dataInicio = this._normalizarTextoOuNull(req.query.dataInicio);
+      const dataFim = this._normalizarTextoOuNull(req.query.dataFim);
+
+      if (!dataInicio || !dataFim) {
+        return res.status(422).json({ message: 'dataInicio e dataFim são obrigatórios.' });
+      }
+
+      const [credencial] = await postgres.query(
+        `SELECT * FROM "condominio-bh".tb_fin_integracao_bancaria
+          WHERE id = :id AND id_condominio = :idCondominio AND ativo = true`,
+        { replacements: { id, idCondominio: req.id_condominio }, type: QueryTypes.SELECT }
+      );
+
+      if (!credencial) return res.status(404).json({ message: 'Integração não encontrada.' });
+
+      const provider = bankingProviderRegistry.getProvider(credencial.provider);
+      const transacoes = await provider.consultarExtrato(credencial, dataInicio, dataFim);
+
+      return res.status(200).json({ data: transacoes });
+    } catch (error) {
+      return res.status(502).json({ message: 'Falha ao consultar extrato bancário.', detail: error.message });
     }
   }
 

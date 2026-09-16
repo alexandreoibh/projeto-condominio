@@ -38,10 +38,29 @@ router.post(
   controller.conectarInter.bind(controller)
 );
 
+// ── Conectar Itaú (multipart: client_id, client_secret, ambiente + arquivos opcionais) ──
+
+router.post(
+  '/itau/conectar',
+  auth,
+  uploadCertificado.fields([
+    { name: 'certificado', maxCount: 1 },
+    { name: 'chave_privada', maxCount: 1 },
+  ]),
+  [
+    body('client_id').notEmpty().withMessage('client_id é obrigatório.'),
+    body('client_secret').notEmpty().withMessage('client_secret é obrigatório.'),
+    body('ambiente').optional({ nullable: true, checkFalsy: true }).isIn(['sandbox', 'production']).withMessage('ambiente deve ser "sandbox" ou "production".'),
+  ],
+  validate,
+  controller.conectarItau.bind(controller)
+);
+
 // ── Testar / Saldo / Desativar ───────────────────────────────────────────────
 
 router.post('/:id/testar', auth, controller.testarIntegracao.bind(controller));
 router.get('/:id/saldo', auth, controller.consultarSaldo.bind(controller));
+router.get('/:id/extrato', auth, controller.consultarExtrato.bind(controller));
 router.delete('/:id', auth, controller.desativarIntegracao.bind(controller));
 
 module.exports = router;

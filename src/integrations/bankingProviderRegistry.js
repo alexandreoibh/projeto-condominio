@@ -18,6 +18,20 @@ providers.set('inter', {
   processarWebhook: require('./inter/interWebhookHandler').processarWebhook,
 });
 
+// TODO confirmar contra sandbox real — ver TODOs em src/integrations/itau/*.
+// Estrutura completa seguindo o mesmo contrato do Inter, aguardando
+// client_id/client_secret de sandbox para validação empírica.
+providers.set('itau', {
+  testarConexao: require('./itau/itauAuthClient').testarConexao,
+  emitirCobranca: require('./itau/itauCobrancaService').emitirCobranca,
+  consultarCobranca: require('./itau/itauCobrancaService').consultarCobranca,
+  cancelarCobranca: require('./itau/itauCobrancaService').cancelarCobranca,
+  consultarCobrancaPdf: require('./itau/itauCobrancaService').consultarCobrancaPdf,
+  consultarExtrato: require('./itau/itauExtratoService').consultarExtrato,
+  consultarSaldo: require('./itau/itauExtratoService').consultarSaldo,
+  processarWebhook: require('./itau/itauWebhookHandler').processarWebhook,
+});
+
 /**
  * @param {string} nomeProvider
  * @returns {import('./bankingProvider.interface').BankingProvider}
