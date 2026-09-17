@@ -32,6 +32,21 @@ providers.set('itau', {
   processarWebhook: require('./itau/itauWebhookHandler').processarWebhook,
 });
 
+// Paths e shapes confirmados via collections Postman reais do sandbox
+// Bradesco (não apenas melhor-esforço como o Itaú) — ver TODOs em
+// src/integrations/bradesco/* para os pontos ainda não validados por
+// chamada real (credencial de sandbox aguardando habilitação).
+providers.set('bradesco', {
+  testarConexao: require('./bradesco/bradescoAuthClient').testarConexao,
+  emitirCobranca: require('./bradesco/bradescoCobrancaService').emitirCobranca,
+  consultarCobranca: require('./bradesco/bradescoCobrancaService').consultarCobranca,
+  cancelarCobranca: require('./bradesco/bradescoCobrancaService').cancelarCobranca,
+  consultarCobrancaPdf: require('./bradesco/bradescoCobrancaService').consultarCobrancaPdf,
+  consultarExtrato: require('./bradesco/bradescoExtratoService').consultarExtrato,
+  consultarSaldo: require('./bradesco/bradescoExtratoService').consultarSaldo,
+  processarWebhook: require('./bradesco/bradescoWebhookHandler').processarWebhook,
+});
+
 /**
  * @param {string} nomeProvider
  * @returns {import('./bankingProvider.interface').BankingProvider}

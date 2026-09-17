@@ -56,6 +56,24 @@ router.post(
   controller.conectarItau.bind(controller)
 );
 
+// ── Conectar Bradesco (multipart: client_id, client_secret, ambiente + arquivos) ──
+
+router.post(
+  '/bradesco/conectar',
+  auth,
+  uploadCertificado.fields([
+    { name: 'certificado', maxCount: 1 },
+    { name: 'chave_privada', maxCount: 1 },
+  ]),
+  [
+    body('client_id').notEmpty().withMessage('client_id é obrigatório.'),
+    body('client_secret').notEmpty().withMessage('client_secret é obrigatório.'),
+    body('ambiente').optional({ nullable: true, checkFalsy: true }).isIn(['sandbox', 'production']).withMessage('ambiente deve ser "sandbox" ou "production".'),
+  ],
+  validate,
+  controller.conectarBradesco.bind(controller)
+);
+
 // ── Testar / Saldo / Desativar ───────────────────────────────────────────────
 
 router.post('/:id/testar', auth, controller.testarIntegracao.bind(controller));

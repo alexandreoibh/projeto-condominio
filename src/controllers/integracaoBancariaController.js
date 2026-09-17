@@ -282,6 +282,120 @@ class IntegracaoBancariaController {
     }
   }
 
+  // ─── Conectar Bradesco (client_id/client_secret + certificado obrigatório) ──
+
+  async conectarBradesco(req, res) {
+    try {
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const clientId = this._normalizarTextoOuNull(req.body.client_id);
+      const clientSecret = this._normalizarTextoOuNull(req.body.client_secret);
+      const ambiente = this._normalizarTextoOuNull(req.body.ambiente) || 'production';
+
+      if (!clientId || !clientSecret) {
+        return res.status(422).json({ message: 'client_id e client_secret são obrigatórios.' });
+      }
+      if (!AMBIENTES_VALIDOS.has(ambiente)) {
+        return res.status(422).json({ message: 'ambiente deve ser "sandbox" ou "production".' });
+      }
+
+      // mTLS é sempre obrigatório no Bradesco (confirmado no guia do
+      // portal: nenhuma credencial é gerada sem certificado) — mesmo
+      // padrão do Inter, diferente do Itaú.
+      const arquivoCertificado = req.files?.certificado?.[0];
+      const arquivoChave = req.files?.chave_privada?.[0];
+      if (!arquivoCertificado || !arquivoChave) {
+        return res.status(422).json({ message: 'É necessário enviar os arquivos "certificado" e "chave_privada".' });
+      }
+
+      const certificadoBase64 = arquivoCertificado.buffer.toString('base64');
+      const chavePrivadaBase64 = arquivoChave.buffer.toString('base64');
+
+      const provider = bankingProviderRegistry.getProvider('bradesco');
+      const teste = await provider.testarConexao({
+        ambiente,
+        clientId,
+        clientSecret,
+        certificadoBase64,
+        chavePrivadaBase64,
+      });
+
+      if (!teste.ok) {
+        return res.status(422).json({ message: 'Não foi possível validar a conexão com o Bradesco.', detail: teste.erro });
+      }
+
+      const clientSecretCifrado = credentialCipher.encrypt(clientSecret);
+      const certificadoCifrado = credentialCipher.encrypt(certificadoBase64);
+      const chavePrivadaCifrada = credentialCipher.encrypt(chavePrivadaBase64);
+
+      const [existente] = await postgres.query(
+        `SELECT id FROM "condominio-bh".tb_fin_integracao_bancaria
+          WHERE id_condominio = :idCondominio AND provider = 'bradesco' AND ambiente = :ambiente`,
+        { replacements: { idCondominio: req.id_condominio, ambiente }, type: QueryTypes.SELECT }
+      );
+
+      let idIntegracao;
+      if (existente) {
+        idIntegracao = existente.id;
+        await postgres.query(
+          `UPDATE "condominio-bh".tb_fin_integracao_bancaria
+              SET client_id = :clientId,
+                  client_secret_cifrado = :clientSecretCifrado,
+                  certificado_cifrado = :certificadoCifrado,
+                  chave_privada_cifrada = :chavePrivadaCifrada,
+                  status_conexao = 'ativo',
+                  ultimo_erro = NULL,
+                  ultima_verificacao_em = NOW(),
+                  access_token_cifrado = NULL,
+                  access_token_expira_em = NULL,
+                  ativo = true,
+                  updated_at = NOW()
+            WHERE id = :id`,
+          {
+            replacements: { id: idIntegracao, clientId, clientSecretCifrado, certificadoCifrado, chavePrivadaCifrada },
+            type: QueryTypes.UPDATE,
+          }
+        );
+      } else {
+        const [rows] = await postgres.query(
+          `INSERT INTO "condominio-bh".tb_fin_integracao_bancaria
+             (id_condominio, provider, ambiente, client_id, client_secret_cifrado,
+              certificado_cifrado, chave_privada_cifrada, status_conexao,
+              ultima_verificacao_em, id_usuario_cadastro)
+           VALUES (:idCondominio, 'bradesco', :ambiente, :clientId, :clientSecretCifrado,
+                   :certificadoCifrado, :chavePrivadaCifrada, 'ativo',
+                   NOW(), :idUsuarioCadastro)
+           RETURNING id`,
+          {
+            replacements: {
+              idCondominio: req.id_condominio,
+              ambiente,
+              clientId,
+              clientSecretCifrado,
+              certificadoCifrado,
+              chavePrivadaCifrada,
+              idUsuarioCadastro: req.idcliente,
+            },
+            type: QueryTypes.INSERT,
+          }
+        );
+        idIntegracao = rows[0].id;
+      }
+
+      const [linhaFinal] = await postgres.query(
+        `SELECT id, provider, ambiente, client_id, conta_corrente, agencia, chave_pix,
+                status_conexao, ultimo_erro, ultima_verificacao_em, ativo, created_at, updated_at
+           FROM "condominio-bh".tb_fin_integracao_bancaria
+          WHERE id = :id`,
+        { replacements: { id: idIntegracao }, type: QueryTypes.SELECT }
+      );
+
+      return res.status(200).json({ data: this._serializar(linhaFinal) });
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao conectar integração bancária.', detail: error.message });
+    }
+  }
+
   // ─── Testar conexão sob demanda ────────────────────────────────────────
 
   async testarIntegracao(req, res) {
