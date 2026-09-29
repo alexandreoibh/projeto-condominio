@@ -113,6 +113,10 @@ class IntegracaoBancariaController {
         { replacements: { idCondominio: req.id_condominio, ambiente }, type: QueryTypes.SELECT }
       );
 
+      // Obrigatórios e já validados na rota (validacoesMultaJuros).
+      const multaPercentual = Number(req.body.multa_percentual);
+      const jurosMoraPercentualMes = Number(req.body.juros_mora_percentual_mes);
+
       let idIntegracao;
       if (existente) {
         idIntegracao = existente.id;
@@ -122,6 +126,8 @@ class IntegracaoBancariaController {
                   client_secret_cifrado = :clientSecretCifrado,
                   certificado_cifrado = :certificadoCifrado,
                   chave_privada_cifrada = :chavePrivadaCifrada,
+                  multa_percentual = :multaPercentual,
+                  juros_mora_percentual_mes = :jurosMoraPercentualMes,
                   status_conexao = 'ativo',
                   ultimo_erro = NULL,
                   ultima_verificacao_em = NOW(),
@@ -131,7 +137,10 @@ class IntegracaoBancariaController {
                   updated_at = NOW()
             WHERE id = :id`,
           {
-            replacements: { id: idIntegracao, clientId, clientSecretCifrado, certificadoCifrado, chavePrivadaCifrada },
+            replacements: {
+              id: idIntegracao, clientId, clientSecretCifrado, certificadoCifrado, chavePrivadaCifrada,
+              multaPercentual, jurosMoraPercentualMes,
+            },
             type: QueryTypes.UPDATE,
           }
         );
@@ -140,10 +149,12 @@ class IntegracaoBancariaController {
           `INSERT INTO "condominio-bh".tb_fin_integracao_bancaria
              (id_condominio, provider, ambiente, client_id, client_secret_cifrado,
               certificado_cifrado, chave_privada_cifrada, status_conexao,
-              ultima_verificacao_em, id_usuario_cadastro)
+              ultima_verificacao_em, id_usuario_cadastro,
+              multa_percentual, juros_mora_percentual_mes)
            VALUES (:idCondominio, 'inter', :ambiente, :clientId, :clientSecretCifrado,
                    :certificadoCifrado, :chavePrivadaCifrada, 'ativo',
-                   NOW(), :idUsuarioCadastro)
+                   NOW(), :idUsuarioCadastro,
+                   :multaPercentual, :jurosMoraPercentualMes)
            RETURNING id`,
           {
             replacements: {
@@ -154,12 +165,18 @@ class IntegracaoBancariaController {
               certificadoCifrado,
               chavePrivadaCifrada,
               idUsuarioCadastro: req.idcliente,
+              multaPercentual,
+              jurosMoraPercentualMes,
             },
             type: QueryTypes.INSERT,
           }
         );
         idIntegracao = rows[0].id;
       }
+
+      this._logarTaxaAcimaDoLimite({
+        req, idIntegracao, multa: multaPercentual, juros: jurosMoraPercentualMes,
+      });
 
       const [linhaFinal] = await postgres.query(
         `SELECT * FROM "condominio-bh".tb_fin_integracao_bancaria
@@ -494,8 +511,26 @@ class IntegracaoBancariaController {
   // ─── Regras de cobrança por atraso (multa / juros de mora) ─────────────
 
   /**
-   * Atualiza só multa/juros, sem exigir reenvio de credenciais. Campo
-   * ausente mantém o valor atual; null ou 0 desliga (boleto sai sem ele).
+   * Não bloqueia valores acima do limite legal de condomínio (multa 2%,
+   * juros 1% a.m. — CC art. 1.336 §1º): o front exige confirmação de
+   * aprovação em convenção/assembleia. Só deixa rastro nos logs.
+   */
+  _logarTaxaAcimaDoLimite({ req, idIntegracao, multa, juros }) {
+    if (!(multa > 2 || juros > 1)) return;
+    console.warn('[auditoria-integracao-bancaria] taxa acima do limite legal', JSON.stringify({
+      id_condominio: req.id_condominio,
+      id_integracao: idIntegracao,
+      id_usuario: req.idcliente,
+      email: req.emailUsuario,
+      multa_percentual: multa,
+      juros_mora_percentual_mes: juros,
+      em: new Date().toISOString(),
+    }));
+  }
+
+  /**
+   * PUT /:id — atualiza só multa/juros (ambos obrigatórios, validados na
+   * rota), sem exigir reenvio de credenciais. 0 = boleto sai sem aquele item.
    * Vale para boletos emitidos a partir daqui — os já emitidos não mudam.
    */
   async atualizarRegrasCobranca(req, res) {
@@ -511,12 +546,8 @@ class IntegracaoBancariaController {
 
       if (!atual) return res.status(404).json({ message: 'Integração não encontrada.' });
 
-      const resolverTaxa = (campo) => {
-        if (req.body[campo] === undefined) return atual[campo] != null ? Number(atual[campo]) : null;
-        if (req.body[campo] === null || String(req.body[campo]).trim() === '') return null;
-        const taxa = Number(req.body[campo]);
-        return taxa > 0 ? taxa : null;
-      };
+      const multa = Number(req.body.multa_percentual);
+      const juros = Number(req.body.juros_mora_percentual_mes);
 
       await postgres.query(
         `UPDATE "condominio-bh".tb_fin_integracao_bancaria
@@ -527,12 +558,14 @@ class IntegracaoBancariaController {
         {
           replacements: {
             id: atual.id,
-            multa: resolverTaxa('multa_percentual'),
-            juros: resolverTaxa('juros_mora_percentual_mes'),
+            multa,
+            juros,
           },
           type: QueryTypes.UPDATE,
         }
       );
+
+      this._logarTaxaAcimaDoLimite({ req, idIntegracao: atual.id, multa, juros });
 
       const [linhaFinal] = await postgres.query(
         `SELECT * FROM "condominio-bh".tb_fin_integracao_bancaria

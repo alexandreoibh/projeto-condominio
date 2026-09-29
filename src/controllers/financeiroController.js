@@ -817,6 +817,20 @@ class FinanceiroController {
       });
     }
 
+    // Multa/juros são obrigatórios na integração Inter (definidos no conectar
+    // ou via PUT /integracao-bancaria/:id). Integrações antigas ficam NULL
+    // (ou undefined se a migration 20260929000002 não rodou) — não emite
+    // boleto sem essas regras. 0 configurado é válido (sai sem aquele item).
+    if (credencial.provider === 'inter'
+      && (credencial.multa_percentual == null || credencial.juros_mora_percentual_mes == null)) {
+      return await this._registrarFalhaEmissaoBoleto({
+        idCondominio, idReceita, idIntegracao: credencial.id, provider: credencial.provider,
+        valor: Number(receita.valor || 0) + Number(receita.valor_fundo_reserva || 0),
+        dataVencimento: receita.data_vencimento, status: 422,
+        message: 'Configure multa e juros na integração bancária antes de emitir boletos.',
+      });
+    }
+
     const valorTotal = Number(receita.valor || 0) + Number(receita.valor_fundo_reserva || 0);
     const cpfLimpo = String(pagador.cpf).replace(/\D/g, '');
     const complementoUnidade = [
@@ -840,8 +854,8 @@ class FinanceiroController {
         uf: receita.condominio_uf,
         cep: String(receita.condominio_cep).replace(/\D/g, ''),
       },
-      // Multa/juros por atraso configurados na integração (PATCH
-      // /integracao-bancaria/:id/regras-cobranca). Formato do Inter v3;
+      // Multa/juros por atraso configurados na integração (PUT
+      // /integracao-bancaria/:id). Formato do Inter v3;
       // TODO mapear para Itaú/Bradesco, que usam outros nomes de campo.
       ...(credencial.provider === 'inter' && Number(credencial.multa_percentual) > 0
         ? { multa: { codigo: 'PERCENTUAL', taxa: Number(credencial.multa_percentual) } }

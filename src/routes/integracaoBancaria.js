@@ -11,6 +11,26 @@ const validate = require('../helpers/validate');
 
 const controller = new IntegracaoBancariaController();
 
+// Multa/juros por atraso: obrigatórios, 0–100, até 2 casas ("2.00", "2" ou 2).
+// Acima do limite legal (2% / 1% a.m.) é aceito — o front exige confirmação
+// e o controller registra log de auditoria.
+function validarTaxaObrigatoria(campo, mensagemObrigatoria) {
+  return body(campo)
+    .exists({ checkNull: true, checkFalsy: false })
+    .withMessage(mensagemObrigatoria)
+    .bail()
+    .custom((value) => String(value).trim() !== '')
+    .withMessage(mensagemObrigatoria)
+    .bail()
+    .custom((value) => /^\d{1,3}(\.\d{1,2})?$/.test(String(value).trim()) && Number(value) <= 100)
+    .withMessage(`${campo} deve ser um número entre 0 e 100 com até 2 casas decimais (ex.: "2.00").`);
+}
+
+const validacoesMultaJuros = [
+  validarTaxaObrigatoria('multa_percentual', 'Multa por atraso é obrigatória.'),
+  validarTaxaObrigatoria('juros_mora_percentual_mes', 'Juros de mora são obrigatórios.'),
+];
+
 const uploadCertificado = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 1 * 1024 * 1024 },
@@ -33,6 +53,7 @@ router.post(
     body('client_id').notEmpty().withMessage('client_id é obrigatório.'),
     body('client_secret').notEmpty().withMessage('client_secret é obrigatório.'),
     body('ambiente').optional({ nullable: true, checkFalsy: true }).isIn(['sandbox', 'production']).withMessage('ambiente deve ser "sandbox" ou "production".'),
+    ...validacoesMultaJuros,
   ],
   validate,
   controller.conectarInter.bind(controller)
@@ -76,19 +97,11 @@ router.post(
 
 // ── Regras de cobrança por atraso (multa % / juros de mora % ao mês) ─────────
 
-router.patch(
-  '/:id/regras-cobranca',
+// Atualiza só multa/juros (JSON) — não mexe em credenciais/certificado.
+router.put(
+  '/:id',
   auth,
-  [
-    body('multa_percentual')
-      .optional({ nullable: true, checkFalsy: true })
-      .isFloat({ min: 0, max: 100 })
-      .withMessage('multa_percentual deve ser um número entre 0 e 100.'),
-    body('juros_mora_percentual_mes')
-      .optional({ nullable: true, checkFalsy: true })
-      .isFloat({ min: 0, max: 100 })
-      .withMessage('juros_mora_percentual_mes deve ser um número entre 0 e 100.'),
-  ],
+  validacoesMultaJuros,
   validate,
   controller.atualizarRegrasCobranca.bind(controller)
 );
