@@ -44,9 +44,11 @@ class CondominioController {
     return null;
   }
 
-  // Portaria (5) e Colaborador (54) não têm unidade — nunca são morador principal.
-  _resolverMoradorPrincipal({ valor, tipoPerfilId }) {
+  // Portaria (5) e Colaborador (54) não têm unidade, e usuário não-ativo não
+  // pode ser responsável pela unidade — nesses casos nunca é morador principal.
+  _resolverMoradorPrincipal({ valor, tipoPerfilId, status }) {
     if ([5, 54].includes(this._toInt(tipoPerfilId, null))) return false;
+    if (status !== undefined && String(status || '').trim().toLowerCase() !== 'ativo') return false;
     return valor === true;
   }
 
@@ -7810,7 +7812,8 @@ class CondominioController {
 
       const moradorPrincipalFinal = this._resolverMoradorPrincipal({
         valor: this._toBoolOrNull(morador_principal),
-        tipoPerfilId: tipo_perfil_id
+        tipoPerfilId: tipo_perfil_id,
+        status: status || 'ativo'
       });
 
       transaction = await postgres.transaction();
@@ -8917,13 +8920,16 @@ class CondominioController {
         idUnidadePredioNovo = unidadeRow && unidadeRow.length > 0 ? this._toInt(unidadeRow[0].id, null) : null;
       }
 
+      const statusFinal = req.body.status !== undefined ? req.body.status || 'ativo' : atual.status;
+
       const moradorPrincipalFinal = this._resolverMoradorPrincipal({
         valor:
           req.body.morador_principal !== undefined
             ? this._toBoolOrNull(req.body.morador_principal)
             : atual.morador_principal === true,
         tipoPerfilId:
-          req.body.tipo_perfil_id !== undefined ? req.body.tipo_perfil_id : atual.tipo_perfil_id
+          req.body.tipo_perfil_id !== undefined ? req.body.tipo_perfil_id : atual.tipo_perfil_id,
+        status: statusFinal
       });
 
       transaction = await postgres.transaction();
@@ -8992,7 +8998,7 @@ class CondominioController {
                 ? this._toInt(req.body.tipo_perfil_id, null)
                 : this._toInt(atual.tipo_perfil_id, null),
             tipo: tipoResolvido,
-            status: req.body.status !== undefined ? req.body.status || 'ativo' : atual.status,
+            status: statusFinal,
             senha_hash,
             endereco_logradouro:
               req.body.endereco_logradouro !== undefined
