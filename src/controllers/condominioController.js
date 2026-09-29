@@ -6594,7 +6594,19 @@ class CondominioController {
                    AND r.situacao = 'em_aberto'
                    AND r.data_vencimento < CURRENT_DATE
                 ) resumo
-            ) AS situacao_financeira
+            ) AS situacao_financeira,
+            (
+              SELECT row_to_json(mp)
+                FROM (
+                  SELECT u.id, u.nome, u.sobrenome, u.cpf, u.email
+                    FROM "condominio-bh"."tb-usuarios" u
+                   WHERE u.id_condominio = tu.id_condominio
+                     AND u.id_unidade_predio = tu.id_unidade_predio
+                     AND u.morador_principal = true
+                   ORDER BY u.id
+                   LIMIT 1
+                ) mp
+            ) AS morador_principal_unidade
           FROM "condominio-bh"."tb-usuarios" tu
           LEFT JOIN "condominio-bh"."tb-condominios" tc
             ON tc.id = tu.id_condominio
