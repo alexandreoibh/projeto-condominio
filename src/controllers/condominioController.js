@@ -35,6 +35,15 @@ class CondominioController {
     return Number.isNaN(parsed) ? fallback : parsed;
   }
 
+  _toBoolOrNull(value) {
+    if (value === undefined || value === null) return null;
+    const raw = String(value).trim().toLowerCase();
+    if (raw === '') return null;
+    if (raw === 'true' || raw === '1') return true;
+    if (raw === 'false' || raw === '0') return false;
+    return null;
+  }
+
   _parseDataAgendamento(value) {
     if (value === undefined || value === null || String(value).trim() === '') {
       return null;
@@ -6501,6 +6510,7 @@ class CondominioController {
             tu.id_unidade_predio AS id_unidade,
             tu.mensagem_whatsapp,
             tu.mensagem_telegram,
+            tu.morador_principal,
             tu.created_at,
             tu.updated_at,
             (
@@ -6667,6 +6677,7 @@ class CondominioController {
             tu.last_login_at,
             tu.mensagem_whatsapp,
             tu.mensagem_telegram,
+            tu.morador_principal,
             tu.created_at,
             tu.updated_at
           FROM "condominio-bh"."tb-usuarios" tu
@@ -7418,6 +7429,7 @@ class CondominioController {
             tu.bloco,
             tu.mensagem_whatsapp,
             tu.mensagem_telegram,
+            tu.morador_principal,
             tu.created_at,
             tu.updated_at
           FROM "condominio-bh"."tb-usuarios" tu
@@ -7453,7 +7465,8 @@ class CondominioController {
                 tu.tipo_perfil_id,
                 tu.tipo,
                 tu.mensagem_whatsapp,
-                tu.mensagem_telegram
+                tu.mensagem_telegram,
+                tu.morador_principal
               FROM "condominio-bh"."tb-usuarios" tu
               LEFT JOIN "condominio-bh"."tb-condominios" tc
                 ON tc.id = tu.id_condominio
@@ -7556,6 +7569,7 @@ class CondominioController {
     tu.bloco,
     tu.mensagem_whatsapp,
     tu.mensagem_telegram,
+    tu.morador_principal,
     tu.created_at,
     tu.updated_at,
     tu.apartamento::int AS apartamento_ordem
@@ -7631,7 +7645,8 @@ class CondominioController {
         path_avatar,
         password,
         mensagem_whatsapp,
-        mensagem_telegram
+        mensagem_telegram,
+        morador_principal
       } = req.body;
 
       const cpfNumerico = String(cpf || '').replace(/\D/g, '');
@@ -7777,6 +7792,7 @@ class CondominioController {
             path_avatar,
             mensagem_whatsapp,
             mensagem_telegram,
+            morador_principal,
             created_at,
             updated_at
         ) VALUES (
@@ -7807,10 +7823,11 @@ class CondominioController {
             :path_avatar,
             :mensagem_whatsapp,
             :mensagem_telegram,
+            :morador_principal,
             now(),
             now()
         )
-        RETURNING id, id_condominio, nome, sobrenome, cpf, email, telefone, path_avatar, tipo_morador, tipo_perfil_id, tipo, status, apartamento, bloco, id_unidade_predio, mensagem_whatsapp, mensagem_telegram, created_at`,
+        RETURNING id, id_condominio, nome, sobrenome, cpf, email, telefone, path_avatar, tipo_morador, tipo_perfil_id, tipo, status, apartamento, bloco, id_unidade_predio, mensagem_whatsapp, mensagem_telegram, morador_principal, created_at`,
         {
           replacements: {
             id_condominio: idCondominioToken,
@@ -7839,7 +7856,8 @@ class CondominioController {
             observacoes: observacoes || null,
             path_avatar: !isAvatarProxyUrl(path_avatar) ? path_avatar || null : null,
             mensagem_whatsapp: mensagem_whatsapp !== undefined ? Boolean(mensagem_whatsapp) : true,
-            mensagem_telegram: mensagem_telegram !== undefined ? Boolean(mensagem_telegram) : true
+            mensagem_telegram: mensagem_telegram !== undefined ? Boolean(mensagem_telegram) : true,
+            morador_principal: this._toBoolOrNull(morador_principal)
           }
         }
       );
@@ -8146,6 +8164,7 @@ class CondominioController {
             bloco,
             observacoes,
             path_avatar,
+            morador_principal,
             created_at,
             updated_at
         ) VALUES (
@@ -8173,10 +8192,11 @@ class CondominioController {
             :bloco,
             :observacoes,
             :path_avatar,
+            :morador_principal,
             now(),
             now()
         )
-        RETURNING id, id_condominio, nome, sobrenome, cpf, email, telefone, path_avatar, tipo_morador, tipo_perfil_id, tipo, status, apartamento, bloco, created_at`,
+        RETURNING id, id_condominio, nome, sobrenome, cpf, email, telefone, path_avatar, tipo_morador, tipo_perfil_id, tipo, status, apartamento, bloco, morador_principal, created_at`,
         {
           replacements: {
             id_condominio: idCondominioToken,
@@ -8202,7 +8222,8 @@ class CondominioController {
             apartamento: apartamentoCadastro,
             bloco: blocoCadastro,
             observacoes: this._normalizarTextoOuNull(req.body.observacoes),
-            path_avatar: this._normalizarTextoOuNull(req.body.path_avatar)
+            path_avatar: this._normalizarTextoOuNull(req.body.path_avatar),
+            morador_principal: this._toBoolOrNull(req.body.morador_principal)
           }
         }
       );
@@ -8857,10 +8878,11 @@ class CondominioController {
                 path_avatar = :path_avatar,
                 mensagem_whatsapp = :mensagem_whatsapp,
                 mensagem_telegram = :mensagem_telegram,
+                morador_principal = :morador_principal,
                 updated_at = now()
           WHERE id = :id
             AND id_condominio = :id_condominio
-        RETURNING id, id_condominio, nome, sobrenome, cpf, email, telefone, path_avatar, tipo_morador, tipo_perfil_id, tipo, status, apartamento, bloco, id_unidade_predio, mensagem_whatsapp, mensagem_telegram, created_at, updated_at`,
+        RETURNING id, id_condominio, nome, sobrenome, cpf, email, telefone, path_avatar, tipo_morador, tipo_perfil_id, tipo, status, apartamento, bloco, id_unidade_predio, mensagem_whatsapp, mensagem_telegram, morador_principal, created_at, updated_at`,
         {
           replacements: {
             id: idUsuario,
@@ -8926,7 +8948,11 @@ class CondominioController {
             mensagem_telegram:
               req.body.mensagem_telegram !== undefined
                 ? Boolean(req.body.mensagem_telegram)
-                : atual.mensagem_telegram
+                : atual.mensagem_telegram,
+            morador_principal:
+              req.body.morador_principal !== undefined
+                ? this._toBoolOrNull(req.body.morador_principal)
+                : atual.morador_principal
           }
         }
       );
@@ -8991,6 +9017,7 @@ class CondominioController {
             tu.observacoes,
             tu.mensagem_whatsapp,
             tu.mensagem_telegram,
+            tu.morador_principal,
             tu.chat_id_telegram,
             tu.created_at,
             tu.updated_at

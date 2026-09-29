@@ -2077,7 +2077,11 @@ router.post(
 		body('condominio_id')
 			.optional({ nullable: true, checkFalsy: true })
 			.isInt({ min: 1 })
-			.withMessage('Campo condominio_id deve ser numérico e maior que zero.')
+			.withMessage('Campo condominio_id deve ser numérico e maior que zero.'),
+		body('morador_principal')
+			.optional({ nullable: true })
+			.isBoolean()
+			.withMessage('Campo morador_principal deve ser booleano.')
 	],
 	validate,
 	controller.cadastrarUsuarioPorConvite.bind(controller)
@@ -2171,7 +2175,11 @@ router.post(
 		body('mensagem_telegram')
 			.optional({ nullable: true })
 			.isBoolean()
-			.withMessage('Campo mensagem_telegram deve ser booleano.')
+			.withMessage('Campo mensagem_telegram deve ser booleano.'),
+		body('morador_principal')
+			.optional({ nullable: true })
+			.isBoolean()
+			.withMessage('Campo morador_principal deve ser booleano.')
 	],
 	validate,
 	controller.criarUsuario.bind(controller)
@@ -2262,7 +2270,11 @@ router.put(
 		body('mensagem_telegram')
 			.optional({ nullable: true })
 			.isBoolean()
-			.withMessage('Campo mensagem_telegram deve ser booleano.')
+			.withMessage('Campo mensagem_telegram deve ser booleano.'),
+		body('morador_principal')
+			.optional({ nullable: true })
+			.isBoolean()
+			.withMessage('Campo morador_principal deve ser booleano.')
 	],
 	validate,
 	controller.editarUsuario.bind(controller)
@@ -2353,7 +2365,11 @@ router.patch(
 		body('mensagem_telegram')
 			.optional({ nullable: true })
 			.isBoolean()
-			.withMessage('Campo mensagem_telegram deve ser booleano.')
+			.withMessage('Campo mensagem_telegram deve ser booleano.'),
+		body('morador_principal')
+			.optional({ nullable: true })
+			.isBoolean()
+			.withMessage('Campo morador_principal deve ser booleano.')
 	],
 	validate,
 	controller.editarUsuario.bind(controller)
