@@ -695,13 +695,24 @@ class FinanceiroController {
     // com erro de digitação na tabela original: "logradrouro" (sem o 'g').
     const [receita] = await postgres.query(
       `SELECT r.id, r.valor, r.valor_fundo_reserva, r.data_vencimento, r.situacao, r.id_usuario,
-              tu.nome AS morador_nome, tu.cpf AS morador_cpf,
+              COALESCE(tp.nome, tu.nome) AS morador_nome, COALESCE(tp.cpf, tu.cpf) AS morador_cpf,
               tcu.bloco AS unidade_bloco, tcu.unidades_bloco AS unidade_texto,
               c.cep AS condominio_cep, c.logradrouro AS condominio_logradouro,
               c.numero AS condominio_numero, c.bairro AS condominio_bairro,
               c.cidade AS condominio_cidade, c.uf AS condominio_uf
          FROM "condominio-bh".tb_fin_receitas r
          LEFT JOIN "condominio-bh"."tb-usuarios" tu ON tu.id = r.id_usuario
+         -- Pagador = morador principal da unidade da receita; sem principal,
+         -- cai no morador vinculado à receita (tu).
+         LEFT JOIN "condominio-bh"."tb-usuarios" tp
+           ON tp.id = (
+             SELECT u.id FROM "condominio-bh"."tb-usuarios" u
+              WHERE u.id_condominio = r.id_condominio
+                AND u.id_unidade_predio = r.id_unidade
+                AND u.morador_principal = true
+              ORDER BY u.id
+              LIMIT 1
+           )
          LEFT JOIN "condominio-bh".tb_condominios_unidades tcu
            ON tcu.id = r.id_unidade AND tcu.id_condominio = r.id_condominio
          LEFT JOIN "condominio-bh"."tb-condominios" c ON c.id = r.id_condominio

@@ -44,6 +44,32 @@ class CondominioController {
     return null;
   }
 
+  // Portaria (5) e Colaborador (54) não têm unidade — nunca são morador principal.
+  _resolverMoradorPrincipal({ valor, tipoPerfilId }) {
+    if ([5, 54].includes(this._toInt(tipoPerfilId, null))) return false;
+    return valor === true;
+  }
+
+  async _desmarcarOutrosPrincipaisDaUnidade({ idCondominio, idUnidade, idUsuarioIgnorar = null, transaction }) {
+    await postgres.query(
+      `UPDATE "condominio-bh"."tb-usuarios"
+          SET morador_principal = false,
+              updated_at = now()
+        WHERE id_condominio = :id_condominio
+          AND id_unidade_predio = :id_unidade
+          AND morador_principal = true
+          AND (:id_ignorar::bigint IS NULL OR id <> :id_ignorar::bigint)`,
+      {
+        replacements: {
+          id_condominio: idCondominio,
+          id_unidade: idUnidade,
+          id_ignorar: idUsuarioIgnorar
+        },
+        transaction
+      }
+    );
+  }
+
   _parseDataAgendamento(value) {
     if (value === undefined || value === null || String(value).trim() === '') {
       return null;
@@ -6417,6 +6443,7 @@ class CondominioController {
       const cpfFiltro = this._normalizarTextoOuNull(req.query.cpf);
       const statusFiltro = this._normalizarTextoOuNull(req.query.status);
       const tipoMoradorFiltro = this._normalizarTextoOuNull(req.query.tipo_morador);
+      const idUnidadeFiltro = this._toInt(req.query.id_unidade, null);
       const ativoQuery = req.query.ativo;
       let ativoFiltro = null;
       if (ativoQuery !== undefined && ativoQuery !== null && String(ativoQuery).trim() !== '') {
@@ -6466,6 +6493,11 @@ class CondominioController {
         replacementsBase.tipo_morador = String(tipoMoradorFiltro).toLowerCase();
       }
 
+      if (idUnidadeFiltro) {
+        whereParts.push('tu.id_unidade_predio = :id_unidade');
+        replacementsBase.id_unidade = idUnidadeFiltro;
+      }
+
       if (ativoFiltro === true) {
         whereParts.push("lower(COALESCE(tu.status, '')) = :status_ativo");
         replacementsBase.status_ativo = 'ativo';
@@ -6510,7 +6542,7 @@ class CondominioController {
             tu.id_unidade_predio AS id_unidade,
             tu.mensagem_whatsapp,
             tu.mensagem_telegram,
-            tu.morador_principal,
+            COALESCE(tu.morador_principal, false) AS morador_principal,
             tu.created_at,
             tu.updated_at,
             (
@@ -6677,7 +6709,7 @@ class CondominioController {
             tu.last_login_at,
             tu.mensagem_whatsapp,
             tu.mensagem_telegram,
-            tu.morador_principal,
+            COALESCE(tu.morador_principal, false) AS morador_principal,
             tu.created_at,
             tu.updated_at
           FROM "condominio-bh"."tb-usuarios" tu
@@ -7429,7 +7461,7 @@ class CondominioController {
             tu.bloco,
             tu.mensagem_whatsapp,
             tu.mensagem_telegram,
-            tu.morador_principal,
+            COALESCE(tu.morador_principal, false) AS morador_principal,
             tu.created_at,
             tu.updated_at
           FROM "condominio-bh"."tb-usuarios" tu
@@ -7466,7 +7498,7 @@ class CondominioController {
                 tu.tipo,
                 tu.mensagem_whatsapp,
                 tu.mensagem_telegram,
-                tu.morador_principal
+                COALESCE(tu.morador_principal, false) AS morador_principal
               FROM "condominio-bh"."tb-usuarios" tu
               LEFT JOIN "condominio-bh"."tb-condominios" tc
                 ON tc.id = tu.id_condominio
@@ -7569,7 +7601,7 @@ class CondominioController {
     tu.bloco,
     tu.mensagem_whatsapp,
     tu.mensagem_telegram,
-    tu.morador_principal,
+    COALESCE(tu.morador_principal, false) AS morador_principal,
     tu.created_at,
     tu.updated_at,
     tu.apartamento::int AS apartamento_ordem
@@ -7611,6 +7643,7 @@ class CondominioController {
   }
 
   async criarUsuario(req, res) {
+    let transaction = null;
     try {
       const idCondominioToken = this._toInt(req.id_condominio, null);
       if (!idCondominioToken) {
@@ -7763,6 +7796,20 @@ class CondominioController {
         }
       }
 
+      const moradorPrincipalFinal = this._resolverMoradorPrincipal({
+        valor: this._toBoolOrNull(morador_principal),
+        tipoPerfilId: tipo_perfil_id
+      });
+
+      transaction = await postgres.transaction();
+      if (moradorPrincipalFinal && idUnidadePredioResolvido) {
+        await this._desmarcarOutrosPrincipaisDaUnidade({
+          idCondominio: idCondominioToken,
+          idUnidade: idUnidadePredioResolvido,
+          transaction
+        });
+      }
+
       const insert = await postgres.query(
         `INSERT INTO "condominio-bh"."tb-usuarios" (
             id_condominio,
@@ -7857,16 +7904,21 @@ class CondominioController {
             path_avatar: !isAvatarProxyUrl(path_avatar) ? path_avatar || null : null,
             mensagem_whatsapp: mensagem_whatsapp !== undefined ? Boolean(mensagem_whatsapp) : true,
             mensagem_telegram: mensagem_telegram !== undefined ? Boolean(mensagem_telegram) : true,
-            morador_principal: this._toBoolOrNull(morador_principal)
-          }
+            morador_principal: moradorPrincipalFinal
+          },
+          transaction
         }
       );
+      await transaction.commit();
 
       return res.status(201).json({
         message: 'Usuário criado com sucesso.',
         data: this._anexarAvatarUrlUsuario(req, insert[0][0])
       });
     } catch (error) {
+      if (transaction && !transaction.finished) {
+        await transaction.rollback().catch(() => {});
+      }
       return res.status(500).json({
         message: 'Falha ao criar usuário.',
         detail: error.message
@@ -8223,7 +8275,9 @@ class CondominioController {
             bloco: blocoCadastro,
             observacoes: this._normalizarTextoOuNull(req.body.observacoes),
             path_avatar: this._normalizarTextoOuNull(req.body.path_avatar),
-            morador_principal: this._toBoolOrNull(req.body.morador_principal)
+            // Cadastro por convite não resolve id_unidade_predio, então não há como
+            // garantir 1 principal por unidade aqui — o síndico define via PUT/PATCH.
+            morador_principal: false
           }
         }
       );
@@ -8643,6 +8697,7 @@ class CondominioController {
   }
 
   async editarUsuario(req, res) {
+    let transaction = null;
     try {
       let idCondominioToken = this._toInt(req.id_condominio, null);
       let invitePayload = null;
@@ -8850,6 +8905,25 @@ class CondominioController {
         idUnidadePredioNovo = unidadeRow && unidadeRow.length > 0 ? this._toInt(unidadeRow[0].id, null) : null;
       }
 
+      const moradorPrincipalFinal = this._resolverMoradorPrincipal({
+        valor:
+          req.body.morador_principal !== undefined
+            ? this._toBoolOrNull(req.body.morador_principal)
+            : atual.morador_principal === true,
+        tipoPerfilId:
+          req.body.tipo_perfil_id !== undefined ? req.body.tipo_perfil_id : atual.tipo_perfil_id
+      });
+
+      transaction = await postgres.transaction();
+      if (moradorPrincipalFinal && idUnidadePredioNovo) {
+        await this._desmarcarOutrosPrincipaisDaUnidade({
+          idCondominio: idCondominioToken,
+          idUnidade: idUnidadePredioNovo,
+          idUsuarioIgnorar: idUsuario,
+          transaction
+        });
+      }
+
       const update = await postgres.query(
         `UPDATE "condominio-bh"."tb-usuarios"
             SET nome = :nome,
@@ -8949,19 +9023,21 @@ class CondominioController {
               req.body.mensagem_telegram !== undefined
                 ? Boolean(req.body.mensagem_telegram)
                 : atual.mensagem_telegram,
-            morador_principal:
-              req.body.morador_principal !== undefined
-                ? this._toBoolOrNull(req.body.morador_principal)
-                : atual.morador_principal
-          }
+            morador_principal: moradorPrincipalFinal
+          },
+          transaction
         }
       );
+      await transaction.commit();
 
       return res.status(200).json({
         message: 'Usuário atualizado com sucesso.',
         data: this._anexarAvatarUrlUsuario(req, update[0][0])
       });
     } catch (error) {
+      if (transaction && !transaction.finished) {
+        await transaction.rollback().catch(() => {});
+      }
       return res.status(500).json({
         message: 'Falha ao editar usuário.',
         detail: error.message
@@ -9017,7 +9093,7 @@ class CondominioController {
             tu.observacoes,
             tu.mensagem_whatsapp,
             tu.mensagem_telegram,
-            tu.morador_principal,
+            COALESCE(tu.morador_principal, false) AS morador_principal,
             tu.chat_id_telegram,
             tu.created_at,
             tu.updated_at

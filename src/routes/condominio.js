@@ -1800,7 +1800,11 @@ router.get(
 		query('ativo')
 			.optional({ nullable: true, checkFalsy: true })
 			.isBoolean()
-			.withMessage('Parâmetro ativo deve ser booleano.')
+			.withMessage('Parâmetro ativo deve ser booleano.'),
+		query('id_unidade')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Parâmetro id_unidade deve ser numérico e maior que zero.')
 	],
 	validate,
 	controller.listarMoradores.bind(controller)
@@ -1837,7 +1841,11 @@ router.get(
 		query('ativo')
 			.optional({ nullable: true, checkFalsy: true })
 			.isBoolean()
-			.withMessage('Parâmetro ativo deve ser booleano.')
+			.withMessage('Parâmetro ativo deve ser booleano.'),
+		query('id_unidade')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Parâmetro id_unidade deve ser numérico e maior que zero.')
 	],
 	validate,
 	controller.listarMoradores.bind(controller)
