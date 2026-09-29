@@ -37,6 +37,10 @@ class IntegracaoBancariaController {
       ultimo_erro: row.ultimo_erro,
       ultima_verificacao_em: row.ultima_verificacao_em,
       ativo: row.ativo,
+      // undefined enquanto a migration 20260929000002 não for aplicada — as
+      // leituras usam SELECT * justamente para não quebrar a listagem nesse caso.
+      multa_percentual: row.multa_percentual != null ? Number(row.multa_percentual) : null,
+      juros_mora_percentual_mes: row.juros_mora_percentual_mes != null ? Number(row.juros_mora_percentual_mes) : null,
       created_at: row.created_at,
       updated_at: row.updated_at,
     };
@@ -47,9 +51,7 @@ class IntegracaoBancariaController {
   async listarIntegracoes(req, res) {
     try {
       const rows = await postgres.query(
-        `SELECT id, provider, ambiente, client_id, conta_corrente, agencia, chave_pix,
-                status_conexao, ultimo_erro, ultima_verificacao_em, ativo, created_at, updated_at
-           FROM "condominio-bh".tb_fin_integracao_bancaria
+        `SELECT * FROM "condominio-bh".tb_fin_integracao_bancaria
           WHERE id_condominio = :idCondominio
             AND ativo = true
           ORDER BY provider, ambiente`,
@@ -160,9 +162,7 @@ class IntegracaoBancariaController {
       }
 
       const [linhaFinal] = await postgres.query(
-        `SELECT id, provider, ambiente, client_id, conta_corrente, agencia, chave_pix,
-                status_conexao, ultimo_erro, ultima_verificacao_em, ativo, created_at, updated_at
-           FROM "condominio-bh".tb_fin_integracao_bancaria
+        `SELECT * FROM "condominio-bh".tb_fin_integracao_bancaria
           WHERE id = :id`,
         { replacements: { id: idIntegracao }, type: QueryTypes.SELECT }
       );
@@ -269,9 +269,7 @@ class IntegracaoBancariaController {
       }
 
       const [linhaFinal] = await postgres.query(
-        `SELECT id, provider, ambiente, client_id, conta_corrente, agencia, chave_pix,
-                status_conexao, ultimo_erro, ultima_verificacao_em, ativo, created_at, updated_at
-           FROM "condominio-bh".tb_fin_integracao_bancaria
+        `SELECT * FROM "condominio-bh".tb_fin_integracao_bancaria
           WHERE id = :id`,
         { replacements: { id: idIntegracao }, type: QueryTypes.SELECT }
       );
@@ -383,9 +381,7 @@ class IntegracaoBancariaController {
       }
 
       const [linhaFinal] = await postgres.query(
-        `SELECT id, provider, ambiente, client_id, conta_corrente, agencia, chave_pix,
-                status_conexao, ultimo_erro, ultima_verificacao_em, ativo, created_at, updated_at
-           FROM "condominio-bh".tb_fin_integracao_bancaria
+        `SELECT * FROM "condominio-bh".tb_fin_integracao_bancaria
           WHERE id = :id`,
         { replacements: { id: idIntegracao }, type: QueryTypes.SELECT }
       );
@@ -492,6 +488,61 @@ class IntegracaoBancariaController {
       return res.status(200).json({ data: transacoes });
     } catch (error) {
       return res.status(502).json({ message: 'Falha ao consultar extrato bancário.', detail: error.message });
+    }
+  }
+
+  // ─── Regras de cobrança por atraso (multa / juros de mora) ─────────────
+
+  /**
+   * Atualiza só multa/juros, sem exigir reenvio de credenciais. Campo
+   * ausente mantém o valor atual; null ou 0 desliga (boleto sai sem ele).
+   * Vale para boletos emitidos a partir daqui — os já emitidos não mudam.
+   */
+  async atualizarRegrasCobranca(req, res) {
+    try {
+      if (!this._isGestor(req)) return res.status(403).json({ message: 'Acesso negado.' });
+
+      const id = this._normalizarTextoOuNull(req.params.id);
+      const [atual] = await postgres.query(
+        `SELECT * FROM "condominio-bh".tb_fin_integracao_bancaria
+          WHERE id = :id AND id_condominio = :idCondominio AND ativo = true`,
+        { replacements: { id, idCondominio: req.id_condominio }, type: QueryTypes.SELECT }
+      );
+
+      if (!atual) return res.status(404).json({ message: 'Integração não encontrada.' });
+
+      const resolverTaxa = (campo) => {
+        if (req.body[campo] === undefined) return atual[campo] != null ? Number(atual[campo]) : null;
+        if (req.body[campo] === null || String(req.body[campo]).trim() === '') return null;
+        const taxa = Number(req.body[campo]);
+        return taxa > 0 ? taxa : null;
+      };
+
+      await postgres.query(
+        `UPDATE "condominio-bh".tb_fin_integracao_bancaria
+            SET multa_percentual = :multa,
+                juros_mora_percentual_mes = :juros,
+                updated_at = NOW()
+          WHERE id = :id`,
+        {
+          replacements: {
+            id: atual.id,
+            multa: resolverTaxa('multa_percentual'),
+            juros: resolverTaxa('juros_mora_percentual_mes'),
+          },
+          type: QueryTypes.UPDATE,
+        }
+      );
+
+      const [linhaFinal] = await postgres.query(
+        `SELECT * FROM "condominio-bh".tb_fin_integracao_bancaria
+          WHERE id = :id`,
+        { replacements: { id: atual.id }, type: QueryTypes.SELECT }
+      );
+
+      return res.status(200).json({ data: this._serializar(linhaFinal) });
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao atualizar regras de cobrança.', detail: error.message });
     }
   }
 

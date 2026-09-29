@@ -74,6 +74,25 @@ router.post(
   controller.conectarBradesco.bind(controller)
 );
 
+// ── Regras de cobrança por atraso (multa % / juros de mora % ao mês) ─────────
+
+router.patch(
+  '/:id/regras-cobranca',
+  auth,
+  [
+    body('multa_percentual')
+      .optional({ nullable: true, checkFalsy: true })
+      .isFloat({ min: 0, max: 100 })
+      .withMessage('multa_percentual deve ser um número entre 0 e 100.'),
+    body('juros_mora_percentual_mes')
+      .optional({ nullable: true, checkFalsy: true })
+      .isFloat({ min: 0, max: 100 })
+      .withMessage('juros_mora_percentual_mes deve ser um número entre 0 e 100.'),
+  ],
+  validate,
+  controller.atualizarRegrasCobranca.bind(controller)
+);
+
 // ── Testar / Saldo / Desativar ───────────────────────────────────────────────
 
 router.post('/:id/testar', auth, controller.testarIntegracao.bind(controller));

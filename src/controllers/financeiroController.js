@@ -840,6 +840,15 @@ class FinanceiroController {
         uf: receita.condominio_uf,
         cep: String(receita.condominio_cep).replace(/\D/g, ''),
       },
+      // Multa/juros por atraso configurados na integração (PATCH
+      // /integracao-bancaria/:id/regras-cobranca). Formato do Inter v3;
+      // TODO mapear para Itaú/Bradesco, que usam outros nomes de campo.
+      ...(credencial.provider === 'inter' && Number(credencial.multa_percentual) > 0
+        ? { multa: { codigo: 'PERCENTUAL', taxa: Number(credencial.multa_percentual) } }
+        : {}),
+      ...(credencial.provider === 'inter' && Number(credencial.juros_mora_percentual_mes) > 0
+        ? { mora: { codigo: 'TAXAMENSAL', taxa: Number(credencial.juros_mora_percentual_mes) } }
+        : {}),
     };
 
     const provider = bankingProviderRegistry.getProvider(credencial.provider);
