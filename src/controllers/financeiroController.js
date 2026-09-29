@@ -211,7 +211,9 @@ class FinanceiroController {
                       FROM (
                         SELECT cb.provider::text AS provider,
                                cb.id_externo::text AS id_externo,
-                               cb.situacao::text AS situacao
+                               cb.situacao::text AS situacao,
+                               cb.id_usuario_pagador::bigint AS pagador_id,
+                               cb.pagador_nome::text AS pagador_nome
                           FROM "condominio-bh".tb_fin_cobranca_bancaria cb
                          WHERE cb.id_receita = r.id
                            AND cb.situacao IN ('emitida', 'paga', 'cancelada')
@@ -684,6 +686,61 @@ class FinanceiroController {
    * @param {number|null} params.idUsuarioSolicitante
    * @returns {Promise<{ok: true, data: object}|{ok: false, status: number, message: string}>}
    */
+  /**
+   * Escolhe em nome de quem o boleto é emitido. Com unidade na receita, só
+   * considera moradores ATIVOS daquela unidade com CPF, nesta ordem:
+   *   1. morador principal da unidade;
+   *   2. o id_usuario da receita (se ativo e da mesma unidade);
+   *   3. outro morador da unidade — proprietário antes, depois o cadastro mais antigo.
+   * Sem unidade (receita avulsa/antiga), usa o id_usuario da receita.
+   *
+   * @returns {Promise<{id: number, nome: string, cpf: string, criterio: 'principal'|'receita'|'unidade'}|null>}
+   */
+  async _resolverPagadorBoleto(receita) {
+    const nomeCompleto = (u) => [u.nome, u.sobrenome].filter(Boolean).join(' ').trim();
+    const temCpf = (u) => String(u.cpf || '').replace(/\D/g, '').length > 0;
+
+    if (!receita.id_unidade) {
+      if (!receita.id_usuario || !temCpf({ cpf: receita.morador_cpf })) return null;
+      return {
+        id: this._toInt(receita.id_usuario, null),
+        nome: nomeCompleto({ nome: receita.morador_nome, sobrenome: receita.morador_sobrenome }),
+        cpf: receita.morador_cpf,
+        criterio: 'receita',
+      };
+    }
+
+    const moradores = await postgres.query(
+      `SELECT u.id, u.nome, u.sobrenome, u.cpf, u.morador_principal, u.tipo_morador, u.created_at
+         FROM "condominio-bh"."tb-usuarios" u
+        WHERE u.id_condominio = :idCondominio
+          AND u.id_unidade_predio = :idUnidade
+          AND lower(trim(COALESCE(u.status, ''))) = 'ativo'
+        ORDER BY CASE WHEN lower(trim(COALESCE(u.tipo_morador, ''))) = 'proprietario' THEN 0 ELSE 1 END,
+                 u.created_at ASC,
+                 u.id ASC`,
+      {
+        replacements: { idCondominio: receita.id_condominio, idUnidade: receita.id_unidade },
+        type: QueryTypes.SELECT,
+      }
+    );
+
+    const candidatos = moradores.filter(temCpf);
+    const idUsuarioReceita = this._toInt(receita.id_usuario, null);
+
+    const principal = candidatos.find((u) => u.morador_principal === true);
+    const daReceita = idUsuarioReceita ? candidatos.find((u) => this._toInt(u.id, null) === idUsuarioReceita) : null;
+    const escolhido = principal || daReceita || candidatos[0] || null;
+    if (!escolhido) return null;
+
+    return {
+      id: this._toInt(escolhido.id, null),
+      nome: nomeCompleto(escolhido),
+      cpf: escolhido.cpf,
+      criterio: escolhido === principal ? 'principal' : escolhido === daReceita ? 'receita' : 'unidade',
+    };
+  }
+
   async _emitirBoletoBancarioParaReceita({ idCondominio, idReceita, idUsuarioSolicitante }) {
     const TIMEOUT_MS = 8000;
 
@@ -694,25 +751,15 @@ class FinanceiroController {
     // usada em solicitar2ViaBoleto para bloco/unidade. Note o nome da coluna
     // com erro de digitação na tabela original: "logradrouro" (sem o 'g').
     const [receita] = await postgres.query(
-      `SELECT r.id, r.valor, r.valor_fundo_reserva, r.data_vencimento, r.situacao, r.id_usuario,
-              COALESCE(tp.nome, tu.nome) AS morador_nome, COALESCE(tp.cpf, tu.cpf) AS morador_cpf,
+      `SELECT r.id, r.id_condominio, r.valor, r.valor_fundo_reserva, r.data_vencimento, r.situacao,
+              r.id_usuario, r.id_unidade,
+              tu.nome AS morador_nome, tu.sobrenome AS morador_sobrenome, tu.cpf AS morador_cpf,
               tcu.bloco AS unidade_bloco, tcu.unidades_bloco AS unidade_texto,
               c.cep AS condominio_cep, c.logradrouro AS condominio_logradouro,
               c.numero AS condominio_numero, c.bairro AS condominio_bairro,
               c.cidade AS condominio_cidade, c.uf AS condominio_uf
          FROM "condominio-bh".tb_fin_receitas r
          LEFT JOIN "condominio-bh"."tb-usuarios" tu ON tu.id = r.id_usuario
-         -- Pagador = morador principal da unidade da receita; sem principal,
-         -- cai no morador vinculado à receita (tu).
-         LEFT JOIN "condominio-bh"."tb-usuarios" tp
-           ON tp.id = (
-             SELECT u.id FROM "condominio-bh"."tb-usuarios" u
-              WHERE u.id_condominio = r.id_condominio
-                AND u.id_unidade_predio = r.id_unidade
-                AND u.morador_principal = true
-              ORDER BY u.id
-              LIMIT 1
-           )
          LEFT JOIN "condominio-bh".tb_condominios_unidades tcu
            ON tcu.id = r.id_unidade AND tcu.id_condominio = r.id_condominio
          LEFT JOIN "condominio-bh"."tb-condominios" c ON c.id = r.id_condominio
@@ -724,11 +771,14 @@ class FinanceiroController {
     if (receita.situacao !== 'em_aberto') {
       return { ok: false, status: 422, message: 'Só é possível emitir boleto para receitas em aberto.' };
     }
-    if (!receita.morador_cpf) {
+    const pagador = await this._resolverPagadorBoleto(receita);
+    if (!pagador) {
       return await this._registrarFalhaEmissaoBoleto({
         idCondominio, idReceita, valor: Number(receita.valor || 0) + Number(receita.valor_fundo_reserva || 0),
         dataVencimento: receita.data_vencimento, status: 422,
-        message: 'O morador vinculado a esta receita não possui CPF cadastrado — obrigatório para emissão de boleto.',
+        message: receita.id_unidade
+          ? 'Nenhum morador ativo da unidade com CPF cadastrado — obrigatório para emissão de boleto.'
+          : 'O morador vinculado a esta receita não possui CPF cadastrado — obrigatório para emissão de boleto.',
       });
     }
     if (!receita.condominio_logradouro || !receita.condominio_cep || !receita.condominio_cidade || !receita.condominio_uf) {
@@ -768,7 +818,7 @@ class FinanceiroController {
     }
 
     const valorTotal = Number(receita.valor || 0) + Number(receita.valor_fundo_reserva || 0);
-    const cpfLimpo = String(receita.morador_cpf).replace(/\D/g, '');
+    const cpfLimpo = String(pagador.cpf).replace(/\D/g, '');
     const complementoUnidade = [
       receita.unidade_bloco ? `Bloco ${receita.unidade_bloco}` : null,
       receita.unidade_texto ? `Apto ${receita.unidade_texto}` : null,
@@ -782,7 +832,7 @@ class FinanceiroController {
       pagador: {
         cpfCnpj: cpfLimpo,
         tipoPessoa: cpfLimpo.length > 11 ? 'JURIDICA' : 'FISICA',
-        nome: receita.morador_nome || 'Morador',
+        nome: pagador.nome || 'Morador',
         endereco: [receita.condominio_logradouro, receita.condominio_numero].filter(Boolean).join(', '),
         complemento: complementoUnidade || undefined,
         bairro: receita.condominio_bairro || 'Não informado',
@@ -816,10 +866,12 @@ class FinanceiroController {
       `INSERT INTO "condominio-bh".tb_fin_cobranca_bancaria
          (id_condominio, id_receita, id_integracao_bancaria, provider, tipo_cobranca, situacao,
           id_externo, nosso_numero, linha_digitavel, codigo_barras, pix_copia_cola, valor,
-          data_vencimento, payload_emissao, payload_resposta, id_usuario_solicitante)
+          data_vencimento, payload_emissao, payload_resposta, id_usuario_solicitante,
+          id_usuario_pagador, pagador_nome)
        VALUES (:idCondominio, :idReceita, :idIntegracao, :provider, 'boleto', 'emitida',
                :idExterno, :nossoNumero, :linhaDigitavel, :codigoBarras, :pixCopiaECola, :valor,
-               :dataVencimento::date, :payloadEmissao, :payloadResposta, :idUsuarioSolicitante)
+               :dataVencimento::date, :payloadEmissao, :payloadResposta, :idUsuarioSolicitante,
+               :idUsuarioPagador, :pagadorNome)
        RETURNING id`,
       {
         replacements: {
@@ -837,6 +889,8 @@ class FinanceiroController {
           payloadEmissao: JSON.stringify(dadosCobranca),
           payloadResposta: JSON.stringify(detalhado),
           idUsuarioSolicitante: idUsuarioSolicitante || null,
+          idUsuarioPagador: pagador.id,
+          pagadorNome: pagador.nome || null,
         },
         type: QueryTypes.INSERT,
       }
@@ -852,6 +906,8 @@ class FinanceiroController {
         linha_digitavel: detalhado.boleto?.linhaDigitavel || null,
         codigo_barras: detalhado.boleto?.codigoBarras || null,
         pix_copia_cola: detalhado.pix?.pixCopiaECola || null,
+        pagador_id: pagador.id,
+        pagador_nome: pagador.nome || null,
         valor: valorTotal,
         data_vencimento: dadosCobranca.dataVencimento,
         situacao: 'emitida',
@@ -889,7 +945,8 @@ class FinanceiroController {
       const [cobranca] = await postgres.query(
         `SELECT id, id_receita, provider, tipo_cobranca, situacao, id_externo, nosso_numero,
                 linha_digitavel, codigo_barras, pix_copia_cola, url_pdf, valor,
-                data_emissao, data_vencimento, data_pagamento
+                data_emissao, data_vencimento, data_pagamento,
+                id_usuario_pagador AS pagador_id, pagador_nome
            FROM "condominio-bh".tb_fin_cobranca_bancaria
           WHERE id_receita = :idReceita AND id_condominio = :idCondominio
             AND situacao IN ('emitida', 'paga', 'cancelada')
