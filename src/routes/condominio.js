@@ -2184,6 +2184,11 @@ router.post(
 			.optional({ nullable: true })
 			.isBoolean()
 			.withMessage('Campo mensagem_telegram deve ser booleano.'),
+		body('status')
+			.optional({ nullable: true, checkFalsy: true })
+			.customSanitizer((value) => String(value).trim().toLowerCase())
+			.isIn(['ativo', 'inativo'])
+			.withMessage('Campo status deve ser "ativo" ou "inativo".'),
 		body('morador_principal')
 			.optional({ nullable: true })
 			.isBoolean()
@@ -2279,6 +2284,11 @@ router.put(
 			.optional({ nullable: true })
 			.isBoolean()
 			.withMessage('Campo mensagem_telegram deve ser booleano.'),
+		body('status')
+			.optional({ nullable: true, checkFalsy: true })
+			.customSanitizer((value) => String(value).trim().toLowerCase())
+			.isIn(['ativo', 'inativo'])
+			.withMessage('Campo status deve ser "ativo" ou "inativo".'),
 		body('morador_principal')
 			.optional({ nullable: true })
 			.isBoolean()
@@ -2374,6 +2384,11 @@ router.patch(
 			.optional({ nullable: true })
 			.isBoolean()
 			.withMessage('Campo mensagem_telegram deve ser booleano.'),
+		body('status')
+			.optional({ nullable: true, checkFalsy: true })
+			.customSanitizer((value) => String(value).trim().toLowerCase())
+			.isIn(['ativo', 'inativo'])
+			.withMessage('Campo status deve ser "ativo" ou "inativo".'),
 		body('morador_principal')
 			.optional({ nullable: true })
 			.isBoolean()
