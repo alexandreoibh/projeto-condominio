@@ -174,6 +174,9 @@ Três Maps no `CondominioController` sobrevivem apenas enquanto o processo estiv
   - **E-mail:** despacha pelo template `mensagem_morador` com `{ assunto, texto, remetente_nome, condominio_nome }`. Enfileirar `email` (individual) e usar `POST /mensagens/fila/lote` exige perfil 1/3/4; WhatsApp e Telegram individuais seguem abertos.
   - **Lote:** resolve os usuários ativos por `perfil_ids` e só enfileira os canais viáveis (tem o contato e o canal não foi desativado). A resposta traz os contadores de ignorados.
   - **Retorno do envio:** `despacharEmail` retorna `{ ok, status, message }` e nunca lança erro. A fila usa esse retorno para marcar falha (status 3).
+  - **Boas-vindas automáticas:** todo cadastro novo (`criarUsuario` e `cadastrarUsuarioPorConvite`) de perfil 2/3/4 com e-mail enfileira um e-mail (`modulo='boas_vindas'`, texto em `MENSAGEM_BOAS_VINDAS_MORADOR`) via `_enfileirarBoasVindasMorador`.
+    - É best effort: uma falha nesse enfileiramento não quebra o cadastro.
+    - No convite, o remetente é quem gerou o convite (`id_usuario_criacao` no JWT de `gerarConviteMorador`).
 - **Multa/juros no boleto (Inter)** — `tb_fin_integracao_bancaria.multa_percentual` / `juros_mora_percentual_mes` (numeric(5,2), migration `20260929000002`).
   - **Onde são definidos:** obrigatórios no `POST /api/condominio/financeiro/integracao-bancaria/inter/conectar`, e editáveis via `PUT /api/condominio/financeiro/integracao-bancaria/:id` (só esses dois campos; Admin/Síndico/Sub-Síndico).
   - **Validação:** 0–100 com até 2 casas. Valores acima do limite legal (2% / 1% a.m.) são aceitos, mas geram `console.warn('[auditoria-integracao-bancaria] ...')`.

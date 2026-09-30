@@ -30,6 +30,23 @@ const usedInviteTokens = new Map();
 const recoveryOtpStore = new Map(); // key: email, value: { code, expiresAt }
 const RECOVERY_OTP_TTL_MS = 10 * 60 * 1000; // 10 minutos
 
+// E-mail de boas-vindas enfileirado em tb_mensagens_fila a cada cadastro novo
+// de residente (criarUsuario / cadastrarUsuarioPorConvite) — enviado depois
+// pelo cron /mensagens/fila/processar (template mensagem_morador).
+const PERFIS_BOAS_VINDAS = [2, 3, 4]; // Morador, Síndico, Sub-Síndico
+const ASSUNTO_BOAS_VINDAS_MORADOR = 'Seja bem-vindo ao condomínio!';
+const MENSAGEM_BOAS_VINDAS_MORADOR = `🏠 **Seja bem-vindo ao condomínio!**
+
+É um prazer ter você como novo morador. 😊
+
+Seu cadastro já foi realizado no **eMorador**, nosso sistema de gestão e comunicação do condomínio.
+
+Por meio da plataforma, você poderá acompanhar comunicados, acessar informações da sua unidade, consultar boletos e utilizar os demais serviços disponibilizados pelo condomínio.
+
+Esperamos que você tenha uma ótima experiência e se sinta em casa! 🤝
+
+**Seja muito bem-vindo!** 🎉`;
+
 // Colunas de tb_espaco rastreadas no log de salas (tb_espaco_log) — labels
 // iguais aos da tela "Editar Sala" para o front exibir o diff direto.
 const ESPACO_CAMPOS_LOG = {
@@ -351,6 +368,30 @@ class CondominioController {
     );
 
     return insert[0][0];
+  }
+
+  /**
+   * Enfileira o e-mail de boas-vindas para um usuário recém-criado. Best
+   * effort: nunca lança — falha aqui não pode desfazer nem quebrar o cadastro.
+   */
+  async _enfileirarBoasVindasMorador({ usuario, idUsuarioCriacao }) {
+    try {
+      if (!usuario) return;
+      if (!PERFIS_BOAS_VINDAS.includes(this._toInt(usuario.tipo_perfil_id, null))) return;
+      if (!this._normalizarTextoOuNull(usuario.email)) return;
+
+      await this._enfileirarMensagem({
+        id_condominio: this._toInt(usuario.id_condominio, null),
+        id_usuario_criacao: idUsuarioCriacao || null,
+        id_usuario_destino: this._toInt(usuario.id, null),
+        tipo: 'email',
+        mensagem_bruta: MENSAGEM_BOAS_VINDAS_MORADOR,
+        modulo: 'boas_vindas',
+        assunto: ASSUNTO_BOAS_VINDAS_MORADOR
+      });
+    } catch (error) {
+      console.error(`[boasVindas] Falha ao enfileirar boas-vindas do usuário id=${usuario?.id}:`, error.message);
+    }
   }
 
   _cleanupPublicRegistrationAttempts(now = Date.now()) {
@@ -7989,6 +8030,11 @@ class CondominioController {
       );
       await transaction.commit();
 
+      await this._enfileirarBoasVindasMorador({
+        usuario: insert[0][0],
+        idUsuarioCriacao: this._toInt(req.idcliente, null)
+      });
+
       return res.status(201).json({
         message: 'Usuário criado com sucesso.',
         data: this._anexarAvatarUrlUsuario(req, insert[0][0])
@@ -8045,6 +8091,8 @@ class CondominioController {
           email: emailConvidado,
           apartamento: apartamento || null,
           bloco: bloco || null,
+          // Quem gerou o convite — remetente do e-mail de boas-vindas.
+          id_usuario_criacao: this._toInt(req.idcliente, null),
           flow: 'morador_invite'
         },
         INVITE_TOKEN_SECRET,
@@ -8361,6 +8409,13 @@ class CondominioController {
       );
 
       this._markInviteTokenAsUsed(inviteTokenHash);
+
+      // Remetente = quem gerou o convite (convites anteriores a este campo
+      // vêm sem ele → e-mail sai em nome de "e-Morador").
+      await this._enfileirarBoasVindasMorador({
+        usuario: insert[0][0],
+        idUsuarioCriacao: this._toInt(invitePayload.id_usuario_criacao, null)
+      });
       if (inviteJtiKey) {
         this._markInviteTokenAsUsed(inviteJtiKey);
       }
