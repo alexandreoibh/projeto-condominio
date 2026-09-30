@@ -222,7 +222,11 @@ class CondominioController {
     return uploadResult?.url || uploadResult?.pathname || blobPath;
   }
 
-  async _enfileirarMensagem({ id_condominio, id_usuario_criacao, id_usuario_destino, tipo, mensagem_bruta, modulo }) {
+  async _enfileirarMensagem({ id_condominio, id_usuario_criacao, id_usuario_destino, tipo, mensagem_bruta, modulo, assunto }) {
+    // `assunto` (migration 20260930000002) só entra no SQL quando informado:
+    // assim WhatsApp/Telegram continuam funcionando mesmo antes da migration.
+    const colunaAssunto = assunto ? ',\n          assunto' : '';
+    const valorAssunto = assunto ? ',\n          :assunto' : '';
     const insert = await postgres.query(
       `INSERT INTO "condominio-bh".tb_mensagens_fila (
           id_condominio,
@@ -230,7 +234,7 @@ class CondominioController {
           id_usuario_destino,
           tipo,
           mensagem_bruta,
-          modulo,
+          modulo${colunaAssunto},
           status,
           created_at,
           updated_at
@@ -240,12 +244,12 @@ class CondominioController {
           :id_usuario_destino,
           :tipo,
           :mensagem_bruta,
-          :modulo,
+          :modulo${valorAssunto},
           1,
           now(),
           now()
       )
-      RETURNING id, id_condominio, id_usuario_criacao, id_usuario_destino, tipo, mensagem_bruta, modulo, status, created_at`,
+      RETURNING *`,
       {
         replacements: {
           id_condominio,
@@ -253,7 +257,8 @@ class CondominioController {
           id_usuario_destino: id_usuario_destino || null,
           tipo,
           mensagem_bruta,
-          modulo: modulo || null
+          modulo: modulo || null,
+          assunto: assunto || null
         }
       }
     );
@@ -13228,6 +13233,167 @@ class CondominioController {
     }
   }
 
+  _ehGestorMensagens(req) {
+    return [1, 3, 4].includes(this._toInt(req.IdPerfil, null));
+  }
+
+  /**
+   * Nome de quem enfileirou (nome + sobrenome, perfil) e nome do condomínio —
+   * usado na formatação do Telegram e no payload do e-mail da fila.
+   */
+  async _resolverRemetenteECondominioFila(item) {
+    let remetenteNome = 'e-Morador';
+    let remetentePerfil = null;
+    if (item.id_usuario_criacao) {
+      const remetenteRows = await postgres.query(
+        `SELECT tu.nome, tu.sobrenome, p.nome AS perfil_nome
+           FROM "condominio-bh"."tb-usuarios" tu
+           LEFT JOIN "condominio-bh".tb_sgw_perfil p
+             ON p.id::text = tu.tipo_perfil_id::text
+          WHERE tu.id = :id AND tu.id_condominio = :id_condominio
+          LIMIT 1`,
+        {
+          replacements: { id: item.id_usuario_criacao, id_condominio: item.id_condominio },
+          type: QueryTypes.SELECT
+        }
+      );
+      const remetente = remetenteRows?.[0];
+      if (remetente) {
+        remetenteNome = [remetente.nome, remetente.sobrenome].filter(Boolean).join(' ').trim() || remetenteNome;
+        remetentePerfil = remetente.perfil_nome || null;
+      }
+    }
+
+    const [condominioRow] = await postgres.query(
+      `SELECT nome FROM "condominio-bh"."tb-condominios" WHERE id = :id LIMIT 1`,
+      { replacements: { id: item.id_condominio }, type: QueryTypes.SELECT }
+    );
+
+    return { remetenteNome, remetentePerfil, condominioNome: condominioRow?.nome || null };
+  }
+
+  /**
+   * POST /mensagens/fila/lote — "Enviar Mensagem a Todos": resolve os
+   * destinatários ativos pelos perfis e enfileira todos os canais de uma vez.
+   * Só enfileira quando o canal é viável (tem e-mail/telefone/Telegram
+   * vinculado e o morador não desativou o canal); o resto volta no resumo.
+   */
+  async criarMensagensFilaLote(req, res) {
+    let transaction = null;
+    try {
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      if (!idCondominioToken) {
+        return res.status(403).json({ message: 'Token sem id_condominio para enfileirar mensagens.' });
+      }
+      if (!this._ehGestorMensagens(req)) {
+        return res.status(403).json({
+          message: 'Apenas Admin, Síndico ou Sub-Síndico podem enviar mensagens em lote.'
+        });
+      }
+
+      const perfilIds = [...new Set((req.body.perfil_ids || []).map((p) => this._toInt(p, null)).filter((p) => p > 0))];
+      const tipos = [...new Set((req.body.tipos || []).map((t) => String(t).trim().toLowerCase()))];
+      const mensagemBruta = String(req.body.mensagem_bruta || '').trim();
+      const assunto = tipos.includes('email') ? this._normalizarTextoOuNull(req.body.assunto) : null;
+      const modulo = this._normalizarTextoOuNull(req.body.modulo) || 'mensagem_todos';
+
+      const usuarios = await postgres.query(
+        `SELECT id, email, telefone, chat_id_telegram, mensagem_whatsapp, mensagem_telegram
+           FROM "condominio-bh"."tb-usuarios"
+          WHERE id_condominio = :id_condominio
+            AND tipo_perfil_id::text IN (:perfis)
+            AND lower(trim(COALESCE(status, ''))) = 'ativo'
+          ORDER BY id`,
+        {
+          replacements: { id_condominio: idCondominioToken, perfis: perfilIds.map(String) },
+          type: QueryTypes.SELECT
+        }
+      );
+
+      const ignoradas = {
+        email_sem_endereco: 0,
+        whatsapp_sem_telefone: 0,
+        whatsapp_desativado: 0,
+        telegram_nao_vinculado: 0,
+        telegram_desativado: 0
+      };
+      const itens = [];
+
+      for (const usuario of usuarios) {
+        for (const tipo of tipos) {
+          if (tipo === 'email') {
+            if (!this._normalizarTextoOuNull(usuario.email)) { ignoradas.email_sem_endereco += 1; continue; }
+          } else if (tipo === 'whatsapp') {
+            if (usuario.mensagem_whatsapp === false) { ignoradas.whatsapp_desativado += 1; continue; }
+            if (!this._normalizarTextoOuNull(usuario.telefone)) { ignoradas.whatsapp_sem_telefone += 1; continue; }
+          } else if (tipo === 'telegram') {
+            if (usuario.mensagem_telegram === false) { ignoradas.telegram_desativado += 1; continue; }
+            if (!this._normalizarTextoOuNull(usuario.chat_id_telegram)) { ignoradas.telegram_nao_vinculado += 1; continue; }
+          }
+          itens.push({ id_usuario_destino: this._toInt(usuario.id, null), tipo });
+        }
+      }
+
+      if (itens.length === 0) {
+        return res.status(200).json({
+          message: 'Nenhum destinatário elegível para os canais selecionados.',
+          destinatarios: usuarios.length,
+          enfileiradas: 0,
+          ignoradas
+        });
+      }
+
+      // INSERT multi-linha em blocos (PG 9.2 suporta VALUES (...), (...)).
+      // `assunto` só entra no SQL quando há e-mail — mesmo motivo de _enfileirarMensagem.
+      const TAMANHO_BLOCO = 500;
+      transaction = await postgres.transaction();
+      for (let inicio = 0; inicio < itens.length; inicio += TAMANHO_BLOCO) {
+        const bloco = itens.slice(inicio, inicio + TAMANHO_BLOCO);
+        const replacements = {
+          id_condominio: idCondominioToken,
+          id_usuario_criacao: this._toInt(req.idcliente, null),
+          mensagem_bruta: mensagemBruta,
+          modulo
+        };
+        if (assunto) replacements.assunto = assunto;
+
+        const valores = bloco.map((item, idx) => {
+          replacements[`destino_${idx}`] = item.id_usuario_destino;
+          replacements[`tipo_${idx}`] = item.tipo;
+          replacements[`assunto_${idx}`] = item.tipo === 'email' ? assunto : null;
+          return `(:id_condominio, :id_usuario_criacao, :destino_${idx}, :tipo_${idx}, :mensagem_bruta, :modulo${
+            assunto ? `, :assunto_${idx}` : ''
+          }, 1, now(), now())`;
+        });
+
+        await postgres.query(
+          `INSERT INTO "condominio-bh".tb_mensagens_fila (
+              id_condominio, id_usuario_criacao, id_usuario_destino, tipo, mensagem_bruta, modulo${
+                assunto ? ', assunto' : ''
+              }, status, created_at, updated_at
+           ) VALUES ${valores.join(',\n')}`,
+          { replacements, transaction }
+        );
+      }
+      await transaction.commit();
+
+      return res.status(201).json({
+        message: 'Mensagens enfileiradas.',
+        destinatarios: usuarios.length,
+        enfileiradas: itens.length,
+        ignoradas
+      });
+    } catch (error) {
+      if (transaction && !transaction.finished) {
+        await transaction.rollback().catch(() => {});
+      }
+      return res.status(500).json({
+        message: 'Falha ao enfileirar mensagens em lote.',
+        detail: error.message
+      });
+    }
+  }
+
   async criarMensagemFila(req, res) {
     try {
       const idCondominioToken = this._toInt(req.id_condominio, null);
@@ -13237,12 +13403,20 @@ class CondominioController {
         });
       }
 
-      const { id_usuario_destino, tipo, mensagem_bruta, modulo } = req.body;
+      const { id_usuario_destino, tipo, mensagem_bruta, modulo, assunto } = req.body;
 
       const tipoNormalizado = String(tipo || '').trim().toLowerCase();
-      if (!['whatsapp', 'telegram'].includes(tipoNormalizado)) {
+      if (!['whatsapp', 'telegram', 'email'].includes(tipoNormalizado)) {
         return res.status(422).json({
-          message: 'Campo tipo deve ser "whatsapp" ou "telegram".'
+          message: 'Campo tipo deve ser "whatsapp", "telegram" ou "email".'
+        });
+      }
+
+      // E-mail aos moradores é restrito à gestão; WhatsApp/Telegram seguem
+      // abertos (usados por outros perfis, ex.: Portaria).
+      if (tipoNormalizado === 'email' && !this._ehGestorMensagens(req)) {
+        return res.status(403).json({
+          message: 'Apenas Admin, Síndico ou Sub-Síndico podem enviar e-mail aos moradores.'
         });
       }
 
@@ -13252,13 +13426,30 @@ class CondominioController {
         });
       }
 
+      const idUsuarioDestino = this._toInt(id_usuario_destino, null);
+      const destinoRows = await postgres.query(
+        `SELECT id FROM "condominio-bh"."tb-usuarios"
+          WHERE id = :id AND id_condominio = :id_condominio
+          LIMIT 1`,
+        {
+          replacements: { id: idUsuarioDestino, id_condominio: idCondominioToken },
+          type: QueryTypes.SELECT
+        }
+      );
+      if (!destinoRows || destinoRows.length === 0) {
+        return res.status(422).json({
+          message: 'Destinatário não pertence a este condomínio.'
+        });
+      }
+
       const registro = await this._enfileirarMensagem({
         id_condominio: idCondominioToken,
         id_usuario_criacao: this._toInt(req.idcliente, null),
-        id_usuario_destino: this._toInt(id_usuario_destino, null),
+        id_usuario_destino: idUsuarioDestino,
         tipo: tipoNormalizado,
         mensagem_bruta: String(mensagem_bruta).trim(),
-        modulo: modulo || null
+        modulo: modulo || null,
+        assunto: tipoNormalizado === 'email' ? this._normalizarTextoOuNull(assunto) : null
       });
 
       return res.status(201).json({
@@ -13276,7 +13467,9 @@ class CondominioController {
   async processarFilaMensagens(req, res) {
     try {
       const pendentes = await postgres.query(
-        `SELECT id, id_condominio, id_usuario_criacao, id_usuario_destino, tipo, modulo, mensagem_bruta, mensagem_tratada_ia
+        // SELECT * (e não lista de colunas) para não depender de `assunto`
+        // existir — migration 20260930000002.
+        `SELECT *
            FROM "condominio-bh".tb_mensagens_fila
           WHERE status = 1
           ORDER BY created_at ASC
@@ -13308,7 +13501,7 @@ class CondominioController {
           }
 
           const destinatarioRows = await postgres.query(
-            `SELECT telefone, chat_id_telegram, nome, sobrenome, apartamento, bloco, tipo_perfil_id
+            `SELECT telefone, email, chat_id_telegram, nome, sobrenome, apartamento, bloco, tipo_perfil_id
                FROM "condominio-bh"."tb-usuarios"
               WHERE id = :id
                 AND id_condominio = :id_condominio
@@ -13328,7 +13521,29 @@ class CondominioController {
               throw new Error('Usuário destino sem telefone cadastrado.');
             }
             await despacharWhatsapp({ telefones: [telefone], mensagem: mensagemFinal, _ref: `fila_${item.id}` });
-          } else {
+          } else if (item.tipo === 'email') {
+            const email = this._normalizarTextoOuNull(destinatarioRows?.[0]?.email);
+            if (!email) {
+              throw new Error('Usuário destino sem e-mail cadastrado.');
+            }
+
+            const { remetenteNome, condominioNome } = await this._resolverRemetenteECondominioFila(item);
+            // Template `mensagem_morador` já existe no public-email-dispatch.php.
+            const resultadoEmail = await despacharEmail({
+              _ref: `fila_${item.id}`,
+              template: 'mensagem_morador',
+              emails: [email],
+              mensagem: {
+                assunto: item.assunto || '',
+                texto: item.mensagem_bruta,
+                remetente_nome: remetenteNome,
+                condominio_nome: condominioNome || ''
+              }
+            });
+            if (!resultadoEmail?.ok) {
+              throw new Error(`Falha no envio de e-mail: ${resultadoEmail?.message || 'erro desconhecido'}`);
+            }
+          } else if (item.tipo === 'telegram') {
             const chatId = destinatarioRows?.[0]?.chat_id_telegram;
             if (!chatId) {
               throw new Error('TELEGRAM_NAO_VINCULADO: usuário ainda não vinculou o Telegram.');
@@ -13342,34 +13557,10 @@ class CondominioController {
                   .join(' ')
                   .trim() || 'morador';
 
-                let remetenteNomeCompleto = 'e-Morador';
-                let remetentePerfil = null;
-                if (item.id_usuario_criacao) {
-                  const remetenteRows = await postgres.query(
-                    `SELECT tu.nome, tu.sobrenome, p.nome AS perfil_nome
-                       FROM "condominio-bh"."tb-usuarios" tu
-                       LEFT JOIN "condominio-bh".tb_sgw_perfil p
-                         ON p.id::text = tu.tipo_perfil_id::text
-                      WHERE tu.id = :id AND tu.id_condominio = :id_condominio
-                      LIMIT 1`,
-                    {
-                      replacements: { id: item.id_usuario_criacao, id_condominio: item.id_condominio },
-                      type: QueryTypes.SELECT
-                    }
-                  );
-                  const remetente = remetenteRows?.[0];
-                  if (remetente) {
-                    remetenteNomeCompleto =
-                      [remetente.nome, remetente.sobrenome].filter(Boolean).join(' ').trim() || remetenteNomeCompleto;
-                    remetentePerfil = remetente.perfil_nome || null;
-                  }
-                }
-
-                const [condominioRow] = await postgres.query(
-                  `SELECT nome FROM "condominio-bh"."tb-condominios" WHERE id = :id LIMIT 1`,
-                  { replacements: { id: item.id_condominio }, type: QueryTypes.SELECT }
-                );
-                const condominioNome = condominioRow?.nome || 'seu condomínio';
+                const remetenteInfo = await this._resolverRemetenteECondominioFila(item);
+                const remetenteNomeCompleto = remetenteInfo.remetenteNome;
+                const remetentePerfil = remetenteInfo.remetentePerfil;
+                const condominioNome = remetenteInfo.condominioNome || 'seu condomínio';
 
                 const { icone, rotulo } = this._iconeModuloTelegram(item.modulo);
 
@@ -13422,6 +13613,8 @@ class CondominioController {
               parse_mode: parseModeTelegram,
               _ref: `fila_${item.id}`
             });
+          } else {
+            throw new Error(`Tipo de mensagem não suportado: ${item.tipo}`);
           }
 
           await postgres.query(

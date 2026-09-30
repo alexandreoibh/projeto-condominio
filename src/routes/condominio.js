@@ -3039,8 +3039,8 @@ router.post(
 			.notEmpty()
 			.withMessage('Campo tipo é obrigatório.')
 			.bail()
-			.isIn(['whatsapp', 'telegram'])
-			.withMessage('Campo tipo deve ser "whatsapp" ou "telegram".'),
+			.isIn(['whatsapp', 'telegram', 'email'])
+			.withMessage('Campo tipo deve ser "whatsapp", "telegram" ou "email".'),
 		body('mensagem_bruta')
 			.notEmpty()
 			.withMessage('Campo mensagem_bruta é obrigatório.')
@@ -3050,10 +3050,51 @@ router.post(
 		body('modulo')
 			.optional({ nullable: true, checkFalsy: true })
 			.isLength({ max: 100 })
-			.withMessage('Campo modulo deve ter no máximo 100 caracteres.')
+			.withMessage('Campo modulo deve ter no máximo 100 caracteres.'),
+		body('assunto')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 150 })
+			.withMessage('Campo assunto deve ter no máximo 150 caracteres.')
 	],
 	validate,
 	controller.criarMensagemFila.bind(controller)
+);
+
+// "Enviar Mensagem a Todos" — backend resolve destinatários por perfil e
+// enfileira todos os canais de uma vez (Admin/Síndico/Sub-Síndico).
+router.post(
+	'/mensagens/fila/lote',
+	auth,
+	[
+		body('perfil_ids')
+			.isArray({ min: 1 })
+			.withMessage('Campo perfil_ids deve ser uma lista com ao menos um perfil.'),
+		body('perfil_ids.*')
+			.isInt({ min: 1 })
+			.withMessage('Cada item de perfil_ids deve ser numérico e maior que zero.'),
+		body('tipos')
+			.isArray({ min: 1 })
+			.withMessage('Campo tipos deve ser uma lista com ao menos um canal.'),
+		body('tipos.*')
+			.isIn(['whatsapp', 'telegram', 'email'])
+			.withMessage('Cada item de tipos deve ser "whatsapp", "telegram" ou "email".'),
+		body('mensagem_bruta')
+			.notEmpty()
+			.withMessage('Campo mensagem_bruta é obrigatório.')
+			.bail()
+			.isLength({ max: 2000 })
+			.withMessage('Campo mensagem_bruta deve ter no máximo 2000 caracteres.'),
+		body('assunto')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 150 })
+			.withMessage('Campo assunto deve ter no máximo 150 caracteres.'),
+		body('modulo')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 100 })
+			.withMessage('Campo modulo deve ter no máximo 100 caracteres.')
+	],
+	validate,
+	controller.criarMensagensFilaLote.bind(controller)
 );
 
 router.post(

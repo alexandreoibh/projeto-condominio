@@ -18,10 +18,13 @@ async function _post(payload) {
   });
 }
 
+// Retorna { ok: true } ou { ok: false, status, message } — nunca lança.
+// Chamadores fire-and-forget podem ignorar o retorno; a fila de mensagens
+// usa para marcar o item como falha.
 async function despacharEmail(payload) {
   if (!DISPATCH_URL || !DISPATCH_KEY) {
     console.warn('[emailDispatch] EMAIL_DISPATCH_URL ou PUBLIC_EMAIL_DISPATCH_KEY não configurados.');
-    return;
+    return { ok: false, status: null, message: 'Serviço de e-mail não configurado (EMAIL_DISPATCH_URL/PUBLIC_EMAIL_DISPATCH_KEY).' };
   }
 
   const ref = payload._id_agenda ?? payload._ref ?? '?';
@@ -38,13 +41,13 @@ async function despacharEmail(payload) {
 
       if (resp.ok && data?.success) {
         console.log(`[emailDispatch] OK template=${template} ref=${ref} status=${resp.status} recipients=${data?.recipient_count ?? '?'}`);
-        return;
+        return { ok: true };
       }
 
       // Erro 4xx: não faz retry
       if (resp.status >= 400 && resp.status < 500) {
         console.error(`[emailDispatch] Falha permanente template=${template} ref=${ref} status=${resp.status} msg=${data?.message}`);
-        return;
+        return { ok: false, status: resp.status, message: data?.message || `HTTP ${resp.status}` };
       }
 
       // 5xx: tenta novamente
@@ -55,6 +58,7 @@ async function despacharEmail(payload) {
   }
 
   console.error(`[emailDispatch] Falha após ${MAX_RETRIES} tentativas template=${template} ref=${ref}:`, lastError?.message);
+  return { ok: false, status: null, message: lastError?.message || 'Falha desconhecida no envio de e-mail.' };
 }
 
 // Alias mantido por compatibilidade com chamadas existentes
