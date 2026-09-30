@@ -2083,6 +2083,10 @@ router.post(
 			.optional({ nullable: true, checkFalsy: true })
 			.isInt({ min: 1 })
 			.withMessage('Campo condominio_id deve ser numérico e maior que zero.'),
+		body('id_unidade')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Campo id_unidade deve ser numérico e maior que zero.'),
 		body('morador_principal')
 			.optional({ nullable: true })
 			.isBoolean()

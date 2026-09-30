@@ -106,6 +106,60 @@ class CondominioController {
     return null;
   }
 
+  /**
+   * Resolve o vínculo do usuário com tb_condominios_unidades (id_unidade_predio).
+   * - idUnidade informado: precisa pertencer ao condomínio; apto/bloco passam a
+   *   ser os da unidade (fonte da verdade).
+   * - senão, apartamento + bloco: busca a unidade correspondente; se não
+   *   existir, id fica null (não bloqueia o cadastro).
+   * Retorna { id, apartamento, bloco } ou { erro } para responder 422.
+   */
+  async _resolverUnidadeUsuario({ idCondominio, idUnidade, apartamento, bloco }) {
+    const apartamentoTexto = apartamento ? String(apartamento).trim() : null;
+    const blocoTexto = bloco ? String(bloco) : null;
+
+    const idUnidadeInformado = this._toInt(idUnidade, null);
+    if (idUnidadeInformado) {
+      const unidadeRow = await postgres.query(
+        `SELECT id, bloco, unidades_bloco FROM "condominio-bh".tb_condominios_unidades
+          WHERE id = :id AND id_condominio = :id_condominio
+          LIMIT 1`,
+        {
+          replacements: { id: idUnidadeInformado, id_condominio: idCondominio },
+          type: QueryTypes.SELECT
+        }
+      );
+      if (!unidadeRow || unidadeRow.length === 0) {
+        return { erro: 'id_unidade inválido para este condomínio.' };
+      }
+      return {
+        id: idUnidadeInformado,
+        apartamento: unidadeRow[0].unidades_bloco,
+        bloco: String(unidadeRow[0].bloco)
+      };
+    }
+
+    const blocoInt = this._toInt(blocoTexto, null);
+    if (apartamentoTexto && blocoInt !== null) {
+      const unidadeRow = await postgres.query(
+        `SELECT id FROM "condominio-bh".tb_condominios_unidades
+          WHERE id_condominio = :id_condominio
+            AND unidades_bloco = :apartamento
+            AND bloco = :bloco
+          LIMIT 1`,
+        {
+          replacements: { id_condominio: idCondominio, apartamento: apartamentoTexto, bloco: blocoInt },
+          type: QueryTypes.SELECT
+        }
+      );
+      if (unidadeRow && unidadeRow.length > 0) {
+        return { id: this._toInt(unidadeRow[0].id, null), apartamento: apartamento || null, bloco: bloco || null };
+      }
+    }
+
+    return { id: null, apartamento: apartamento || null, bloco: bloco || null };
+  }
+
   // Portaria (5) e Colaborador (54) não têm unidade, e usuário não-ativo não
   // pode ser responsável pela unidade — nesses casos nunca é morador principal.
   _resolverMoradorPrincipal({ valor, tipoPerfilId, status }) {
@@ -7806,49 +7860,18 @@ class CondominioController {
       }
       tipoResolvido = tipoResolvido || 'morador';
 
-      let idUnidadePredioResolvido = null;
-      let apartamentoResolvido = apartamento || null;
-      let blocoResolvido = bloco || null;
-
-      const idUnidadeInformado = this._toInt(id_unidade, null);
-      if (idUnidadeInformado) {
-        const unidadeRow = await postgres.query(
-          `SELECT id, bloco, unidades_bloco FROM "condominio-bh".tb_condominios_unidades
-            WHERE id = :id AND id_condominio = :id_condominio
-            LIMIT 1`,
-          {
-            replacements: { id: idUnidadeInformado, id_condominio: idCondominioToken },
-            type: QueryTypes.SELECT
-          }
-        );
-        if (!unidadeRow || unidadeRow.length === 0) {
-          return res.status(422).json({
-            message: 'id_unidade inválido para este condomínio.'
-          });
-        }
-        idUnidadePredioResolvido = idUnidadeInformado;
-        apartamentoResolvido = unidadeRow[0].unidades_bloco;
-        blocoResolvido = String(unidadeRow[0].bloco);
-      } else if (apartamento && bloco) {
-        const unidadeRow = await postgres.query(
-          `SELECT id FROM "condominio-bh".tb_condominios_unidades
-            WHERE id_condominio = :id_condominio
-              AND unidades_bloco = :apartamento
-              AND bloco = :bloco
-            LIMIT 1`,
-          {
-            replacements: {
-              id_condominio: idCondominioToken,
-              apartamento: String(apartamento).trim(),
-              bloco: this._toInt(bloco, null)
-            },
-            type: QueryTypes.SELECT
-          }
-        );
-        if (unidadeRow && unidadeRow.length > 0) {
-          idUnidadePredioResolvido = this._toInt(unidadeRow[0].id, null);
-        }
+      const unidade = await this._resolverUnidadeUsuario({
+        idCondominio: idCondominioToken,
+        idUnidade: id_unidade,
+        apartamento,
+        bloco
+      });
+      if (unidade.erro) {
+        return res.status(422).json({ message: unidade.erro });
       }
+      const idUnidadePredioResolvido = unidade.id;
+      const apartamentoResolvido = unidade.apartamento;
+      const blocoResolvido = unidade.bloco;
 
       const moradorPrincipalFinal = this._resolverMoradorPrincipal({
         valor: this._toBoolOrNull(morador_principal),
@@ -8186,6 +8209,26 @@ class CondominioController {
         });
       }
 
+      // Vínculo com tb_condominios_unidades — mesma regra do cadastro interno
+      // (criarUsuario). Sem isso o morador ficava sem id_unidade_predio e fora
+      // de morador principal, pagador do boleto e situação financeira.
+      const unidadeConvite = await this._resolverUnidadeUsuario({
+        idCondominio: idCondominioToken,
+        idUnidade: req.body.id_unidade,
+        apartamento: apartamentoCadastro,
+        bloco: blocoCadastro
+      });
+      if (unidadeConvite.erro) {
+        return res.status(422).json({ message: unidadeConvite.erro });
+      }
+      if (!unidadeConvite.id) {
+        console.warn('[cadastro-por-convite] unidade não encontrada em tb_condominios_unidades', JSON.stringify({
+          id_condominio: idCondominioToken,
+          apartamento: apartamentoCadastro,
+          bloco: blocoCadastro
+        }));
+      }
+
       const emailCadastro = emailBody || emailToken;
 
       // CPF obrigatório (sem mais "CPF técnico" gerado). Validado só depois
@@ -8245,6 +8288,7 @@ class CondominioController {
             endereco_cep,
             apartamento,
             bloco,
+            id_unidade_predio,
             observacoes,
             path_avatar,
             morador_principal,
@@ -8273,13 +8317,14 @@ class CondominioController {
             :endereco_cep,
             :apartamento,
             :bloco,
+            :id_unidade_predio,
             :observacoes,
             :path_avatar,
             :morador_principal,
             now(),
             now()
         )
-        RETURNING id, id_condominio, nome, sobrenome, cpf, email, telefone, path_avatar, tipo_morador, tipo_perfil_id, tipo, status, apartamento, bloco, morador_principal, created_at`,
+        RETURNING id, id_condominio, nome, sobrenome, cpf, email, telefone, path_avatar, tipo_morador, tipo_perfil_id, tipo, status, apartamento, bloco, id_unidade_predio, morador_principal, created_at`,
         {
           replacements: {
             id_condominio: idCondominioToken,
@@ -8302,8 +8347,10 @@ class CondominioController {
             endereco_cidade: this._normalizarTextoOuNull(req.body.endereco_cidade),
             endereco_uf: this._normalizarTextoOuNull(req.body.endereco_uf),
             endereco_cep: this._normalizarTextoOuNull(req.body.endereco_cep),
-            apartamento: apartamentoCadastro,
-            bloco: blocoCadastro,
+            // Com id_unidade informado, apto/bloco canônicos vêm da unidade.
+            apartamento: unidadeConvite.apartamento || apartamentoCadastro,
+            bloco: unidadeConvite.bloco || blocoCadastro,
+            id_unidade_predio: unidadeConvite.id,
             observacoes: this._normalizarTextoOuNull(req.body.observacoes),
             path_avatar: this._normalizarTextoOuNull(req.body.path_avatar),
             // Cadastro por convite não resolve id_unidade_predio, então não há como

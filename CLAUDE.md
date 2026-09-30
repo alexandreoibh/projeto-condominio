@@ -143,6 +143,11 @@ O total de registros gerados é `qtde_blocos × unidades_bloco.length` em `"cond
 
 **JOINs que casam morador por unidade precisam considerar `bloco`, não só o texto.** Como o mesmo texto de unidade agora pode existir em vários blocos, qualquer JOIN que resolve "o morador daquela unidade" comparando só `tb-usuarios.apartamento = tb_condominios_unidades.unidades_bloco` fica ambíguo — precisa também comparar bloco (`NULLIF(tu.bloco, '')::int = cu.bloco`, já que `tb-usuarios.bloco` é sempre texto e `tb_condominios_unidades.bloco` é `int4`). Esse padrão está em `financeiroController.js` (relatórios de receita/inadimplência) e `loginController.js` (resolução de `id_unidade` no login).
 
+**Vínculo do usuário com a unidade (`tb-usuarios.id_unidade_predio`)** — resolvido por `_resolverUnidadeUsuario()` tanto em `criarUsuario` quanto em `cadastrarUsuarioPorConvite`:
+- `id_unidade` explícito precisa ser do condomínio (senão 422); nesse caso, apto e bloco passam a ser os da unidade.
+- Sem `id_unidade`, casa `apartamento` + `bloco` com `tb_condominios_unidades`. Se não achar, grava `NULL` sem bloquear o cadastro.
+- Até 30/09/2026 o convite não gravava essa coluna.
+
 Sem migration formal — `tb_condominios_unidades` (como `tb-condominios` e `tb-usuarios`) é gerenciada fora do fluxo de migrations do Sequelize.
 
 ## Estado em memória (não persistido)
