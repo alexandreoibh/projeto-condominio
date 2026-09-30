@@ -29,6 +29,35 @@ const usedInviteTokens = new Map();
 const recoveryOtpStore = new Map(); // key: email, value: { code, expiresAt }
 const RECOVERY_OTP_TTL_MS = 10 * 60 * 1000; // 10 minutos
 
+// Colunas de tb_espaco rastreadas no log de salas (tb_espaco_log) — labels
+// iguais aos da tela "Editar Sala" para o front exibir o diff direto.
+const ESPACO_CAMPOS_LOG = {
+  nome: 'Nome Sala',
+  descricao: 'Observação Sala',
+  localizacao: 'Localização',
+  capacidade: 'Capacidade Pessoas',
+  taxa_reserva: 'Taxa Reserva',
+  custo_limpeza: 'Custo Limpeza',
+  antecedencia_min_horas: 'Antecedência Mínima (dias)',
+  max_dias_permite_agendar: 'Sala Liberada até (meses)',
+  max_res_unid_ano: 'Máx. Reservas por Unidade AP / Ano',
+  sala_bloqueia_outras: 'Reservas dessa Sala bloqueiam outras salas',
+  periodo_modo: 'Período de Reserva',
+  periodo_manha: 'Período Manhã',
+  periodo_tarde: 'Período Tarde',
+  periodo_noite: 'Período Noite',
+  segunda: 'Segunda',
+  terca: 'Terça',
+  quarta: 'Quarta',
+  quinta: 'Quinta',
+  sexta: 'Sexta',
+  sabado: 'Sábado',
+  domingo: 'Domingo',
+  ativo: 'Sala Ativa para Reserva',
+  exige_aprovacao: 'Exige Aprovação Síndico',
+  permite_convidados: 'Permite Convidados'
+};
+
 class CondominioController {
   _toInt(value, fallback) {
     const parsed = Number.parseInt(value, 10);
@@ -9430,7 +9459,75 @@ class CondominioController {
     }
   }
 
+  _normalizarValorLogEspaco(value) {
+    if (value === undefined || value === null) return null;
+    if (typeof value === 'boolean' || typeof value === 'number') return value;
+    const text = String(value).trim();
+    if (text === '') return null;
+    // numeric/int8 do Postgres chegam como string ("300.00") — compara como número.
+    if (/^-?\d+(\.\d+)?$/.test(text)) return Number(text);
+    return text;
+  }
+
+  _diffEspaco(anterior, novo) {
+    const antes = anterior || {};
+    const depois = novo || {};
+    return Object.keys(ESPACO_CAMPOS_LOG)
+      .map((campo) => ({
+        campo,
+        label: ESPACO_CAMPOS_LOG[campo],
+        anterior: this._normalizarValorLogEspaco(antes[campo]),
+        novo: this._normalizarValorLogEspaco(depois[campo])
+      }))
+      .filter((item) => item.anterior !== item.novo);
+  }
+
+  /**
+   * Grava em tb_espaco_log quem criou/editou/excluiu a sala e o diff dos
+   * campos. Roda na mesma transação da alteração: se o log falhar, a
+   * alteração também é desfeita (auditoria nunca fica incompleta).
+   */
+  async _registrarLogEspaco({ req, idCondominio, idEspaco, acao, anterior, novo, camposAlterados, transaction }) {
+    const idUsuario = this._toInt(req.idcliente, null);
+    let nomeUsuario = null;
+    if (idUsuario) {
+      const usuarioRows = await postgres.query(
+        `SELECT nome, sobrenome FROM "condominio-bh"."tb-usuarios" WHERE id = :id LIMIT 1`,
+        { replacements: { id: idUsuario }, type: QueryTypes.SELECT, transaction }
+      );
+      if (usuarioRows[0]) {
+        nomeUsuario = [usuarioRows[0].nome, usuarioRows[0].sobrenome].filter(Boolean).join(' ').trim() || null;
+      }
+    }
+
+    await postgres.query(
+      `INSERT INTO "condominio-bh".tb_espaco_log (
+          id_espaco, id_condominio, acao, id_usuario, nome_usuario, email_usuario, perfil_usuario,
+          campos_alterados, dados_anteriores, dados_novos, created_at
+        ) VALUES (
+          :id_espaco, :id_condominio, :acao, :id_usuario, :nome_usuario, :email_usuario, :perfil_usuario,
+          :campos_alterados, :dados_anteriores, :dados_novos, now()
+        )`,
+      {
+        replacements: {
+          id_espaco: idEspaco,
+          id_condominio: idCondominio,
+          acao,
+          id_usuario: idUsuario,
+          nome_usuario: nomeUsuario,
+          email_usuario: req.emailUsuario || null,
+          perfil_usuario: req.nomePerfil || null,
+          campos_alterados: JSON.stringify(camposAlterados || this._diffEspaco(anterior, novo)),
+          dados_anteriores: anterior ? JSON.stringify(anterior) : null,
+          dados_novos: novo ? JSON.stringify(novo) : null
+        },
+        transaction
+      }
+    );
+  }
+
   async criarEspaco(req, res) {
+    let transaction = null;
     try {
       const idCondominioToken = this._toInt(req.id_condominio, null);
       if (!idCondominioToken) {
@@ -9466,6 +9563,7 @@ class CondominioController {
         bloqueia_outras_salas
       } = req.body;
 
+      transaction = await postgres.transaction();
       const insert = await postgres.query(
         `INSERT INTO "condominio-bh".tb_espaco (
           id_condominio,
@@ -9552,15 +9650,31 @@ class CondominioController {
             max_res_unid_ano: max_res_unid_ano ?? null,
             max_dias_permite_agendar: max_dias_permite_agendar ?? null,
             sala_bloqueia_outras: bloqueia_outras_salas ?? 0
-          }
+          },
+          transaction
         }
       );
 
+      const espacoCriado = insert[0][0];
+      await this._registrarLogEspaco({
+        req,
+        idCondominio: idCondominioToken,
+        idEspaco: espacoCriado.id,
+        acao: 'criacao',
+        anterior: null,
+        novo: espacoCriado,
+        transaction
+      });
+      await transaction.commit();
+
       return res.status(201).json({
         message: 'Espaço cadastrado com sucesso.',
-        data: insert[0][0]
+        data: espacoCriado
       });
     } catch (error) {
+      if (transaction && !transaction.finished) {
+        await transaction.rollback().catch(() => {});
+      }
       return res.status(500).json({
         message: 'Falha ao cadastrar espaço.',
         detail: error.message
@@ -9569,6 +9683,7 @@ class CondominioController {
   }
 
   async editarEspaco(req, res) {
+    let transaction = null;
     try {
       const idCondominioToken = this._toInt(req.id_condominio, null);
       if (!idCondominioToken) {
@@ -9608,6 +9723,28 @@ class CondominioController {
         max_dias_permite_agendar,
         bloqueia_outras_salas
       } = req.body;
+
+      transaction = await postgres.transaction();
+
+      // Estado anterior para o diff do log (FOR UPDATE evita duas edições
+      // simultâneas gerarem diffs contra o mesmo "antes").
+      const anteriorRows = await postgres.query(
+        `SELECT *
+           FROM "condominio-bh".tb_espaco
+          WHERE id = :id
+            AND id_condominio = :id_condominio
+          FOR UPDATE`,
+        {
+          replacements: { id, id_condominio: idCondominioToken },
+          type: QueryTypes.SELECT,
+          transaction
+        }
+      );
+
+      if (!anteriorRows || anteriorRows.length === 0) {
+        await transaction.rollback();
+        return res.status(404).json({ message: 'Espaço não encontrado.' });
+      }
 
       const update = await postgres.query(
         `UPDATE "condominio-bh".tb_espaco
@@ -9667,19 +9804,36 @@ class CondominioController {
             max_res_unid_ano: max_res_unid_ano ?? null,
             max_dias_permite_agendar: max_dias_permite_agendar ?? null,
             sala_bloqueia_outras: bloqueia_outras_salas ?? 0
-          }
+          },
+          transaction
         }
       );
 
-      if (!update[0] || update[0].length === 0) {
-        return res.status(404).json({ message: 'Espaço não encontrado.' });
+      const espacoAtualizado = update[0][0];
+      const camposAlterados = this._diffEspaco(anteriorRows[0], espacoAtualizado);
+      // Salvar sem alterar nada não gera log.
+      if (camposAlterados.length > 0) {
+        await this._registrarLogEspaco({
+          req,
+          idCondominio: idCondominioToken,
+          idEspaco: id,
+          acao: 'edicao',
+          anterior: anteriorRows[0],
+          novo: espacoAtualizado,
+          camposAlterados,
+          transaction
+        });
       }
+      await transaction.commit();
 
       return res.status(200).json({
         message: 'Espaço atualizado com sucesso.',
-        data: update[0][0]
+        data: espacoAtualizado
       });
     } catch (error) {
+      if (transaction && !transaction.finished) {
+        await transaction.rollback().catch(() => {});
+      }
       return res.status(500).json({
         message: 'Falha ao editar espaço.',
         detail: error.message
@@ -9721,6 +9875,168 @@ class CondominioController {
     } catch (error) {
       return res.status(500).json({
         message: 'Falha ao buscar espaço.',
+        detail: error.message
+      });
+    }
+  }
+
+  _parseJsonLogEspaco(texto) {
+    if (!texto) return null;
+    try {
+      return JSON.parse(texto);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /**
+   * Consulta paginada de tb_espaco_log. Só lê a tabela de log (sem JOIN em
+   * tb_espaco), então o histórico continua disponível após excluir a sala.
+   */
+  async _buscarLogsEspaco({ idCondominio, filtros, page, pageSize }) {
+    const whereParts = ['l.id_condominio = :id_condominio'];
+    const replacements = { id_condominio: idCondominio };
+
+    if (filtros.idEspaco) {
+      whereParts.push('l.id_espaco = :id_espaco');
+      replacements.id_espaco = filtros.idEspaco;
+    }
+    if (filtros.acao) {
+      whereParts.push('l.acao = :acao');
+      replacements.acao = filtros.acao;
+    }
+    if (filtros.idUsuario) {
+      whereParts.push('l.id_usuario = :id_usuario');
+      replacements.id_usuario = filtros.idUsuario;
+    }
+    if (filtros.dataInicio) {
+      whereParts.push('l.created_at >= :data_inicio::date');
+      replacements.data_inicio = filtros.dataInicio.toISOString().slice(0, 10);
+    }
+    if (filtros.dataFim) {
+      // data_fim inclusiva: tudo antes do dia seguinte.
+      whereParts.push('l.created_at < (:data_fim::date + 1)');
+      replacements.data_fim = filtros.dataFim.toISOString().slice(0, 10);
+    }
+
+    const whereClause = whereParts.join(' AND ');
+
+    const totalRows = await postgres.query(
+      `SELECT COUNT(*)::int AS total FROM "condominio-bh".tb_espaco_log l WHERE ${whereClause}`,
+      { replacements, type: QueryTypes.SELECT }
+    );
+
+    const rows = await postgres.query(
+      `SELECT l.*
+         FROM "condominio-bh".tb_espaco_log l
+        WHERE ${whereClause}
+        ORDER BY l.created_at DESC, l.id DESC
+        LIMIT :limit OFFSET :offset`,
+      {
+        replacements: { ...replacements, limit: pageSize, offset: (page - 1) * pageSize },
+        type: QueryTypes.SELECT
+      }
+    );
+
+    const total = totalRows[0]?.total || 0;
+    const data = rows.map((row) => {
+      const dadosAnteriores = this._parseJsonLogEspaco(row.dados_anteriores);
+      const dadosNovos = this._parseJsonLogEspaco(row.dados_novos);
+      return {
+        id: this._toInt(row.id, null),
+        id_espaco: this._toInt(row.id_espaco, null),
+        nome_espaco: dadosNovos?.nome || dadosAnteriores?.nome || null,
+        acao: row.acao,
+        usuario: {
+          id: this._toInt(row.id_usuario, null),
+          nome: row.nome_usuario,
+          email: row.email_usuario,
+          perfil: row.perfil_usuario
+        },
+        campos_alterados: this._parseJsonLogEspaco(row.campos_alterados) || [],
+        dados_anteriores: dadosAnteriores,
+        dados_novos: dadosNovos,
+        created_at: row.created_at
+      };
+    });
+
+    return {
+      page,
+      pageSize,
+      total,
+      totalPages: total === 0 ? 0 : Math.ceil(total / pageSize),
+      data
+    };
+  }
+
+  _validarAcessoLogsEspaco(req, res) {
+    const idCondominioToken = this._toInt(req.id_condominio, null);
+    if (!idCondominioToken) {
+      res.status(403).json({ message: 'Token sem id_condominio para consultar logs de salas.' });
+      return null;
+    }
+    // Log expõe e-mail de quem editou — restrito a Admin (1), Síndico (3) e Sub-Síndico (4).
+    if (![1, 3, 4].includes(this._toInt(req.IdPerfil, null))) {
+      res.status(403).json({ message: 'Usuário sem permissão para consultar logs de salas.' });
+      return null;
+    }
+    return idCondominioToken;
+  }
+
+  _paginacaoLogsEspaco(req) {
+    const page = Math.max(this._toInt(req.query.page, 1), 1);
+    const pageSize = Math.min(Math.max(this._toInt(req.query.pageSize, 25), 1), 100);
+    return { page, pageSize };
+  }
+
+  // GET /espacos/:id/logs — histórico de uma sala (inclusive já excluída).
+  async listarLogsEspaco(req, res) {
+    try {
+      const idCondominio = this._validarAcessoLogsEspaco(req, res);
+      if (!idCondominio) return;
+
+      const idEspaco = this._toInt(req.params.id, null);
+      if (!idEspaco) {
+        return res.status(400).json({ message: 'Id inválido.' });
+      }
+
+      const resultado = await this._buscarLogsEspaco({
+        idCondominio,
+        filtros: { idEspaco },
+        ...this._paginacaoLogsEspaco(req)
+      });
+
+      return res.status(200).json(resultado);
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao listar logs da sala.',
+        detail: error.message
+      });
+    }
+  }
+
+  // GET /espacos/logs — histórico de todas as salas do condomínio, com filtros.
+  async listarLogsEspacosCondominio(req, res) {
+    try {
+      const idCondominio = this._validarAcessoLogsEspaco(req, res);
+      if (!idCondominio) return;
+
+      const resultado = await this._buscarLogsEspaco({
+        idCondominio,
+        filtros: {
+          idEspaco: this._toInt(req.query.id_espaco, null),
+          acao: this._normalizarTextoOuNull(req.query.acao),
+          idUsuario: this._toInt(req.query.id_usuario, null),
+          dataInicio: this._parseDataAgendamento(req.query.data_inicio),
+          dataFim: this._parseDataAgendamento(req.query.data_fim)
+        },
+        ...this._paginacaoLogsEspaco(req)
+      });
+
+      return res.status(200).json(resultado);
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao listar logs de salas.',
         detail: error.message
       });
     }
@@ -12855,6 +13171,7 @@ class CondominioController {
   }
 
   async excluirEspaco(req, res) {
+    let transaction = null;
     try {
       const idCondominioToken = this._toInt(req.id_condominio, null);
       if (!idCondominioToken) {
@@ -12868,25 +13185,42 @@ class CondominioController {
         return res.status(400).json({ message: 'Id inválido.' });
       }
 
+      transaction = await postgres.transaction();
       const deleted = await postgres.query(
         `DELETE FROM "condominio-bh".tb_espaco
           WHERE id = :id
             AND id_condominio = :id_condominio
         RETURNING *`,
         {
-          replacements: { id, id_condominio: idCondominioToken }
+          replacements: { id, id_condominio: idCondominioToken },
+          transaction
         }
       );
 
       if (!deleted[0] || deleted[0].length === 0) {
+        await transaction.rollback();
         return res.status(404).json({ message: 'Espaço não encontrado.' });
       }
+
+      await this._registrarLogEspaco({
+        req,
+        idCondominio: idCondominioToken,
+        idEspaco: id,
+        acao: 'exclusao',
+        anterior: deleted[0][0],
+        novo: null,
+        transaction
+      });
+      await transaction.commit();
 
       return res.status(200).json({
         message: 'Espaço excluído com sucesso.',
         data: deleted[0][0]
       });
     } catch (error) {
+      if (transaction && !transaction.finished) {
+        await transaction.rollback().catch(() => {});
+      }
       return res.status(500).json({
         message: 'Falha ao excluir espaço.',
         detail: error.message

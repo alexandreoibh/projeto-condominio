@@ -2581,6 +2581,57 @@ router.get(
 	controller.buscarEspacoPorId.bind(controller)
 );
 
+const validacoesPaginacaoLogsEspaco = [
+	query('page')
+		.optional()
+		.isInt({ min: 1 })
+		.withMessage('Parâmetro page deve ser numérico e maior que zero.'),
+	query('pageSize')
+		.optional()
+		.isInt({ min: 1, max: 100 })
+		.withMessage('Parâmetro pageSize deve estar entre 1 e 100.')
+];
+
+// Histórico de alterações de uma sala (tb_espaco_log) — Admin/Síndico/Sub-Síndico.
+router.get(
+	'/espacos/:id(\\d+)/logs',
+	auth,
+	[param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.'), ...validacoesPaginacaoLogsEspaco],
+	validate,
+	controller.listarLogsEspaco.bind(controller)
+);
+
+// Histórico de alterações de todas as salas do condomínio, com filtros.
+router.get(
+	'/espacos/logs',
+	auth,
+	[
+		...validacoesPaginacaoLogsEspaco,
+		query('id_espaco')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Parâmetro id_espaco deve ser numérico e maior que zero.'),
+		query('id_usuario')
+			.optional({ nullable: true, checkFalsy: true })
+			.isInt({ min: 1 })
+			.withMessage('Parâmetro id_usuario deve ser numérico e maior que zero.'),
+		query('acao')
+			.optional({ nullable: true, checkFalsy: true })
+			.isIn(['criacao', 'edicao', 'exclusao'])
+			.withMessage('Parâmetro acao deve ser criacao, edicao ou exclusao.'),
+		query('data_inicio')
+			.optional({ nullable: true, checkFalsy: true })
+			.custom((value) => /^\d{4}-\d{2}-\d{2}/.test(value) || /^\d{2}\/\d{2}\/\d{4}$/.test(value))
+			.withMessage('Parâmetro data_inicio deve estar em aaaa-mm-dd ou dd/mm/aaaa.'),
+		query('data_fim')
+			.optional({ nullable: true, checkFalsy: true })
+			.custom((value) => /^\d{4}-\d{2}-\d{2}/.test(value) || /^\d{2}\/\d{2}\/\d{4}$/.test(value))
+			.withMessage('Parâmetro data_fim deve estar em aaaa-mm-dd ou dd/mm/aaaa.')
+	],
+	validate,
+	controller.listarLogsEspacosCondominio.bind(controller)
+);
+
 router.get(
 	'/espacos',
 	auth,
