@@ -93,6 +93,12 @@ src/
 3. outro morador, proprietário antes, depois o cadastro mais antigo.
 
 Receita sem `id_unidade` usa o `r.id_usuario`. Sem candidato, registra a falha em `tb_fin_cobranca_bancaria`. O pagador escolhido é gravado em `tb_fin_cobranca_bancaria.id_usuario_pagador`/`pagador_nome` e exposto como `pagador_id`/`pagador_nome`.
+- **CPF de usuário:** obrigatório em `cadastrarUsuarioPorConvite` e `criarUsuario`, validado em `_validarCpfCadastro` (dígitos via `src/helpers/cpf.js`). Os erros saem como `{ message, error_code }`:
+  - `cpf_required`: 422;
+  - `cpf_invalid`: 422;
+  - `cpf_in_use`: 409.
+
+  A unicidade é **global**, não por condomínio, porque o login busca por e-mail OU CPF. Não existe mais "CPF técnico" gerado, mas usuários antigos ainda têm CPFs técnicos que não passam nos dígitos. Por isso o `editarUsuario` só valida o CPF quando ele muda; ausente, `null` ou igual ao atual mantém o valor. A duplicidade de e-mail responde 409 com `email_in_use`, exceto no convite, que mantém um 422 genérico.
 - Permissões de menu ficam na tabela `tb_sgw_perfil_menu`. O seed inicial está em `src/database/sql/seed-tb-sgw-perfil-menu-inicial.sql` (cobre só os perfis 1-5; Colaborador/54 foi adicionado depois, fora do seed).
 
 ## Padrão de rotas

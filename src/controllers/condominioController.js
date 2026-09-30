@@ -13,6 +13,7 @@ const { despacharWhatsapp } = require('../service/whatsappDispatchService');
 const { despacharTelegram } = require('../service/telegramDispatchService');
 const { waitUntil } = require('@vercel/functions');
 const { buildAvatarProxyUrl, buildConsumoImagemProxyUrl, buildDashboardImagemProxyUrl, getBlobReadToken, isAvatarProxyUrl, resolveBlobUrl } = require('../helpers/avatarProxy');
+const { normalizarCpf, cpfValido } = require('../helpers/cpf');
 
 const INVITE_TOKEN_SECRET =
   process.env.SERVICE_INVITE_TOKEN_SECRET ||
@@ -70,6 +71,38 @@ class CondominioController {
     if (raw === '') return null;
     if (raw === 'true' || raw === '1') return true;
     if (raw === 'false' || raw === '0') return false;
+    return null;
+  }
+
+  /**
+   * CPF obrigatório + dígitos verificadores + unicidade GLOBAL (o login busca
+   * por email OU cpf sem filtrar condomínio — ver loginController). Retorna
+   * null se válido, ou { status, message, error_code } para responder.
+   */
+  async _validarCpfCadastro({ cpfBruto, idUsuarioIgnorar = null }) {
+    const cpf = normalizarCpf(cpfBruto);
+    if (!cpf) {
+      return { status: 422, message: 'CPF é obrigatório.', error_code: 'cpf_required' };
+    }
+    if (!cpfValido(cpf)) {
+      return { status: 422, message: 'CPF inválido.', error_code: 'cpf_invalid' };
+    }
+
+    const existente = await postgres.query(
+      `SELECT id
+         FROM "condominio-bh"."tb-usuarios"
+        WHERE cpf = :cpf
+          AND (:id_ignorar::bigint IS NULL OR id <> :id_ignorar::bigint)
+        LIMIT 1`,
+      {
+        replacements: { cpf, id_ignorar: idUsuarioIgnorar },
+        type: QueryTypes.SELECT
+      }
+    );
+    if (existente && existente.length > 0) {
+      return { status: 409, message: 'Este CPF já está cadastrado.', error_code: 'cpf_in_use' };
+    }
+
     return null;
   }
 
@@ -7730,52 +7763,24 @@ class CondominioController {
         morador_principal
       } = req.body;
 
-      const cpfNumerico = String(cpf || '').replace(/\D/g, '');
-      let cpfLimpo = cpfNumerico || null;
-
-      if (!cpfLimpo) {
-        for (let tentativas = 0; tentativas < 8; tentativas += 1) {
-          const base = `${Date.now()}${Math.floor(Math.random() * 1000)}`;
-          const cpfGerado = base.replace(/\D/g, '').slice(-11).padStart(11, '0');
-
-          const existente = await postgres.query(
-            `SELECT id
-               FROM "condominio-bh"."tb-usuarios"
-              WHERE cpf = :cpf
-              LIMIT 1`,
-            {
-              replacements: { cpf: cpfGerado },
-              type: QueryTypes.SELECT
-            }
-          );
-
-          if (!existente || existente.length === 0) {
-            cpfLimpo = cpfGerado;
-            break;
-          }
-        }
+      // CPF obrigatório (sem mais "CPF técnico" gerado).
+      const erroCpf = await this._validarCpfCadastro({ cpfBruto: cpf });
+      if (erroCpf) {
+        return res.status(erroCpf.status).json({ message: erroCpf.message, error_code: erroCpf.error_code });
       }
-
-      if (!cpfLimpo) {
-        return res.status(500).json({
-          message: 'Falha ao criar usuário.',
-          detail: 'Não foi possível gerar CPF técnico para cadastro sem CPF.'
-        });
-      }
+      const cpfLimpo = normalizarCpf(cpf);
 
       const emailNormalizado = email ? String(email).trim().toLowerCase() : null;
 
       let duplicado = [];
-      if (cpfLimpo || emailNormalizado) {
+      if (emailNormalizado) {
         duplicado = await postgres.query(
-          `SELECT id, cpf, email
+          `SELECT id, email
              FROM "condominio-bh"."tb-usuarios"
-            WHERE (:cpf IS NOT NULL AND cpf = :cpf)
-               OR (:email IS NOT NULL AND lower(email) = :email)
+            WHERE lower(email) = :email
             LIMIT 1`,
           {
             replacements: {
-              cpf: cpfLimpo,
               email: emailNormalizado
             }
           }
@@ -7784,7 +7789,8 @@ class CondominioController {
 
       if (duplicado[0] && duplicado[0].length > 0) {
         return res.status(409).json({
-          message: 'Já existe usuário cadastrado com esse CPF ou e-mail.'
+          message: 'Já existe usuário cadastrado com esse e-mail.',
+          error_code: 'email_in_use'
         });
       }
 
@@ -8181,49 +8187,25 @@ class CondominioController {
       }
 
       const emailCadastro = emailBody || emailToken;
-      const cpfNumerico = String(req.body.cpf || '').replace(/\D/g, '');
-      let cpfLimpo = cpfNumerico || null;
 
-      if (!cpfLimpo) {
-        for (let tentativas = 0; tentativas < 8; tentativas += 1) {
-          const base = `${Date.now()}${Math.floor(Math.random() * 1000)}`;
-          const cpfGerado = base.replace(/\D/g, '').slice(-11).padStart(11, '0');
-
-          const existenteCpf = await postgres.query(
-            `SELECT id
-               FROM "condominio-bh"."tb-usuarios"
-              WHERE cpf = :cpf
-              LIMIT 1`,
-            {
-              replacements: { cpf: cpfGerado },
-              type: QueryTypes.SELECT
-            }
-          );
-
-          if (!existenteCpf || existenteCpf.length === 0) {
-            cpfLimpo = cpfGerado;
-            break;
-          }
-        }
+      // CPF obrigatório (sem mais "CPF técnico" gerado). Validado só depois
+      // do rate limit + token válido, para a rota pública não virar consulta
+      // de CPF cadastrado.
+      const erroCpf = await this._validarCpfCadastro({ cpfBruto: req.body.cpf });
+      if (erroCpf) {
+        return res.status(erroCpf.status).json({ message: erroCpf.message, error_code: erroCpf.error_code });
       }
-
-      if (!cpfLimpo) {
-        return res.status(422).json({
-          message: 'Dados inválidos para cadastro por convite.'
-        });
-      }
+      const cpfLimpo = normalizarCpf(req.body.cpf);
 
       let duplicado = [];
-      if (cpfLimpo || emailCadastro) {
+      if (emailCadastro) {
         duplicado = await postgres.query(
-          `SELECT id, cpf, email
+          `SELECT id, email
              FROM "condominio-bh"."tb-usuarios"
-            WHERE (:cpf IS NOT NULL AND cpf = :cpf)
-               OR (:email IS NOT NULL AND lower(email) = :email)
+            WHERE lower(email) = :email
             LIMIT 1`,
           {
             replacements: {
-              cpf: cpfLimpo,
               email: emailCadastro
             },
             type: QueryTypes.SELECT
@@ -8830,14 +8812,18 @@ class CondominioController {
 
       const nome = req.body.nome !== undefined ? req.body.nome : atual.nome;
       const sobrenome = req.body.sobrenome !== undefined ? req.body.sobrenome : atual.sobrenome;
-      const normalizarCpf = (value) => {
-        const cpfApenasDigitos = String(value || '').replace(/\D/g, '');
-        return cpfApenasDigitos || null;
-      };
+      // CPF ausente/null/"" mantém o atual. Só valida (dígitos + unicidade)
+      // quando MUDA: usuários antigos têm "CPF técnico" gerado que não passa
+      // nos dígitos verificadores, e o formulário costuma reenviá-lo inalterado.
       const cpfAtual = normalizarCpf(atual.cpf) ?? '';
-      const cpfInformado = req.body.cpf !== undefined ? normalizarCpf(req.body.cpf) : undefined;
-      const cpfNormalizado =
-        cpfInformado === undefined || cpfInformado === null ? cpfAtual : cpfInformado;
+      const cpfInformado = req.body.cpf !== undefined ? normalizarCpf(req.body.cpf) : null;
+      const cpfNormalizado = cpfInformado || cpfAtual;
+      if (cpfInformado && cpfInformado !== cpfAtual) {
+        const erroCpf = await this._validarCpfCadastro({ cpfBruto: cpfInformado, idUsuarioIgnorar: idUsuario });
+        if (erroCpf) {
+          return res.status(erroCpf.status).json({ message: erroCpf.message, error_code: erroCpf.error_code });
+        }
+      }
       const emailNormalizado =
         req.body.email !== undefined
           ? req.body.email
@@ -8846,20 +8832,16 @@ class CondominioController {
           : atual.email;
 
       let duplicado = [];
-      if (cpfNormalizado || emailNormalizado) {
+      if (emailNormalizado) {
         duplicado = await postgres.query(
-          `SELECT id, cpf, email
+          `SELECT id, email
              FROM "condominio-bh"."tb-usuarios"
             WHERE id <> :id_usuario
-              AND (
-                (:cpf IS NOT NULL AND cpf = :cpf)
-                OR (:email IS NOT NULL AND lower(email) = :email)
-              )
+              AND lower(email) = :email
             LIMIT 1`,
           {
             replacements: {
               id_usuario: idUsuario,
-              cpf: cpfNormalizado,
               email: emailNormalizado
             },
             type: QueryTypes.SELECT
@@ -8869,7 +8851,8 @@ class CondominioController {
 
       if (duplicado && duplicado.length > 0) {
         return res.status(409).json({
-          message: 'Já existe usuário cadastrado com esse CPF ou e-mail.'
+          message: 'Já existe usuário cadastrado com esse e-mail.',
+          error_code: 'email_in_use'
         });
       }
 

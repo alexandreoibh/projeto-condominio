@@ -2057,15 +2057,12 @@ router.post(
 			.optional({ nullable: true, checkFalsy: true })
 			.isEmail()
 			.withMessage('Campo email inválido.'),
+		// Obrigatoriedade, dígitos verificadores e unicidade ficam no controller
+		// (_validarCpfCadastro), que responde { message, error_code }.
 		body('cpf')
 			.optional({ nullable: true, checkFalsy: true })
-			.custom((value) => {
-				const cpf = String(value).replace(/\D/g, '');
-				if (cpf.length !== 11) {
-					throw new Error('CPF deve conter 11 dígitos.');
-				}
-				return true;
-			}),
+			.isLength({ max: 20 })
+			.withMessage('CPF inválido.'),
 		body('apartamento')
 			.optional({ nullable: true, checkFalsy: true })
 			.isLength({ max: 50 })
@@ -2105,15 +2102,12 @@ router.post(
 			.bail()
 			.isLength({ max: 120 })
 			.withMessage('Campo nome deve ter no máximo 120 caracteres.'),
+		// Obrigatoriedade, dígitos verificadores e unicidade ficam no controller
+		// (_validarCpfCadastro), que responde { message, error_code }.
 		body('cpf')
 			.optional({ nullable: true, checkFalsy: true })
-			.custom((value) => {
-				const cpf = String(value).replace(/\D/g, '');
-				if (cpf.length !== 11) {
-					throw new Error('CPF deve conter 11 dígitos.');
-				}
-				return true;
-			}),
+			.isLength({ max: 20 })
+			.withMessage('CPF inválido.'),
 		body('tipo_morador')
 			.optional({ nullable: true, checkFalsy: true })
 			.isLength({ max: 100 })
@@ -2207,15 +2201,12 @@ router.put(
 			.optional({ nullable: true, checkFalsy: true })
 			.isLength({ max: 120 })
 			.withMessage('Campo nome deve ter no máximo 120 caracteres.'),
+		// Obrigatoriedade, dígitos verificadores e unicidade ficam no controller
+		// (_validarCpfCadastro), que responde { message, error_code }.
 		body('cpf')
 			.optional({ nullable: true, checkFalsy: true })
-			.custom((value) => {
-				const cpf = String(value).replace(/\D/g, '');
-				if (cpf.length !== 11) {
-					throw new Error('CPF deve conter 11 dígitos.');
-				}
-				return true;
-			}),
+			.isLength({ max: 20 })
+			.withMessage('CPF inválido.'),
 		body('tipo_morador')
 			.optional({ nullable: true, checkFalsy: true })
 			.isLength({ max: 100 })
@@ -2307,15 +2298,12 @@ router.patch(
 			.optional({ nullable: true, checkFalsy: true })
 			.isLength({ max: 120 })
 			.withMessage('Campo nome deve ter no máximo 120 caracteres.'),
+		// Obrigatoriedade, dígitos verificadores e unicidade ficam no controller
+		// (_validarCpfCadastro), que responde { message, error_code }.
 		body('cpf')
 			.optional({ nullable: true, checkFalsy: true })
-			.custom((value) => {
-				const cpf = String(value).replace(/\D/g, '');
-				if (cpf.length !== 11) {
-					throw new Error('CPF deve conter 11 dígitos.');
-				}
-				return true;
-			}),
+			.isLength({ max: 20 })
+			.withMessage('CPF inválido.'),
 		body('tipo_morador')
 			.optional({ nullable: true, checkFalsy: true })
 			.isLength({ max: 100 })
