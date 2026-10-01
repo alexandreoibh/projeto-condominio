@@ -9,6 +9,24 @@ const postgres = require('../database/postgres');
 const bankingProviderRegistry = require('../integrations/bankingProviderRegistry');
 const webhookLogRepository = require('../integrations/shared/webhookLogRepository');
 const cobrancaBancariaRepository = require('../integrations/shared/cobrancaBancariaRepository');
+const cronQueueKeyGuard = require('../helpers/cronQueueKeyGuard');
+const { reconciliarCobrancasBancarias } = require('../task/reconciliarCobrancasBancarias');
+
+/**
+ * Rede de segurança do webhook: reconsulta no banco toda cobrança "emitida"
+ * há mais de 30 min e aplica a situação real. Precisa ser chamada por um
+ * cron externo (header X-Cron-Queue-Key) — o node-cron de
+ * reconciliarCobrancasBancarias.js não roda na Vercel serverless.
+ * Declarada ANTES de '/:provider' para não ser capturada por ela.
+ */
+router.post('/reconciliar', cronQueueKeyGuard, async (req, res) => {
+  try {
+    const resumo = await reconciliarCobrancasBancarias();
+    return res.status(200).json(resumo);
+  } catch (err) {
+    return res.status(500).json({ message: 'Falha na reconciliação de cobranças.', detail: err.message });
+  }
+});
 
 /**
  * Rota pública (sem middleware `auth`) — é chamada pelo banco, não por um

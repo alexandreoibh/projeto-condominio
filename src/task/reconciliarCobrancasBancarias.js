@@ -21,7 +21,13 @@ function _normalizarSituacaoInter(situacaoInter) {
   return 'em_aberto';
 }
 
+/**
+ * @returns {Promise<{verificadas: number, atualizadas: number, erros: number}>}
+ *   Resumo para o endpoint POST /api/webhook/bancario/reconciliar (o
+ *   node-cron abaixo só roda em processo contínuo — não na Vercel serverless).
+ */
 async function reconciliarCobrancasBancarias() {
+  const resumo = { verificadas: 0, atualizadas: 0, erros: 0 };
   let cobrancasPendentes;
   try {
     cobrancasPendentes = await postgres.query(
@@ -36,12 +42,12 @@ async function reconciliarCobrancasBancarias() {
     );
   } catch (err) {
     console.error('[reconciliarCobrancasBancarias] Erro ao buscar cobranças pendentes:', err?.message);
-    return;
+    throw err;
   }
 
   if (!cobrancasPendentes || cobrancasPendentes.length === 0) {
     console.log('[reconciliarCobrancasBancarias] Nenhuma cobrança pendente de reconciliação.');
-    return;
+    return resumo;
   }
 
   for (const linha of cobrancasPendentes) {
@@ -57,6 +63,7 @@ async function reconciliarCobrancasBancarias() {
       situacao: linha.situacao,
     };
 
+    resumo.verificadas += 1;
     try {
       const provider = bankingProviderRegistry.getProvider(cobranca.provider);
       const detalhado = await provider.consultarCobranca(linha, linha.id_externo);
@@ -64,12 +71,16 @@ async function reconciliarCobrancasBancarias() {
 
       const atualizou = await cobrancaBancariaRepository.aplicarSituacao(cobranca, situacaoNormalizada);
       if (atualizou) {
+        resumo.atualizadas += 1;
         console.log(`[reconciliarCobrancasBancarias] Cobrança id=${cobranca.id} (receita id=${cobranca.id_receita}) atualizada para "${situacaoNormalizada}" via reconciliação ativa.`);
       }
     } catch (err) {
+      resumo.erros += 1;
       console.error(`[reconciliarCobrancasBancarias] Erro ao reconciliar cobrança id=${cobranca.id}:`, err?.message);
     }
   }
+
+  return resumo;
 }
 
 // Executa a cada hora, no minuto 15 (evita coincidir exatamente com outros

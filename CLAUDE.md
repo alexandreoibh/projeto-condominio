@@ -177,6 +177,9 @@ Três Maps no `CondominioController` sobrevivem apenas enquanto o processo estiv
   - **Boas-vindas automáticas:** todo cadastro novo (`criarUsuario` e `cadastrarUsuarioPorConvite`) de perfil 2/3/4 com e-mail enfileira um e-mail (`modulo='boas_vindas'`, texto em `MENSAGEM_BOAS_VINDAS_MORADOR`) via `_enfileirarBoasVindasMorador`.
     - É best effort: uma falha nesse enfileiramento não quebra o cadastro.
     - No convite, o remetente é quem gerou o convite (`id_usuario_criacao` no JWT de `gerarConviteMorador`).
+- **Webhook bancário** (`POST /api/webhook/bancario/:provider`, rota pública).
+  - **Cadastro no banco:** o webhook **não é cadastrado automaticamente**. Cada conta Inter (sandbox e produção) precisa de `PUT /cobranca/v3/cobrancas/webhook` com `webhookUrl = https://back-projeto-condominio.vercel.app/api/webhook/bancario/inter`. Produção (integração id 1, condomínio 282) foi cadastrada em 01/10/2026. Sem esse cadastro, nenhum pagamento é confirmado automaticamente.
+  - **Rede de segurança:** `POST /api/webhook/bancario/reconciliar` (header `X-Cron-Queue-Key`, mesmo `cronQueueKeyGuard` da fila de mensagens) reconsulta no banco as cobranças `emitida` com mais de 30 min. Precisa de **cron externo**, porque o `node-cron` de `src/task/reconciliarCobrancasBancarias.js` não roda na Vercel serverless.
 - **Multa/juros no boleto (Inter)** — `tb_fin_integracao_bancaria.multa_percentual` / `juros_mora_percentual_mes` (numeric(5,2), migration `20260929000002`).
   - **Onde são definidos:** obrigatórios no `POST /api/condominio/financeiro/integracao-bancaria/inter/conectar`, e editáveis via `PUT /api/condominio/financeiro/integracao-bancaria/:id` (só esses dois campos; Admin/Síndico/Sub-Síndico).
   - **Validação:** 0–100 com até 2 casas. Valores acima do limite legal (2% / 1% a.m.) são aceitos, mas geram `console.warn('[auditoria-integracao-bancaria] ...')`.
