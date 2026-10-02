@@ -2989,8 +2989,12 @@ class FinanceiroController {
       if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
 
       const periodo = this._periodoDaQuery(req) || this._periodoAtual();
+      const somenteResumo = ['1', 'true'].includes(String(req.query.resumo || '').toLowerCase());
 
-      // Moradores só veem balancetes publicados
+      // Não-gestão (Morador, Portaria, Colaborador) só vê o balancete completo
+      // de mês publicado. Com resumo=1 (Home "Saúde Financeira"), mês não
+      // publicado devolve só saldos + totais do ano — sem listas de
+      // receitas/despesas, que continuam restritas à Prestação de Contas.
       if (!this._isGestor(req)) {
         const publicado = await postgres.query(
           `SELECT 1
@@ -3000,7 +3004,20 @@ class FinanceiroController {
               AND publicado = true`,
           { replacements: { id_condominio: idCondominio, periodo }, type: QueryTypes.SELECT }
         );
-        if (!publicado[0]) return res.status(404).json({ message: 'Balancete não publicado para este período.' });
+        if (!publicado[0]) {
+          if (!somenteResumo) {
+            return res.status(404).json({ message: 'Balancete não publicado para este período.', publicado: false });
+          }
+          const completo = await this._montarBalanceteCompleto(idCondominio, periodo);
+          return res.status(200).json({
+            periodo: completo.periodo,
+            saldo_caixa: completo.saldo_caixa,
+            saldo_final: completo.saldo_final,
+            saldo_caixa_mes_anterior: completo.saldo_caixa_mes_anterior,
+            totais_ano: completo.totais_ano,
+            publicado: false,
+          });
+        }
       }
 
       const resultado = await this._montarBalanceteCompleto(idCondominio, periodo);
@@ -3128,7 +3145,9 @@ class FinanceiroController {
       const totalPagoAcumulado = Number(pagoAcumulado[0]?.total || 0);
       const totalRecebidoAcumuladoAnterior = Number(recebidoAcumuladoAnterior[0]?.total || 0);
       const totalPagoAcumuladoAnterior = Number(pagoAcumuladoAnterior[0]?.total || 0);
-      const saldoCaixaMesAnterior = totalRecebidoAcumuladoAnterior - totalPagoAcumuladoAnterior;
+      // Arredonda em centavos: a subtração em float gerava 7515.779999999999.
+      const arredondarCentavos = (valor) => Math.round(valor * 100) / 100;
+      const saldoCaixaMesAnterior = arredondarCentavos(totalRecebidoAcumuladoAnterior - totalPagoAcumuladoAnterior);
 
       const balanceteRow = balancete[0] || null;
       const ultimaAlteracao = ultimaAlteracaoRows[0]?.ultima_alteracao || null;
@@ -3145,9 +3164,15 @@ class FinanceiroController {
           }
         : null;
 
+      const saldoCaixa = arredondarCentavos(totalRecebidoAcumulado - totalPagoAcumulado);
+
       return {
         periodo,
-        saldo_caixa: totalRecebidoAcumulado - totalPagoAcumulado,
+        publicado: balanceteRow?.publicado === true,
+        saldo_caixa: saldoCaixa,
+        // Caixa acumulado até o fim da competência — mesmo valor de saldo_caixa
+        // (nome usado pela Home "Saúde Financeira" do front).
+        saldo_final: saldoCaixa,
         saldo_caixa_mes_anterior: saldoCaixaMesAnterior,
         balancete: balanceteComFlag,
         receitas,

@@ -468,6 +468,7 @@ router.get(
   [
     query('periodo').optional({ nullable: true, checkFalsy: true }).matches(/^\d{4}-\d{2}(-\d{2})?$/).withMessage('periodo deve estar no formato YYYY-MM ou YYYY-MM-DD.'),
     query('competencia').optional({ nullable: true, checkFalsy: true }).matches(/^\d{4}-\d{2}(-\d{2})?$/).withMessage('competencia deve estar no formato YYYY-MM ou YYYY-MM-DD.'),
+    query('resumo').optional({ nullable: true, checkFalsy: true }).isIn(['0', '1', 'true', 'false']).withMessage('resumo deve ser 0 ou 1.'),
   ],
   validate,
   controller.getBalancete.bind(controller)
