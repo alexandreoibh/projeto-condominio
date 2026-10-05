@@ -308,6 +308,7 @@ class Login {
             tu.last_login_at,
             tu.created_at,
             tu.updated_at,
+            tcu.baixar_boleto AS unidade_baixar_boleto,
             tcu.id AS id_unidade
            FROM "condominio-bh"."tb-usuarios" tu
            LEFT JOIN "condominio-bh".tb_sgw_perfil p
@@ -450,7 +451,13 @@ class Login {
           bloco: result.bloco || null,
           id_unidade: result.id_unidade || null,
           path_avatar: result.path_avatar || null,
-          avatar_url: avatarUrl
+          avatar_url: avatarUrl,
+          // Boleto digital da UNIDADE (tb_condominios_unidades); null = unidade
+          // ainda não respondeu (ou usuário sem unidade).
+          unidade_baixar_boleto:
+            result.unidade_baixar_boleto === null || result.unidade_baixar_boleto === undefined
+              ? null
+              : Boolean(result.unidade_baixar_boleto)
         },
         perfil: {
           id: result.tipo_perfil_id || null,

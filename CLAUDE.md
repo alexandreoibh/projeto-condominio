@@ -93,6 +93,15 @@ src/
 3. outro morador, proprietário antes, depois o cadastro mais antigo.
 
 Receita sem `id_unidade` usa o `r.id_usuario`. Sem candidato, registra a falha em `tb_fin_cobranca_bancaria`. O pagador escolhido é gravado em `tb_fin_cobranca_bancaria.id_usuario_pagador`/`pagador_nome` e exposto como `pagador_id`/`pagador_nome`.
+- **Boleto digital: `tb_condominios_unidades.baixar_boleto`** (bool NULL). A preferência é da **unidade**, não do usuário (a coluna foi removida de `tb-usuarios`). `NULL` significa que a unidade ainda não respondeu, e é isso que faz o front exibir a pergunta, por isso as leituras **não** usam `COALESCE`. `true` = só digital, `false` = quer o impresso.
+  - **Endpoint do próprio usuário** (`/api/condominio/usuarios/me/baixar-boleto`):
+    - O `GET` devolve `{ id_unidade, baixar_boleto, cpf, cpf_valido, integracao_bancaria_ativa, exibir_pergunta }`. `exibir_pergunta` = integração ativa **e** ((tem unidade **e** ainda não respondeu) **ou** CPF inválido).
+    - O `PATCH` grava `baixar_boleto` na unidade do usuário e/ou o **CPF do próprio usuário** (ao menos um, na mesma transação).
+    - Qualquer morador vinculado à unidade pode responder. Usuário sem unidade que envia `baixar_boleto` recebe 422 `sem_unidade`. O CPF só é validado se mudar, pela mesma regra do PUT de usuário.
+  - **Síndico/admin:** `PATCH /api/condominio/unidades/:id/baixar-boleto` com `true`, `false` ou `null` (perfis 1/3/4).
+  - **Leituras:**
+    - Nas listagens e no GET de usuário, o valor vem como `unidade_baixar_boleto` (subquery por `id_unidade_predio`). No login, vem em `usuario.unidade_baixar_boleto`.
+    - Nas três leituras de condomínio (`_buscarCondominioComUnidades`, `listarCondominios`, `buscarCondominioPorId`), cada objeto de unidade traz `baixar_boleto`.
 - **CPF de usuário:** obrigatório em `cadastrarUsuarioPorConvite` e `criarUsuario`, validado em `_validarCpfCadastro` (dígitos via `src/helpers/cpf.js`). Os erros saem como `{ message, error_code }`:
   - `cpf_required`: 422;
   - `cpf_invalid`: 422;

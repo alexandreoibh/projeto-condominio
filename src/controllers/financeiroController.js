@@ -741,6 +741,22 @@ class FinanceiroController {
     };
   }
 
+  /**
+   * Nome do pagador enviado ao banco com a unidade no fim — ex.:
+   * "Alexandre Silva - Torre 1 Ap 403". Aparece no PDF, no extrato do banco
+   * e no comprovante Pix, facilitando a conciliação pelo síndico. O NOME é
+   * truncado (nunca o sufixo) para caber no limite do provider (Inter v3:
+   * pagador.nome até 100 caracteres). Sem bloco/unidade, devolve o nome intacto.
+   */
+  _montarNomePagadorBoleto(nome, { unidade_bloco, unidade_texto, rotuloBloco }, limite = 100) {
+    const nomeLimpo = String(nome || '').trim();
+    if (!unidade_bloco || !unidade_texto) return nomeLimpo.slice(0, limite);
+
+    const sufixo = ` - ${rotuloBloco || 'Bloco'} ${unidade_bloco} Ap ${unidade_texto}`;
+    const espacoNome = Math.max(limite - sufixo.length, 0);
+    return `${nomeLimpo.slice(0, espacoNome).trimEnd()}${sufixo}`;
+  }
+
   async _emitirBoletoBancarioParaReceita({ idCondominio, idReceita, idUsuarioSolicitante }) {
     const TIMEOUT_MS = 8000;
 
@@ -757,7 +773,8 @@ class FinanceiroController {
               tcu.bloco AS unidade_bloco, tcu.unidades_bloco AS unidade_texto,
               c.cep AS condominio_cep, c.logradrouro AS condominio_logradouro,
               c.numero AS condominio_numero, c.bairro AS condominio_bairro,
-              c.cidade AS condominio_cidade, c.uf AS condominio_uf
+              c.cidade AS condominio_cidade, c.uf AS condominio_uf,
+              c.escrita_bloco AS condominio_escrita_bloco
          FROM "condominio-bh".tb_fin_receitas r
          LEFT JOIN "condominio-bh"."tb-usuarios" tu ON tu.id = r.id_usuario
          LEFT JOIN "condominio-bh".tb_condominios_unidades tcu
@@ -833,8 +850,10 @@ class FinanceiroController {
 
     const valorTotal = Number(receita.valor || 0) + Number(receita.valor_fundo_reserva || 0);
     const cpfLimpo = String(pagador.cpf).replace(/\D/g, '');
+    // Rótulo do bloco conforme o condomínio ("Torre", "Bloco", "Prédio"...).
+    const rotuloBloco = String(receita.condominio_escrita_bloco || '').trim() || 'Bloco';
     const complementoUnidade = [
-      receita.unidade_bloco ? `Bloco ${receita.unidade_bloco}` : null,
+      receita.unidade_bloco ? `${rotuloBloco} ${receita.unidade_bloco}` : null,
       receita.unidade_texto ? `Apto ${receita.unidade_texto}` : null,
     ].filter(Boolean).join(', ');
 
@@ -846,7 +865,8 @@ class FinanceiroController {
       pagador: {
         cpfCnpj: cpfLimpo,
         tipoPessoa: cpfLimpo.length > 11 ? 'JURIDICA' : 'FISICA',
-        nome: pagador.nome || 'Morador',
+        // Só no payload enviado ao banco — pagador_nome gravado/retornado segue limpo.
+        nome: this._montarNomePagadorBoleto(pagador.nome || 'Morador', { ...receita, rotuloBloco }),
         endereco: [receita.condominio_logradouro, receita.condominio_numero].filter(Boolean).join(', '),
         complemento: complementoUnidade || undefined,
         bairro: receita.condominio_bairro || 'Não informado',

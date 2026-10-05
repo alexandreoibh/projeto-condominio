@@ -2371,6 +2371,51 @@ router.patch(
 	controller.editarUsuario.bind(controller)
 );
 
+// Boleto digital da UNIDADE do usuário logado (tb_condominios_unidades.baixar_boleto)
+// + confirmação do CPF do próprio usuário. GET devolve também se há integração
+// bancária ativa e se a pergunta deve ser exibida.
+router.get(
+	'/usuarios/me/baixar-boleto',
+	auth,
+	controller.buscarPreferenciaBaixarBoleto.bind(controller)
+);
+
+router.patch(
+	'/usuarios/me/baixar-boleto',
+	auth,
+	[
+		// Os dois são opcionais, mas ao menos um precisa vir (checado no controller).
+		body('baixar_boleto')
+			.optional({ nullable: true })
+			.isBoolean()
+			.withMessage('Campo baixar_boleto deve ser booleano.'),
+		// Dígitos verificadores e unicidade ficam em _validarCpfCadastro.
+		body('cpf')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 20 })
+			.withMessage('CPF inválido.')
+	],
+	validate,
+	controller.atualizarPreferenciaBaixarBoleto.bind(controller)
+);
+
+// Síndico/admin define o boleto digital de uma unidade (null limpa a resposta).
+router.patch(
+	'/unidades/:id(\\d+)/baixar-boleto',
+	auth,
+	[
+		param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.'),
+		body('baixar_boleto')
+			.exists()
+			.withMessage('Campo baixar_boleto é obrigatório (true, false ou null).')
+			.bail()
+			.custom((value) => value === null || typeof value === 'boolean' || ['true', 'false'].includes(String(value)))
+			.withMessage('Campo baixar_boleto deve ser true, false ou null.')
+	],
+	validate,
+	controller.atualizarBaixarBoletoUnidade.bind(controller)
+);
+
 router.post(
 	'/espacos',
 	auth,

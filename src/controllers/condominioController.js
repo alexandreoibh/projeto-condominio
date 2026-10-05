@@ -737,7 +737,7 @@ class CondominioController {
     }
 
     const unidades = await postgres.query(
-      `SELECT id, bloco, unidades_bloco AS unidade
+      `SELECT id, bloco, unidades_bloco AS unidade, baixar_boleto
          FROM "condominio-bh".tb_condominios_unidades
         WHERE id_condominio = :id_condominio
         ORDER BY bloco ASC, unidades_bloco ASC`,
@@ -3555,7 +3555,7 @@ class CondominioController {
                          )
                        )
                   FROM (
-                    SELECT cu.id, cu.bloco, cu.unidades_bloco AS unidade
+                    SELECT cu.id, cu.bloco, cu.unidades_bloco AS unidade, cu.baixar_boleto
                       FROM "condominio-bh".tb_condominios_unidades cu
                      WHERE cu.id_condominio = c.id
                   ) unidade_row
@@ -3621,7 +3621,7 @@ class CondominioController {
                          )
                        )
                   FROM (
-                    SELECT cu.id, cu.bloco, cu.unidades_bloco AS unidade
+                    SELECT cu.id, cu.bloco, cu.unidades_bloco AS unidade, cu.baixar_boleto
                       FROM "condominio-bh".tb_condominios_unidades cu
                      WHERE cu.id_condominio = c.id
                   ) unidade_row
@@ -6707,6 +6707,7 @@ class CondominioController {
             tu.mensagem_whatsapp,
             tu.mensagem_telegram,
             COALESCE(tu.morador_principal, false) AS morador_principal,
+            (SELECT cu_bb.baixar_boleto FROM "condominio-bh".tb_condominios_unidades cu_bb WHERE cu_bb.id = tu.id_unidade_predio) AS unidade_baixar_boleto,
             tu.created_at,
             tu.updated_at,
             (
@@ -6886,6 +6887,7 @@ class CondominioController {
             tu.mensagem_whatsapp,
             tu.mensagem_telegram,
             COALESCE(tu.morador_principal, false) AS morador_principal,
+            (SELECT cu_bb.baixar_boleto FROM "condominio-bh".tb_condominios_unidades cu_bb WHERE cu_bb.id = tu.id_unidade_predio) AS unidade_baixar_boleto,
             tu.created_at,
             tu.updated_at
           FROM "condominio-bh"."tb-usuarios" tu
@@ -7638,6 +7640,7 @@ class CondominioController {
             tu.mensagem_whatsapp,
             tu.mensagem_telegram,
             COALESCE(tu.morador_principal, false) AS morador_principal,
+            (SELECT cu_bb.baixar_boleto FROM "condominio-bh".tb_condominios_unidades cu_bb WHERE cu_bb.id = tu.id_unidade_predio) AS unidade_baixar_boleto,
             tu.created_at,
             tu.updated_at
           FROM "condominio-bh"."tb-usuarios" tu
@@ -7674,7 +7677,8 @@ class CondominioController {
                 tu.tipo,
                 tu.mensagem_whatsapp,
                 tu.mensagem_telegram,
-                COALESCE(tu.morador_principal, false) AS morador_principal
+                COALESCE(tu.morador_principal, false) AS morador_principal,
+                (SELECT cu_bb.baixar_boleto FROM "condominio-bh".tb_condominios_unidades cu_bb WHERE cu_bb.id = tu.id_unidade_predio) AS unidade_baixar_boleto
               FROM "condominio-bh"."tb-usuarios" tu
               LEFT JOIN "condominio-bh"."tb-condominios" tc
                 ON tc.id = tu.id_condominio
@@ -7778,6 +7782,7 @@ class CondominioController {
     tu.mensagem_whatsapp,
     tu.mensagem_telegram,
     COALESCE(tu.morador_principal, false) AS morador_principal,
+    (SELECT cu_bb.baixar_boleto FROM "condominio-bh".tb_condominios_unidades cu_bb WHERE cu_bb.id = tu.id_unidade_predio) AS unidade_baixar_boleto,
     tu.created_at,
     tu.updated_at,
     tu.apartamento::int AS apartamento_ordem
@@ -9182,6 +9187,223 @@ class CondominioController {
     }
   }
 
+  /**
+   * Boleto digital (tb_condominios_unidades.baixar_boleto — preferência da
+   * UNIDADE, não do usuário): NULL = unidade ainda não respondeu, true = aceita
+   * só o digital, false = quer o boleto físico impresso. Qualquer morador
+   * vinculado à unidade (id_unidade_predio) pode responder; vale para todos.
+   * No mesmo serviço o usuário confirma o PRÓPRIO CPF (tb-usuarios.cpf), já
+   * que o boleto é registrado no CPF. A pergunta só faz sentido com integração
+   * bancária ativa — mesma condição usada na emissão em financeiroController.
+   */
+  async buscarPreferenciaBaixarBoleto(req, res) {
+    try {
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      const idUsuarioToken = this._toInt(req.idcliente, null);
+      if (!idCondominioToken || !idUsuarioToken) {
+        return res.status(403).json({ message: 'Token sem id_condominio ou usuário.' });
+      }
+
+      const [usuarioRows, integracaoRows] = await Promise.all([
+        postgres.query(
+          `SELECT tu.cpf, cu.id AS id_unidade, cu.baixar_boleto
+             FROM "condominio-bh"."tb-usuarios" tu
+             LEFT JOIN "condominio-bh".tb_condominios_unidades cu
+               ON cu.id = tu.id_unidade_predio
+              AND cu.id_condominio = tu.id_condominio
+            WHERE tu.id = :id AND tu.id_condominio = :id_condominio
+            LIMIT 1`,
+          { replacements: { id: idUsuarioToken, id_condominio: idCondominioToken }, type: QueryTypes.SELECT }
+        ),
+        postgres.query(
+          `SELECT 1
+             FROM "condominio-bh".tb_fin_integracao_bancaria
+            WHERE id_condominio = :id_condominio
+              AND ativo = true
+              AND status_conexao = 'ativo'
+            LIMIT 1`,
+          { replacements: { id_condominio: idCondominioToken }, type: QueryTypes.SELECT }
+        )
+      ]);
+
+      if (!usuarioRows || usuarioRows.length === 0) {
+        return res.status(404).json({ message: 'Usuário não encontrado para este condomínio.' });
+      }
+
+      const idUnidade = this._toInt(usuarioRows[0].id_unidade, null);
+      const baixarBoleto = usuarioRows[0].baixar_boleto;
+      const unidadeNaoRespondeu = Boolean(idUnidade) && (baixarBoleto === null || baixarBoleto === undefined);
+      const cpf = normalizarCpf(usuarioRows[0].cpf);
+      // O boleto é registrado no CPF — usuários antigos podem ter "CPF técnico"
+      // gerado (não passa nos dígitos), então a tela também pede correção.
+      const cpfOk = cpfValido(cpf);
+      const integracaoAtiva = Boolean(integracaoRows && integracaoRows.length > 0);
+
+      return res.status(200).json({
+        id_unidade: idUnidade,
+        baixar_boleto: baixarBoleto === null || baixarBoleto === undefined ? null : Boolean(baixarBoleto),
+        cpf,
+        cpf_valido: cpfOk,
+        integracao_bancaria_ativa: integracaoAtiva,
+        exibir_pergunta: integracaoAtiva && (unidadeNaoRespondeu || !cpfOk)
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao consultar preferência de boleto digital.',
+        detail: error.message
+      });
+    }
+  }
+
+  async atualizarPreferenciaBaixarBoleto(req, res) {
+    let transaction = null;
+    try {
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      const idUsuarioToken = this._toInt(req.idcliente, null);
+      if (!idCondominioToken || !idUsuarioToken) {
+        return res.status(403).json({ message: 'Token sem id_condominio ou usuário.' });
+      }
+
+      const informouBaixarBoleto = req.body.baixar_boleto !== undefined && req.body.baixar_boleto !== null;
+      const informouCpf = normalizarCpf(req.body.cpf) !== null;
+      if (!informouBaixarBoleto && !informouCpf) {
+        return res.status(422).json({ message: 'Informe baixar_boleto e/ou cpf.' });
+      }
+
+      const valorBaixarBoleto = informouBaixarBoleto ? this._toBoolOrNull(req.body.baixar_boleto) : null;
+      if (informouBaixarBoleto && valorBaixarBoleto === null) {
+        return res.status(422).json({ message: 'Campo baixar_boleto deve ser booleano.' });
+      }
+
+      const atualRows = await postgres.query(
+        `SELECT tu.cpf, cu.id AS id_unidade, cu.baixar_boleto
+           FROM "condominio-bh"."tb-usuarios" tu
+           LEFT JOIN "condominio-bh".tb_condominios_unidades cu
+             ON cu.id = tu.id_unidade_predio
+            AND cu.id_condominio = tu.id_condominio
+          WHERE tu.id = :id AND tu.id_condominio = :id_condominio
+          LIMIT 1`,
+        { replacements: { id: idUsuarioToken, id_condominio: idCondominioToken }, type: QueryTypes.SELECT }
+      );
+      if (!atualRows || atualRows.length === 0) {
+        return res.status(404).json({ message: 'Usuário não encontrado para este condomínio.' });
+      }
+
+      const idUnidade = this._toInt(atualRows[0].id_unidade, null);
+      if (informouBaixarBoleto && !idUnidade) {
+        return res.status(422).json({
+          message: 'Usuário sem unidade vinculada para definir o boleto digital.',
+          error_code: 'sem_unidade'
+        });
+      }
+
+      // Mesma regra do PUT de usuário: CPF igual ao atual não é revalidado
+      // (preserva CPF técnico legado); diferente valida dígitos + unicidade.
+      const cpfNovo = informouCpf ? normalizarCpf(req.body.cpf) : null;
+      const cpfMudou = informouCpf && cpfNovo !== normalizarCpf(atualRows[0].cpf);
+      if (cpfMudou) {
+        const erroCpf = await this._validarCpfCadastro({ cpfBruto: cpfNovo, idUsuarioIgnorar: idUsuarioToken });
+        if (erroCpf) {
+          return res.status(erroCpf.status).json({ message: erroCpf.message, error_code: erroCpf.error_code });
+        }
+      }
+
+      // CPF vai no usuário; baixar_boleto vai na unidade — mesma transação.
+      transaction = await postgres.transaction();
+
+      let cpfFinal = normalizarCpf(atualRows[0].cpf);
+      if (cpfMudou) {
+        await postgres.query(
+          `UPDATE "condominio-bh"."tb-usuarios"
+              SET cpf = :cpf, updated_at = now()
+            WHERE id = :id AND id_condominio = :id_condominio`,
+          { replacements: { id: idUsuarioToken, id_condominio: idCondominioToken, cpf: cpfNovo }, transaction }
+        );
+        cpfFinal = cpfNovo;
+      }
+
+      let baixarBoletoFinal = atualRows[0].baixar_boleto;
+      if (informouBaixarBoleto) {
+        await postgres.query(
+          `UPDATE "condominio-bh".tb_condominios_unidades
+              SET baixar_boleto = :baixar_boleto
+            WHERE id = :id_unidade AND id_condominio = :id_condominio`,
+          {
+            replacements: { id_unidade: idUnidade, id_condominio: idCondominioToken, baixar_boleto: valorBaixarBoleto },
+            transaction
+          }
+        );
+        baixarBoletoFinal = valorBaixarBoleto;
+      }
+
+      await transaction.commit();
+
+      return res.status(200).json({
+        message: 'Preferência de boleto digital atualizada com sucesso.',
+        data: {
+          id_usuario: idUsuarioToken,
+          cpf: cpfFinal,
+          id_unidade: idUnidade,
+          baixar_boleto: baixarBoletoFinal === null || baixarBoletoFinal === undefined ? null : Boolean(baixarBoletoFinal),
+          updated_at: new Date().toISOString()
+        }
+      });
+    } catch (error) {
+      if (transaction && !transaction.finished) {
+        await transaction.rollback().catch(() => {});
+      }
+      return res.status(500).json({
+        message: 'Falha ao atualizar preferência de boleto digital.',
+        detail: error.message
+      });
+    }
+  }
+
+  /**
+   * PATCH /unidades/:id/baixar-boleto — síndico/admin define o boleto digital
+   * de uma unidade. null limpa a resposta (moradores voltam a ver a pergunta).
+   */
+  async atualizarBaixarBoletoUnidade(req, res) {
+    try {
+      const idCondominioToken = this._toInt(req.id_condominio, null);
+      if (!idCondominioToken) {
+        return res.status(403).json({ message: 'Token sem id_condominio.' });
+      }
+      if (![1, 3, 4].includes(this._toInt(req.IdPerfil, null))) {
+        return res.status(403).json({ message: 'Apenas Admin, Síndico ou Sub-Síndico podem alterar o boleto digital da unidade.' });
+      }
+
+      const idUnidade = this._toInt(req.params.id, null);
+      if (!idUnidade) {
+        return res.status(400).json({ message: 'Id da unidade inválido.' });
+      }
+
+      const valor = req.body.baixar_boleto === null ? null : this._toBoolOrNull(req.body.baixar_boleto);
+
+      const update = await postgres.query(
+        `UPDATE "condominio-bh".tb_condominios_unidades
+            SET baixar_boleto = :baixar_boleto
+          WHERE id = :id AND id_condominio = :id_condominio
+        RETURNING id, bloco, unidades_bloco AS unidade, baixar_boleto`,
+        { replacements: { id: idUnidade, id_condominio: idCondominioToken, baixar_boleto: valor } }
+      );
+
+      if (!update[0] || update[0].length === 0) {
+        return res.status(404).json({ message: 'Unidade não encontrada para este condomínio.' });
+      }
+
+      return res.status(200).json({
+        message: 'Boleto digital da unidade atualizado com sucesso.',
+        data: update[0][0]
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: 'Falha ao atualizar boleto digital da unidade.',
+        detail: error.message
+      });
+    }
+  }
+
   async buscarUsuarioPorId(req, res) {
     try {
       const idCondominioToken = this._toInt(req.id_condominio, null);
@@ -9231,6 +9453,7 @@ class CondominioController {
             tu.mensagem_whatsapp,
             tu.mensagem_telegram,
             COALESCE(tu.morador_principal, false) AS morador_principal,
+            (SELECT cu_bb.baixar_boleto FROM "condominio-bh".tb_condominios_unidades cu_bb WHERE cu_bb.id = tu.id_unidade_predio) AS unidade_baixar_boleto,
             tu.chat_id_telegram,
             tu.created_at,
             tu.updated_at
