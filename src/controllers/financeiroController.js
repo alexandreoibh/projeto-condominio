@@ -419,6 +419,10 @@ class FinanceiroController {
         } else {
           console.warn(`[criarReceita] Emissão automática de boleto falhou para receita id=${receitaCriada.id}: ${resultadoBoleto.message}`);
         }
+
+        // E-mail de cobrança ao morador (com PDF quando o boleto foi emitido;
+        // se a emissão falhou com integração ativa, o helper não envia agora).
+        waitUntil(this._enviarEmailCobrancaReceita({ idCondominio, idReceita: receitaCriada.id }));
       }
 
       return res.status(201).json({ ...receitaCriada, boleto_bancario: boletoBancario });
@@ -588,6 +592,8 @@ class FinanceiroController {
 
           if (resultadoBoleto.ok) {
             boletoBancario = resultadoBoleto.data;
+            // Reemissão bem-sucedida: envia o e-mail de cobrança se ainda não saiu.
+            waitUntil(this._enviarEmailCobrancaReceita({ idCondominio, idReceita: id }));
           } else {
             console.warn(`[atualizarReceita] Tentativa automática de emissão de boleto falhou para receita id=${id}: ${resultadoBoleto.message}`);
           }
@@ -958,6 +964,132 @@ class FinanceiroController {
     };
   }
 
+  /**
+   * E-mail de cobrança ao morador da receita (template receita_cobranca_morador).
+   * Chamado após criar receita, reemitir boleto (manual), editar receita com
+   * reemissão automática e na rotina mensal — no máximo 1 e-mail por receita
+   * (tb_fin_receitas.email_cobranca_enviado_em, reservado atomicamente).
+   * - Com integração bancária ativa: só envia se já houver boleto "emitida"
+   *   (anexa PDF + linha digitável/Pix); se a emissão falhou, espera a reemissão.
+   * - Sem integração: envia sem boleto.
+   * Best-effort: nunca lança — falha aqui não afeta a receita nem o boleto.
+   */
+  async _enviarEmailCobrancaReceita({ idCondominio, idReceita }) {
+    const ref = `receita-${idReceita}`;
+    let reservou = false;
+    try {
+      const [receita] = await postgres.query(
+        `SELECT r.id, r.grupo_receita, r.situacao, r.id_usuario, r.descricao, r.categoria,
+                r.competencia, r.data_vencimento, r.valor, r.valor_fundo_reserva, r.email_cobranca_enviado_em,
+                tu.nome AS morador_nome, tu.sobrenome AS morador_sobrenome, tu.email AS morador_email,
+                COALESCE(tcu.unidades_bloco, tu.apartamento) AS unidade,
+                COALESCE(tcu.bloco::text, tu.bloco) AS bloco,
+                c.nome AS condominio_nome
+           FROM "condominio-bh".tb_fin_receitas r
+           LEFT JOIN "condominio-bh"."tb-usuarios" tu ON tu.id = r.id_usuario
+           LEFT JOIN "condominio-bh".tb_condominios_unidades tcu
+             ON tcu.id = r.id_unidade AND tcu.id_condominio = r.id_condominio
+           LEFT JOIN "condominio-bh"."tb-condominios" c ON c.id = r.id_condominio
+          WHERE r.id = :idReceita AND r.id_condominio = :idCondominio`,
+        { replacements: { idReceita, idCondominio }, type: QueryTypes.SELECT }
+      );
+
+      if (!receita) return;
+      if (receita.grupo_receita !== 'MORADOR' || receita.situacao !== 'em_aberto' || !receita.id_usuario) return;
+      if (receita.email_cobranca_enviado_em) return;
+
+      const email = String(receita.morador_email || '').trim();
+      if (!email) {
+        console.warn('[receitaCobrancaEmail] morador sem e-mail cadastrado — e-mail não enviado', JSON.stringify({
+          id_receita: idReceita, id_usuario: receita.id_usuario,
+        }));
+        return;
+      }
+
+      const [credencial] = await postgres.query(
+        `SELECT * FROM "condominio-bh".tb_fin_integracao_bancaria
+          WHERE id_condominio = :idCondominio AND ativo = true AND status_conexao = 'ativo'
+          ORDER BY id DESC LIMIT 1`,
+        { replacements: { idCondominio }, type: QueryTypes.SELECT }
+      );
+
+      let cobranca = null;
+      if (credencial) {
+        [cobranca] = await postgres.query(
+          `SELECT id, id_externo, linha_digitavel, codigo_barras, pix_copia_cola
+             FROM "condominio-bh".tb_fin_cobranca_bancaria
+            WHERE id_receita = :idReceita AND id_condominio = :idCondominio AND situacao = 'emitida'
+            ORDER BY id DESC LIMIT 1`,
+          { replacements: { idReceita, idCondominio }, type: QueryTypes.SELECT }
+        );
+        // Emissão falhou (ou ainda não ocorreu): o e-mail sai na reemissão.
+        if (!cobranca) return;
+      }
+
+      const [reserva] = await postgres.query(
+        `UPDATE "condominio-bh".tb_fin_receitas
+            SET email_cobranca_enviado_em = now()
+          WHERE id = :idReceita AND id_condominio = :idCondominio AND email_cobranca_enviado_em IS NULL
+        RETURNING id`,
+        { replacements: { idReceita, idCondominio } }
+      );
+      if (!reserva || reserva.length === 0) return; // outra chamada já enviou/está enviando
+      reservou = true;
+
+      const competencia = receita.competencia ? new Date(receita.competencia).toISOString().slice(0, 7) : '';
+      const payload = {
+        _ref: ref,
+        template: 'receita_cobranca_morador',
+        emails: [email],
+        cobranca: {
+          id_receita: Number(receita.id),
+          morador_nome: [receita.morador_nome, receita.morador_sobrenome].filter(Boolean).join(' ').trim(),
+          unidade: receita.unidade || '',
+          bloco: receita.bloco || '',
+          condominio_nome: receita.condominio_nome || '',
+          descricao: receita.descricao || receita.categoria || '',
+          competencia,
+          valor: (Number(receita.valor || 0) + Number(receita.valor_fundo_reserva || 0)).toFixed(2),
+          data_vencimento: receita.data_vencimento ? new Date(receita.data_vencimento).toISOString().slice(0, 10) : '',
+        },
+      };
+
+      if (cobranca) {
+        payload.boleto_bancario = {
+          linha_digitavel: cobranca.linha_digitavel || null,
+          codigo_barras: cobranca.codigo_barras || null,
+          pix_copia_cola: cobranca.pix_copia_cola || null,
+        };
+        try {
+          const provider = bankingProviderRegistry.getProvider(credencial.provider);
+          const pdfBuffer = await provider.consultarCobrancaPdf(credencial, cobranca.id_externo);
+          payload.boleto_pdf_base64 = pdfBuffer.toString('base64');
+          payload.boleto_pdf_nome = `boleto-${receita.unidade || idReceita}-${competencia || 'receita'}.pdf`;
+        } catch (pdfErr) {
+          console.warn(`[receitaCobrancaEmail] PDF do boleto indisponível para receita id=${idReceita}, enviando sem anexo:`, pdfErr?.message);
+        }
+      }
+
+      const resultado = await despacharEmail(payload);
+      if (!resultado?.ok) {
+        // Libera para um próximo gatilho (ex.: reemissão) tentar de novo.
+        await postgres.query(
+          `UPDATE "condominio-bh".tb_fin_receitas SET email_cobranca_enviado_em = NULL WHERE id = :idReceita`,
+          { replacements: { idReceita } }
+        );
+        console.error(`[receitaCobrancaEmail] Falha ao enviar e-mail da receita id=${idReceita}: ${resultado?.message}`);
+      }
+    } catch (error) {
+      console.error(`[receitaCobrancaEmail] Erro ao processar e-mail da receita id=${idReceita}:`, error?.message);
+      if (reservou) {
+        await postgres.query(
+          `UPDATE "condominio-bh".tb_fin_receitas SET email_cobranca_enviado_em = NULL WHERE id = :idReceita`,
+          { replacements: { idReceita } }
+        ).catch(() => {});
+      }
+    }
+  }
+
   async emitirBoletoBancario(req, res) {
     try {
       const idCondominio = this._toInt(req.id_condominio, null);
@@ -972,6 +1104,11 @@ class FinanceiroController {
       });
 
       if (!resultado.ok) return res.status(resultado.status).json({ message: resultado.message });
+
+      // Reemissão manual bem-sucedida: envia o e-mail de cobrança (com PDF)
+      // se ainda não saiu — ex.: a emissão na criação da receita falhou.
+      waitUntil(this._enviarEmailCobrancaReceita({ idCondominio, idReceita }));
+
       return res.status(200).json({ data: resultado.data });
     } catch (error) {
       return res.status(502).json({ message: 'Falha ao emitir boleto bancário.', detail: error.message });

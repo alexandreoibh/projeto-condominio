@@ -128,6 +128,12 @@ async function gerarReceitasRotina() {
         } catch (boletoErr) {
           console.error(`[gerarReceitasRotina] Erro ao emitir boleto automático para receita id=${idReceitaGerada}:`, boletoErr?.message);
         }
+
+        // E-mail de cobrança ao morador (best-effort, nunca lança).
+        await financeiroController._enviarEmailCobrancaReceita({
+          idCondominio: modelo.id_condominio,
+          idReceita: idReceitaGerada,
+        });
       }
     } catch (err) {
       console.error(`[gerarReceitasRotina] Erro ao processar rotina id=${rotina.id}:`, err?.message);

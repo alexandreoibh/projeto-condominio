@@ -186,6 +186,12 @@ Três Maps no `CondominioController` sobrevivem apenas enquanto o processo estiv
   - **Boas-vindas automáticas:** todo cadastro novo (`criarUsuario` e `cadastrarUsuarioPorConvite`) de perfil 2/3/4 com e-mail enfileira um e-mail (`modulo='boas_vindas'`, texto em `MENSAGEM_BOAS_VINDAS_MORADOR`) via `_enfileirarBoasVindasMorador`.
     - É best effort: uma falha nesse enfileiramento não quebra o cadastro.
     - No convite, o remetente é quem gerou o convite (`id_usuario_criacao` no JWT de `gerarConviteMorador`).
+- **E-mail `receita_cobranca_morador`:** cobrança ao morador (`id_usuario`) de receita `MORADOR` em aberto, via `_enviarEmailCobrancaReceita` (`financeiroController.js`).
+  - **Gatilhos:** `criarReceita`, reemissão manual (`emitirBoletoBancario`), `atualizarReceita` com reemissão bem-sucedida e `gerarReceitasRotina`.
+  - **Com integração bancária ativa:** só envia se houver cobrança `emitida`, com o PDF do Inter em base64 (`boleto_pdf_base64`/`boleto_pdf_nome`) e `boleto_bancario`. Se a emissão falhou, espera a reemissão.
+  - **Sem integração:** envia sem os dados do boleto.
+  - **Uma vez por receita:** no máximo 1 e-mail, garantido pela reserva atômica em `tb_fin_receitas.email_cobranca_enviado_em` (migration `20261004000001`). Se o envio falhar, a reserva é liberada.
+  - **Morador sem e-mail:** só gera log.
 - **Webhook bancário** (`POST /api/webhook/bancario/:provider`, rota pública).
   - **Cadastro no banco:** o webhook **não é cadastrado automaticamente**. Cada conta Inter (sandbox e produção) precisa de `PUT /cobranca/v3/cobrancas/webhook` com `webhookUrl = https://back-projeto-condominio.vercel.app/api/webhook/bancario/inter`. Produção (integração id 1, condomínio 282) foi cadastrada em 01/10/2026. Sem esse cadastro, nenhum pagamento é confirmado automaticamente.
   - **Rede de segurança:** `POST /api/webhook/bancario/reconciliar` (header `X-Cron-Queue-Key`, mesmo `cronQueueKeyGuard` da fila de mensagens) reconsulta no banco as cobranças `emitida` com mais de 30 min. Precisa de **cron externo**, porque o `node-cron` de `src/task/reconciliarCobrancasBancarias.js` não roda na Vercel serverless.
