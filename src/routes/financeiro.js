@@ -8,6 +8,8 @@ const { body, param, query } = require('express-validator');
 const FinanceiroController = require('../controllers/financeiroController');
 const auth = require('../helpers/auth');
 const validate = require('../helpers/validate');
+const cronQueueKeyGuard = require('../helpers/cronQueueKeyGuard');
+const { gerarReceitasRotina } = require('../task/gerarReceitasRotina');
 
 const controller = new FinanceiroController();
 
@@ -189,6 +191,32 @@ router.get(
   auth,
   validate,
   controller.listarRotinasReceita.bind(controller)
+);
+
+// Geração mensal das receitas recorrentes — disparada por cron externo
+// (header X-Cron-Queue-Key; o node-cron não roda na Vercel serverless).
+// Todos os condomínios; idempotente por rotina+mês; em lotes de `limite`
+// receitas geradas — chamar de novo enquanto `restantes` > 0.
+router.post(
+  '/receitas/rotinas/processar',
+  cronQueueKeyGuard,
+  [
+    query('limite').optional({ nullable: true, checkFalsy: true }).isInt({ min: 1, max: 100 }).withMessage('limite deve ser entre 1 e 100.'),
+    body('limite').optional({ nullable: true, checkFalsy: true }).isInt({ min: 1, max: 100 }).withMessage('limite deve ser entre 1 e 100.'),
+  ],
+  validate,
+  async (req, res) => {
+    try {
+      const limite = Number.parseInt(req.query.limite ?? req.body?.limite ?? 20, 10);
+      const resumo = await gerarReceitasRotina({ limite });
+      if (resumo.em_execucao) {
+        return res.status(409).json({ message: 'Processamento já em execução.', ...resumo });
+      }
+      return res.status(200).json(resumo);
+    } catch (error) {
+      return res.status(500).json({ message: 'Falha ao processar receitas recorrentes.', detail: error.message });
+    }
+  }
 );
 
 router.delete(

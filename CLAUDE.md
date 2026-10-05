@@ -192,6 +192,11 @@ Três Maps no `CondominioController` sobrevivem apenas enquanto o processo estiv
   - **Sem integração:** envia sem os dados do boleto.
   - **Uma vez por receita:** no máximo 1 e-mail, garantido pela reserva atômica em `tb_fin_receitas.email_cobranca_enviado_em` (migration `20261004000001`). Se o envio falhar, a reserva é liberada.
   - **Morador sem e-mail:** só gera log.
+- **Receitas recorrentes** (`src/task/gerarReceitasRotina.js`): `POST /api/condominio/financeiro/receitas/rotinas/processar` (header `X-Cron-Queue-Key`) é chamado pelo cron externo, porque o `node-cron` não roda na Vercel.
+  - **O que faz:** processa as rotinas de todos os condomínios e calcula o mês corrente em BRT.
+  - **Idempotência:** é idempotente por rotina+mês. O `pg_try_advisory_xact_lock` bloqueia execuções simultâneas (responde 409).
+  - **Lotes:** o `limite` (padrão 20 receitas geradas) define o tamanho do lote; o cron repete enquanto `restantes > 0`.
+  - **Resumo:** `{ competencia, processadas, geradas, ignoradas, encerradas, erros[], restantes, boletos }`.
 - **Webhook bancário** (`POST /api/webhook/bancario/:provider`, rota pública).
   - **Cadastro no banco:** o webhook **não é cadastrado automaticamente**. Cada conta Inter (sandbox e produção) precisa de `PUT /cobranca/v3/cobrancas/webhook` com `webhookUrl = https://back-projeto-condominio.vercel.app/api/webhook/bancario/inter`. Produção (integração id 1, condomínio 282) foi cadastrada em 01/10/2026. Sem esse cadastro, nenhum pagamento é confirmado automaticamente.
   - **Rede de segurança:** `POST /api/webhook/bancario/reconciliar` (header `X-Cron-Queue-Key`, mesmo `cronQueueKeyGuard` da fila de mensagens) reconsulta no banco as cobranças `emitida` com mais de 30 min. Precisa de **cron externo**, porque o `node-cron` de `src/task/reconciliarCobrancasBancarias.js` não roda na Vercel serverless.
