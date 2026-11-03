@@ -6586,6 +6586,48 @@ class CondominioController {
     }
   }
 
+  // PG 9.2 sem extensão unaccent: remove acento via translate. Maiúsculas acentuadas
+  // ficam no mapa para não depender de lower() respeitar o locale do banco.
+  _sqlSemAcento(expr) {
+    return `translate(lower(COALESCE(${expr}, '')), 'áàâãäéèêëíìîïóòôõöúùûüçñÁÀÂÃÄÉÈÊËÍÌÎÏÓÒÔÕÖÚÙÛÜÇÑ', 'aaaaaeeeeiiiiooooouuuucnaaaaaeeeeiiiiooooouuuucn')`;
+  }
+
+  // Busca livre da listagem de moradores (query `busca`). Grava os parâmetros em `bind`
+  // e devolve a condição OR para juntar com AND aos demais filtros.
+  _montarFiltroBuscaMoradores(busca, bind) {
+    const termoSemAcento = busca.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+    bind.busca = `%${termoSemAcento.replace(/[\\%_]/g, '\\$&')}%`;
+
+    const camposTexto = [
+      'tu.nome',
+      'tu.sobrenome',
+      "COALESCE(tu.nome, '') || ' ' || COALESCE(tu.sobrenome, '')",
+      'tu.email',
+      'tu.apartamento',
+      'tu.bloco'
+    ];
+    const condicoes = camposTexto.map(
+      (campo) => `${this._sqlSemAcento(campo)} LIKE $busca::text ESCAPE '\\'`
+    );
+
+    const digitos = busca.replace(/\D/g, '');
+    if (digitos) {
+      bind.busca_digitos = `%${digitos}%`;
+      condicoes.push("regexp_replace(COALESCE(tu.telefone, ''), '\\D', '', 'g') LIKE $busca_digitos::text");
+      condicoes.push("regexp_replace(COALESCE(tu.cpf, ''), '\\D', '', 'g') LIKE $busca_digitos::text");
+    }
+
+    // Protocolo "USR-000021" (ou só dígitos) também casa pelo id.
+    const protocolo = /^(?:usr-?)?(\d+)$/i.exec(busca.replace(/\s+/g, ''));
+    const idProtocolo = protocolo ? Number(protocolo[1]) : 0;
+    if (idProtocolo > 0 && idProtocolo <= 2147483647) {
+      bind.busca_id = idProtocolo;
+      condicoes.push('tu.id = $busca_id::int');
+    }
+
+    return `(${condicoes.join(' OR ')})`;
+  }
+
   async listarMoradores(req, res) {
     try {
       const idCondominioToken = this._toInt(req.id_condominio, null);
@@ -6598,12 +6640,14 @@ class CondominioController {
         });
       }
 
-      const replacementsBase = {
+      // bind (prepared statement) em vez de replacements: os valores não são inlinados no SQL.
+      const bindBase = {
         eh_admin: ehAdmin,
         id_condominio: idCondominioToken
       };
 
       const nomeFiltro = this._normalizarTextoOuNull(req.query.nome);
+      const buscaFiltro = this._normalizarTextoOuNull(req.query.busca);
       const cpfFiltro = this._normalizarTextoOuNull(req.query.cpf);
       const statusFiltro = this._normalizarTextoOuNull(req.query.status);
       const tipoMoradorFiltro = this._normalizarTextoOuNull(req.query.tipo_morador);
@@ -6625,9 +6669,9 @@ class CondominioController {
 
       const whereParts = [
         `(
-          :eh_admin = true
+          $eh_admin::boolean = true
           OR (
-            tu.id_condominio = :id_condominio
+            tu.id_condominio = $id_condominio::int
             AND COALESCE(tu.tipo_perfil_id::text, '0') <> '1'
           )
         )`
@@ -6635,39 +6679,43 @@ class CondominioController {
 
       if (nomeFiltro) {
         whereParts.push(`(
-          tu.nome ILIKE :nome
-          OR tu.sobrenome ILIKE :nome
-          OR TRIM(COALESCE(tu.nome, '') || ' ' || COALESCE(tu.sobrenome, '')) ILIKE :nome
+          tu.nome ILIKE $nome::text
+          OR tu.sobrenome ILIKE $nome::text
+          OR TRIM(COALESCE(tu.nome, '') || ' ' || COALESCE(tu.sobrenome, '')) ILIKE $nome::text
         )`);
-        replacementsBase.nome = `%${nomeFiltro}%`;
+        bindBase.nome = `%${nomeFiltro}%`;
       }
 
       if (cpfFiltro) {
-        whereParts.push("regexp_replace(COALESCE(tu.cpf, ''), '\\D', '', 'g') = regexp_replace(:cpf, '\\D', '', 'g')");
-        replacementsBase.cpf = cpfFiltro;
+        whereParts.push("regexp_replace(COALESCE(tu.cpf, ''), '\\D', '', 'g') = regexp_replace($cpf::text, '\\D', '', 'g')");
+        bindBase.cpf = cpfFiltro;
       }
 
       if (statusFiltro) {
-        whereParts.push("lower(COALESCE(tu.status, '')) = :status");
-        replacementsBase.status = String(statusFiltro).toLowerCase();
+        whereParts.push("lower(COALESCE(tu.status, '')) = $status::text");
+        bindBase.status = String(statusFiltro).toLowerCase();
       }
 
       if (tipoMoradorFiltro) {
-        whereParts.push("lower(COALESCE(tu.tipo_morador, '')) = :tipo_morador");
-        replacementsBase.tipo_morador = String(tipoMoradorFiltro).toLowerCase();
+        whereParts.push("lower(COALESCE(tu.tipo_morador, '')) = $tipo_morador::text");
+        bindBase.tipo_morador = String(tipoMoradorFiltro).toLowerCase();
       }
 
       if (idUnidadeFiltro) {
-        whereParts.push('tu.id_unidade_predio = :id_unidade');
-        replacementsBase.id_unidade = idUnidadeFiltro;
+        whereParts.push('tu.id_unidade_predio = $id_unidade::int');
+        bindBase.id_unidade = idUnidadeFiltro;
       }
 
       if (ativoFiltro === true) {
-        whereParts.push("lower(COALESCE(tu.status, '')) = :status_ativo");
-        replacementsBase.status_ativo = 'ativo';
+        whereParts.push("lower(COALESCE(tu.status, '')) = $status_ativo::text");
+        bindBase.status_ativo = 'ativo';
       } else if (ativoFiltro === false) {
-        whereParts.push("lower(COALESCE(tu.status, '')) <> :status_ativo");
-        replacementsBase.status_ativo = 'ativo';
+        whereParts.push("lower(COALESCE(tu.status, '')) <> $status_ativo::text");
+        bindBase.status_ativo = 'ativo';
+      }
+
+      if (buscaFiltro) {
+        whereParts.push(this._montarFiltroBuscaMoradores(buscaFiltro, bindBase));
       }
 
       const whereClause = whereParts.join(' AND ');
@@ -6677,7 +6725,7 @@ class CondominioController {
            FROM "condominio-bh"."tb-usuarios" tu
           WHERE ${whereClause}`,
         {
-          replacements: replacementsBase,
+          bind: bindBase,
           type: QueryTypes.SELECT
         }
       );
@@ -6777,10 +6825,10 @@ class CondominioController {
             ON tc.id = tu.id_condominio
           WHERE ${whereClause}
           ORDER BY NULLIF(tu.apartamento, '')::int ASC NULLS LAST, tu.nome ASC, tu.id DESC
-          LIMIT :limit OFFSET :offset`,
+          LIMIT $limit::int OFFSET $offset::int`,
         {
-          replacements: {
-            ...replacementsBase,
+          bind: {
+            ...bindBase,
             limit: pageSize,
             offset
           },

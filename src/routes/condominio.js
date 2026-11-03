@@ -1785,7 +1785,11 @@ router.get(
 		query('id_unidade')
 			.optional({ nullable: true, checkFalsy: true })
 			.isInt({ min: 1 })
-			.withMessage('Parâmetro id_unidade deve ser numérico e maior que zero.')
+			.withMessage('Parâmetro id_unidade deve ser numérico e maior que zero.'),
+		query('busca')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 120 })
+			.withMessage('Parâmetro busca deve ter no máximo 120 caracteres.')
 	],
 	validate,
 	controller.listarMoradores.bind(controller)
@@ -1826,7 +1830,11 @@ router.get(
 		query('id_unidade')
 			.optional({ nullable: true, checkFalsy: true })
 			.isInt({ min: 1 })
-			.withMessage('Parâmetro id_unidade deve ser numérico e maior que zero.')
+			.withMessage('Parâmetro id_unidade deve ser numérico e maior que zero.'),
+		query('busca')
+			.optional({ nullable: true, checkFalsy: true })
+			.isLength({ max: 120 })
+			.withMessage('Parâmetro busca deve ter no máximo 120 caracteres.')
 	],
 	validate,
 	controller.listarMoradores.bind(controller)
