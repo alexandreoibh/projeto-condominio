@@ -2,6 +2,7 @@
 
 const express = require("express");
 const multer = require("multer");
+const { validarUploads } = require('../helpers/uploadPolicy');
 const router = express.Router();
 const { body, param, query } = require("express-validator");
 const ReuniaoController = require("../controllers/reuniaoController");
@@ -229,6 +230,7 @@ router.post(
   "/:id(\\d+)/anexo",
   auth,
   uploadAnexo.single("arquivo"),
+  validarUploads('documento'),
   [
     param("id").isInt({ min: 1 }).withMessage("Parametro id invalido."),
     body("tipo")

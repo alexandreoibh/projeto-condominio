@@ -73,6 +73,24 @@ src/
 
 > **Importante:** `id_condominio` nunca deve ser enviado no body/query pelos clientes — é sempre extraído do token.
 
+## Segurança (pós-incidente 22/11/2026)
+
+Detalhes em `docs/seguranca/relatorio-auditoria-2026-11-23.md`.
+
+- **Segredos obrigatórios:** `JWT_SECRET` e `SERVICE_INVITE_TOKEN_SECRET` (`src/helpers/segredos.js`), sem fallback. Sem eles o app não sobe. Os dois devem ser diferentes.
+- **Sessão:**
+  - `auth.js` só aceita o JWT de login (HS256, com `id` e sem `tipo`/`flow`/`aud`). Tokens de imagem (`aud: 'image'`), convite e recuperação nunca valem como sessão.
+  - Revogação por `"tb-usuarios".token_version`, comparado com o claim `tv` (`src/helpers/sessao.js`, cache de 60s). Usuário com status ≠ `ativo` perde a sessão.
+  - Chame `incrementarTokenVersion(id)` sempre que senha, perfil, status ou e-mail mudarem.
+- **Perfis:** autorização SEMPRE por id numérico (`req.IdPerfil`), via `src/helpers/permissoes.js` (`ehGestor`, `ehAdmin`, `exigirGestor`, `exigirAdmin`, `podeAtribuirPerfil`). Nunca use `req.nomePerfil`/`tipo`, que vêm de coluna editável.
+- **Recuperação de senha:** código por e-mail → reset token opaco (só o sha256 em `tb_recovery_tokens.reset_token_hash`, uso único, 15 min) → `/api/auth/recovery/reset`. Nenhum endpoint devolve token sem o código. `invite_token` não altera senha, e-mail, CPF, perfil ou status.
+- **`authOrInviteToken`:** valida o convite no próprio middleware e entrega `req.inviteAuth.payload` ao handler.
+- **URLs do Blob:** toda URL buscada pelo servidor passa por `parseUrlBlob` (`src/helpers/blobUrl.js`), que compara o host exato. Os proxies de imagem exigem `/condominios/<id>/`. Links de boleto enviados por e-mail são assinados (`assinarLinkDownload`).
+- **Uploads:** toda rota multer usa `validarUploads(contexto)` (`src/helpers/uploadPolicy.js`, magic bytes). Grave `arquivo.extensaoSegura` e `arquivo.mimetype` (já validados), nunca a extensão do `originalname`.
+- **Webhook bancário:** o payload é só um aviso. O status aplicado é o da reconsulta à API do banco.
+- **Auditoria:** `registrarAuditoria()` (`src/helpers/auditoria.js` → `tb_auditoria_seguranca`), chamada depois do commit e nunca com senha ou token.
+- **Testes:** `npm test` (Jest + supertest, banco simulado em `tests/helpers/fakeDb.js`; não acessa banco real).
+
 ## Perfis de acesso
 
 | `tipo_perfil_id` | Perfil | Descrição |
@@ -218,6 +236,9 @@ Três Maps no `CondominioController` sobrevivem apenas enquanto o processo estiv
 | `USER_SQL_POSTGRE` | Usuário PostgreSQL |
 | `PASSWORD_SQL_POSTGRE` | Senha PostgreSQL |
 | `DATABASE_POSTGRE` | Nome do banco |
+| `DB_SSL_CA` | Opcional. PEM do CA do servidor PostgreSQL (texto, `\n` escapado ou base64). SSL é sempre ligado com `rejectUnauthorized: true`; sem CA, o certificado precisa ser de CA pública |
+| `DB_SSL_SERVERNAME` | Opcional. Nome no certificado, quando difere de `DB_HOST_SQL_POSTGRE` |
+| `DB_SSL_REJECT_UNAUTHORIZED` | `false` desliga a verificação do certificado (emergência; gera `console.warn`). Não existe opção para desligar o SSL |
 | `PUBLIC_REGISTRATION_KEY` | Chave para registro público de moradores |
 | `SERVICE_INVITE_TOKEN_SECRET` | Secret para tokens de convite |
 | `EMAIL_DISPATCH_URL` | URL do serviço de despacho de e-mails |

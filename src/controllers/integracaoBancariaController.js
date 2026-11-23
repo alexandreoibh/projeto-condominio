@@ -1,6 +1,8 @@
 'use strict';
 
 const { QueryTypes } = require('sequelize');
+const permissoes = require('../helpers/permissoes');
+const { registrarAuditoria } = require('../helpers/auditoria');
 const postgres = require('../database/postgres');
 const credentialCipher = require('../integrations/shared/credentialCipher');
 const bankingProviderRegistry = require('../integrations/bankingProviderRegistry');
@@ -9,8 +11,10 @@ const PERFIS_GESTAO = new Set(['Admin', 'Sindico', 'Sub-Sindico']);
 const AMBIENTES_VALIDOS = new Set(['sandbox', 'production']);
 
 class IntegracaoBancariaController {
+  // Por id numérico do perfil (JWT), não pelo nome — o nome deriva da coluna
+  // editável "tb-usuarios".tipo.
   _isGestor(req) {
-    return PERFIS_GESTAO.has(req.nomePerfil);
+    return permissoes.ehGestor(req);
   }
 
   _normalizarTextoOuNull(value) {
@@ -184,6 +188,7 @@ class IntegracaoBancariaController {
         { replacements: { id: idIntegracao }, type: QueryTypes.SELECT }
       );
 
+      await registrarAuditoria({ req, acao: 'integracao_conectada', entidade: 'integracao_bancaria', detalhes: { provider: 'inter' } });
       return res.status(200).json({ data: this._serializar(linhaFinal) });
     } catch (error) {
       return res.status(500).json({ message: 'Falha ao conectar integração bancária.', detail: error.message });
@@ -291,6 +296,7 @@ class IntegracaoBancariaController {
         { replacements: { id: idIntegracao }, type: QueryTypes.SELECT }
       );
 
+      await registrarAuditoria({ req, acao: 'integracao_conectada', entidade: 'integracao_bancaria', detalhes: { provider: 'itau' } });
       return res.status(200).json({ data: this._serializar(linhaFinal) });
     } catch (error) {
       return res.status(500).json({ message: 'Falha ao conectar integração bancária.', detail: error.message });
@@ -403,6 +409,7 @@ class IntegracaoBancariaController {
         { replacements: { id: idIntegracao }, type: QueryTypes.SELECT }
       );
 
+      await registrarAuditoria({ req, acao: 'integracao_conectada', entidade: 'integracao_bancaria', detalhes: { provider: 'bradesco' } });
       return res.status(200).json({ data: this._serializar(linhaFinal) });
     } catch (error) {
       return res.status(500).json({ message: 'Falha ao conectar integração bancária.', detail: error.message });
@@ -470,6 +477,8 @@ class IntegracaoBancariaController {
       const provider = bankingProviderRegistry.getProvider(credencial.provider);
       const resultado = await provider.consultarSaldo(credencial);
 
+      await registrarAuditoria({ req, acao: 'integracao_saldo_consultado', entidade: 'integracao_bancaria', entidadeId: credencial.id });
+
       return res.status(200).json({
         saldo: resultado.disponivel,
         atualizado_em: resultado.atualizadoEm,
@@ -502,6 +511,14 @@ class IntegracaoBancariaController {
       const provider = bankingProviderRegistry.getProvider(credencial.provider);
       const transacoes = await provider.consultarExtrato(credencial, dataInicio, dataFim);
 
+      await registrarAuditoria({
+        req,
+        acao: 'integracao_extrato_consultado',
+        entidade: 'integracao_bancaria',
+        entidadeId: credencial.id,
+        detalhes: { data_inicio: dataInicio, data_fim: dataFim }
+      });
+
       return res.status(200).json({ data: transacoes });
     } catch (error) {
       return res.status(502).json({ message: 'Falha ao consultar extrato bancário.', detail: error.message });
@@ -517,6 +534,7 @@ class IntegracaoBancariaController {
    */
   _logarTaxaAcimaDoLimite({ req, idIntegracao, multa, juros }) {
     if (!(multa > 2 || juros > 1)) return;
+    registrarAuditoria({ req, acao: 'integracao_taxa_acima_limite', entidade: 'integracao_bancaria', entidadeId: idIntegracao, detalhes: { multa_percentual: multa, juros_mora_percentual_mes: juros } });
     console.warn('[auditoria-integracao-bancaria] taxa acima do limite legal', JSON.stringify({
       id_condominio: req.id_condominio,
       id_integracao: idIntegracao,
@@ -593,6 +611,10 @@ class IntegracaoBancariaController {
           RETURNING id`,
         { replacements: { id, idCondominio: req.id_condominio }, type: QueryTypes.UPDATE }
       );
+
+      if (result && result.length > 0) {
+        await registrarAuditoria({ req, acao: 'integracao_desativada', entidade: 'integracao_bancaria', entidadeId: id });
+      }
 
       if (!result || result.length === 0) {
         return res.status(404).json({ message: 'Integração não encontrada.' });

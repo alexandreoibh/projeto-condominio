@@ -1,6 +1,7 @@
 'use strict';
 
 const { QueryTypes } = require('sequelize');
+const permissoes = require('../helpers/permissoes');
 const { put } = require('@vercel/blob');
 const postgres = require('../database/postgres');
 
@@ -74,8 +75,10 @@ class ManutencaoController {
     return null;
   }
 
+  // Por id numérico do perfil (JWT), não pelo nome — o nome deriva da coluna
+  // editável "tb-usuarios".tipo.
   _isGestor(req) {
-    return PERFIS_GESTAO.has(req.nomePerfil);
+    return permissoes.ehGestor(req);
   }
 
   // ─── Tipos de Rotina ─────────────────────────────────────────────────────────
@@ -543,7 +546,7 @@ class ManutencaoController {
       const ambiente = process.env.NODE_ENV === 'production' ? 'prod' : 'dev';
       const urlsFotos = [];
       for (const arquivo of arquivos) {
-        const ext = (arquivo.originalname.split('.').pop() || 'bin').toLowerCase();
+        const ext = (arquivo.extensaoSegura || 'bin');
         const nomeArquivo = `${Date.now()}_${Math.random().toString(36).substr(2, 8)}.${ext}`;
         const blobPath = `${ambiente}/condominios/${idCondominio}/manutencao/rotinas/${idRotina}/execucoes/${nomeArquivo}`;
         const uploadResult = await put(blobPath, arquivo.buffer, { access: 'private', contentType: arquivo.mimetype });

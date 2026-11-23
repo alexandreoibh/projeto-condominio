@@ -15,11 +15,13 @@ const { waitUntil } = require('@vercel/functions');
 const { buildAvatarProxyUrl, buildConsumoImagemProxyUrl, buildDashboardImagemProxyUrl, getBlobReadToken, isAvatarProxyUrl, resolveBlobUrl } = require('../helpers/avatarProxy');
 const { normalizarCpf, cpfValido } = require('../helpers/cpf');
 
-const INVITE_TOKEN_SECRET =
-  process.env.SERVICE_INVITE_TOKEN_SECRET ||
-  process.env.INVITE_TOKEN_SECRET ||
-  process.env.JWT_SECRET ||
-  'dev_invite_secret_change_me';
+const { getInviteTokenSecret } = require('../helpers/segredos');
+const { incrementarTokenVersion } = require('../helpers/sessao');
+const { registrarAuditoria, ipDaRequisicao } = require('../helpers/auditoria');
+const permissoes = require('../helpers/permissoes');
+
+const INVITE_TOKEN_SECRET = getInviteTokenSecret();
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PUBLIC_REGISTER_RATE_WINDOW_MS = 15 * 60 * 1000;
 const PUBLIC_REGISTER_RATE_MAX_ATTEMPTS = 5;
 const INVITE_TOKEN_USAGE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -29,6 +31,16 @@ const publicRegistrationAttempts = new Map();
 const usedInviteTokens = new Map();
 const recoveryOtpStore = new Map(); // key: email, value: { code, expiresAt }
 const RECOVERY_OTP_TTL_MS = 10 * 60 * 1000; // 10 minutos
+const RECOVERY_RESET_TOKEN_TTL_MS = 15 * 60 * 1000; // reset token de uso único
+const RECOVERY_RESET_TOKEN_TTL_LABEL = '15m';
+const RECOVERY_MAX_TENTATIVAS = 5; // tentativas de código por desafio
+const RECOVERY_MAX_POR_USUARIO = 3; // desafios por usuário na janela abaixo
+const RECOVERY_JANELA_USUARIO_MIN = 60;
+const RECOVERY_MAX_POR_IP = 10; // desafios por IP na janela abaixo
+const RECOVERY_JANELA_IP_MIN = 15;
+// Flows de token assinados com INVITE_TOKEN_SECRET que NUNCA valem como
+// convite (recuperação de senha antiga).
+const INVITE_FLOWS_PROIBIDOS = ['password_recovery'];
 
 // E-mail de boas-vindas enfileirado em tb_mensagens_fila a cada cadastro novo
 // de residente (criarUsuario / cadastrarUsuarioPorConvite) — enviado depois
@@ -287,7 +299,7 @@ class CondominioController {
     const { put } = require('@vercel/blob');
     const path = require('path');
 
-    const extByOriginalName = path.extname(String(arquivo.originalname || '')).replace('.', '').toLowerCase();
+    const extByOriginalName = (arquivo.extensaoSegura || path.extname(String(arquivo.originalname || '')).replace('.', '').toLowerCase());
     const extByMime = String(arquivo.mimetype || '').split('/').pop().split(';')[0].trim().toLowerCase();
     const extensao = extByOriginalName || extByMime || 'jpg';
 
@@ -580,9 +592,31 @@ class CondominioController {
     return crypto.timingSafeEqual(aBuffer, bBuffer);
   }
 
+  // Recusa tokens que não são convites: recuperação de senha (flow
+  // password_recovery), sessão de login (IdPerfil/role) e imagem (aud/tipo).
+  _assertPayloadDeConvite(payload) {
+    if (!payload || typeof payload !== 'object') {
+      throw new Error('invite_token payload inválido.');
+    }
+    if (payload.flow && INVITE_FLOWS_PROIBIDOS.includes(String(payload.flow))) {
+      throw new Error('invite_token com finalidade não permitida.');
+    }
+    if (payload.IdPerfil !== undefined || payload.id_perfil !== undefined || payload.role !== undefined) {
+      throw new Error('invite_token com finalidade não permitida.');
+    }
+    if (payload.aud !== undefined || payload.tipo !== undefined) {
+      throw new Error('invite_token com finalidade não permitida.');
+    }
+    return payload;
+  }
+
   _verifyInviteToken(token) {
+    return this._assertPayloadDeConvite(this._verifyInviteTokenAssinatura(token));
+  }
+
+  _verifyInviteTokenAssinatura(token) {
     try {
-      return jwt.verify(token, INVITE_TOKEN_SECRET, { maxAge: '24h' });
+      return jwt.verify(token, INVITE_TOKEN_SECRET, { maxAge: '24h', algorithms: ['HS256'] });
     } catch (jwtError) {
       const parts = String(token || '').split('.');
 
@@ -652,11 +686,6 @@ class CondominioController {
   }
 
   async _podeVisualizarDadosMorador(req) {
-    const perfilToken = this._normalizarPerfil(req.nomePerfil);
-    if (perfilToken === 'admin' || perfilToken === 'sindico') {
-      return true;
-    }
-
     const idPerfilToken = this._toInt(req.IdPerfil, null);
     if ([1, 3, 5, 54].includes(idPerfilToken)) {
       return true;
@@ -687,21 +716,11 @@ class CondominioController {
       return false;
     }
 
-    const perfilDb = this._normalizarPerfil(usuario[0].tipo);
-    if (perfilDb === 'admin' || perfilDb === 'sindico') {
-      return true;
-    }
-
     const idPerfilDb = this._toInt(usuario[0].tipo_perfil_id, null);
     return [1, 3, 5, 54].includes(idPerfilDb);
   }
 
   _podeGerenciarPermissoesMenu(req) {
-    const perfilToken = this._normalizarPerfil(req.nomePerfil);
-    if (perfilToken === 'admin') {
-      return true;
-    }
-
     const idPerfilToken = this._toInt(req.IdPerfil, null);
     return idPerfilToken === 1;
   }
@@ -1291,6 +1310,12 @@ class CondominioController {
       if (!ehAdmin && !idCondominioToken) {
         return res.status(403).json({
           message: 'Token sem id_condominio para atualizar plano de fatura.'
+        });
+      }
+
+      if (!ehAdmin && idPerfilToken !== permissoes.PERFIL.SINDICO) {
+        return res.status(403).json({
+          message: 'Apenas Admin ou Síndico podem alterar o plano de fatura.'
         });
       }
 
@@ -2863,7 +2888,7 @@ class CondominioController {
         return res.status(404).json({ message: 'Registro não possui imagem anexada.' });
       }
 
-      const blobUrl = resolveBlobUrl(origemImagem);
+      const blobUrl = resolveBlobUrl(origemImagem, { idCondominio: idCondominioToken });
       if (!blobUrl) {
         return res.status(500).json({ message: 'Falha ao resolver URL da imagem no blob.' });
       }
@@ -3506,6 +3531,17 @@ class CondominioController {
       const whereParts = ['1 = 1'];
       const replacements = { limit: pageSize, offset };
 
+      // Só o Admin lista todos os condomínios; os demais perfis veem apenas o
+      // condomínio do próprio token.
+      if (!permissoes.ehAdmin(req)) {
+        const idCondominioToken = this._toInt(req.id_condominio, null);
+        if (!idCondominioToken) {
+          return res.status(403).json({ message: 'Token sem id_condominio.' });
+        }
+        whereParts.push('c.id = :id_condominio_token');
+        replacements.id_condominio_token = idCondominioToken;
+      }
+
       if (req.query.q) {
         const q = String(req.query.q).trim();
         whereParts.push('(c.nome ILIKE :q OR c.email ILIKE :q OR c.telefone ILIKE :q)');
@@ -3595,6 +3631,10 @@ class CondominioController {
       const id = this._toInt(req.params.id, null);
       if (!id) {
         return res.status(400).json({ message: 'Id inválido.' });
+      }
+
+      if (!permissoes.ehAdmin(req) && id !== this._toInt(req.id_condominio, null)) {
+        return res.status(404).json({ message: 'Condomínio não encontrado.' });
       }
 
       const data = await postgres.query(
@@ -3750,6 +3790,12 @@ class CondominioController {
       if (!id) {
         await transaction.rollback();
         return res.status(400).json({ message: 'Id inválido.' });
+      }
+
+      // Gestores (rota exige 1/3/4) só editam o próprio condomínio.
+      if (!permissoes.ehAdmin(req) && id !== this._toInt(req.id_condominio, null)) {
+        await transaction.rollback();
+        return res.status(403).json({ message: 'Sem permissão para editar outro condomínio.' });
       }
 
       const qtdeBlocosBody = req.body.qtde_blocos !== undefined ? req.body.qtde_blocos : req.body.qtde_bloco;
@@ -5154,6 +5200,44 @@ class CondominioController {
     }
   }
 
+  // Filtro de condomínio para registros do dashboard: Admin vê todos; os
+  // demais, só o condomínio do token. filtroSql é constante (sem input).
+  _escopoDashboardRegistro(req) {
+    if (permissoes.ehAdmin(req)) {
+      return { ok: true, filtroSql: '', replacements: {} };
+    }
+    const idCondominioToken = this._toInt(req.id_condominio, null);
+    if (!idCondominioToken) {
+      return { ok: false, message: 'Token sem id_condominio.' };
+    }
+    return {
+      ok: true,
+      filtroSql: 'AND id_condominio = :id_condominio_escopo',
+      replacements: { id_condominio_escopo: idCondominioToken }
+    };
+  }
+
+  // Equipe (Admin, Síndico, Sub-Síndico, Portaria, Colaborador) altera
+  // qualquer registro do condomínio; Morador só os que ele mesmo criou.
+  _podeAlterarDashboardRegistro(req, registro) {
+    const equipe = permissoes.temPerfil(
+      req,
+      permissoes.PERFIL.ADMIN,
+      permissoes.PERFIL.SINDICO,
+      permissoes.PERFIL.SUB_SINDICO,
+      permissoes.PERFIL.PORTARIA,
+      permissoes.PERFIL.COLABORADOR
+    );
+    if (equipe) {
+      return { ok: true, equipe: true };
+    }
+    const idUsuarioToken = this._toInt(req.idcliente, null);
+    if (idUsuarioToken && this._toInt(registro.id_usuario, null) === idUsuarioToken) {
+      return { ok: true, equipe: false };
+    }
+    return { ok: false, message: 'Você só pode alterar registros criados por você.' };
+  }
+
   async editarDashboardRegistro(req, res) {
     try {
       console.log(
@@ -5166,13 +5250,19 @@ class CondominioController {
         return res.status(400).json({ message: 'Id do registro inválido.' });
       }
 
+      const escopo = this._escopoDashboardRegistro(req);
+      if (!escopo.ok) {
+        return res.status(403).json({ message: escopo.message });
+      }
+
       const atualRows = await postgres.query(
         `SELECT *
            FROM "condominio-bh".tb_dashboard_registro
           WHERE id = :id
+            ${escopo.filtroSql}
           LIMIT 1`,
         {
-          replacements: { id },
+          replacements: { id, ...escopo.replacements },
           type: QueryTypes.SELECT
         }
       );
@@ -5182,6 +5272,22 @@ class CondominioController {
       }
 
       const atual = atualRows[0];
+
+      const permissaoRegistro = this._podeAlterarDashboardRegistro(req, atual);
+      if (!permissaoRegistro.ok) {
+        return res.status(403).json({ message: permissaoRegistro.message });
+      }
+
+      // Só o Admin pode mover o registro de condomínio; fora isso o body é
+      // ignorado. Morador não reatribui o registro a outro usuário.
+      if (!permissoes.ehAdmin(req)) {
+        delete req.body.id_condominio;
+        delete req.body.condominio_id;
+        delete req.body.encomenda_condominio_id;
+      }
+      if (!permissaoRegistro.equipe) {
+        delete req.body.id_usuario;
+      }
 
       console.log(
         '[diag-encomenda-entregue] Registro atual ANTES do update: id=%s tipo=%s status=%s apartamento=%s bloco=%s',
@@ -5516,7 +5622,7 @@ class CondominioController {
       }
 
       const rows = await postgres.query(
-        `SELECT origem
+        `SELECT origem, id_condominio
            FROM "condominio-bh".tb_dashboard_registro
           WHERE ${whereParts.join(' AND ')}
           LIMIT 1`,
@@ -5528,11 +5634,12 @@ class CondominioController {
       }
 
       const origemImagem = this._normalizarTextoOuNull(rows[0].origem);
+      const idCondominioRegistro = this._toInt(rows[0].id_condominio, null);
       if (!origemImagem) {
         return res.status(404).json({ message: 'Registro não possui imagem anexada.' });
       }
 
-      const blobUrl = resolveBlobUrl(origemImagem);
+      const blobUrl = resolveBlobUrl(origemImagem, { idCondominio: idCondominioRegistro });
       if (!blobUrl) {
         return res.status(500).json({ message: 'Falha ao resolver URL da imagem no blob.' });
       }
@@ -5579,6 +5686,27 @@ class CondominioController {
       const id = this._toInt(req.params.id, null);
       if (!id) {
         return res.status(400).json({ message: 'Id do registro inválido.' });
+      }
+
+      const escopo = this._escopoDashboardRegistro(req);
+      if (!escopo.ok) {
+        return res.status(403).json({ message: escopo.message });
+      }
+
+      const atualRows = await postgres.query(
+        `SELECT id, id_usuario, id_condominio
+           FROM "condominio-bh".tb_dashboard_registro
+          WHERE id = :id
+            ${escopo.filtroSql}
+          LIMIT 1`,
+        { replacements: { id, ...escopo.replacements }, type: QueryTypes.SELECT }
+      );
+      if (!atualRows || atualRows.length === 0) {
+        return res.status(404).json({ message: 'Registro de dashboard não encontrado.' });
+      }
+      const permissaoRegistro = this._podeAlterarDashboardRegistro(req, atualRows[0]);
+      if (!permissaoRegistro.ok) {
+        return res.status(403).json({ message: permissaoRegistro.message });
       }
 
       const update = await postgres.query(
@@ -5903,6 +6031,12 @@ class CondominioController {
           .filter((email) => Boolean(email))
       )];
 
+      const emailsInvalidos = emailsDestinatarios.filter((email) => !EMAIL_REGEX.test(email));
+      if (emailsInvalidos.length > 0) {
+        await transaction.rollback();
+        return res.status(422).json({ message: `E-mails inválidos: ${emailsInvalidos.join(', ')}.` });
+      }
+
       const created = await postgres.query(
         `INSERT INTO "condominio-bh".tb_sgw_rel_envio_config (
             id_condominio,
@@ -6134,6 +6268,12 @@ class CondominioController {
             .map((email) => this._normalizarEmailOuNull(email))
             .filter((email) => Boolean(email))
         )];
+
+        const emailsInvalidos = emailsDestinatarios.filter((email) => !EMAIL_REGEX.test(email));
+        if (emailsInvalidos.length > 0) {
+          await transaction.rollback();
+          return res.status(422).json({ message: `E-mails inválidos: ${emailsInvalidos.join(', ')}.` });
+        }
 
         const colunasRows = await postgres.query(
           `SELECT column_name
@@ -7881,6 +8021,22 @@ class CondominioController {
         });
       }
 
+      if (!permissoes.ehGestor(req)) {
+        return res.status(403).json({ message: 'Apenas administradores e síndicos podem cadastrar usuários.' });
+      }
+
+      const perfilSolicitado = req.body.tipo_perfil_id !== undefined && req.body.tipo_perfil_id !== null && req.body.tipo_perfil_id !== ''
+        ? req.body.tipo_perfil_id
+        : permissoes.PERFIL.MORADOR;
+      if (!permissoes.podeAtribuirPerfil(req, perfilSolicitado)) {
+        return res.status(403).json({ message: 'Seu perfil não pode atribuir este perfil de acesso.' });
+      }
+
+      // `tipo` sempre derivado de tipo_perfil_id (exceto Admin).
+      if (!permissoes.ehAdmin(req)) {
+        delete req.body.tipo;
+      }
+
       const {
         nome,
         sobrenome,
@@ -8103,6 +8259,33 @@ class CondominioController {
     }
   }
 
+  _baseUrlConvitePermitida(valor) {
+    const texto = this._normalizarTextoOuNull(valor);
+    if (!texto) {
+      return null;
+    }
+    let origem;
+    try {
+      const url = new URL(texto);
+      if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+        return null;
+      }
+      origem = url.origin.toLowerCase();
+    } catch (_) {
+      return null;
+    }
+    const permitidas = [process.env.APP_URL, process.env.BASE_URL, ...String(process.env.ALLOWED_INVITE_BASE_URLS || '').split(',')]
+      .map((item) => {
+        try {
+          return item && item.trim() ? new URL(item.trim()).origin.toLowerCase() : null;
+        } catch (_) {
+          return null;
+        }
+      })
+      .filter(Boolean);
+    return permitidas.includes(origem) ? texto : null;
+  }
+
   async gerarConviteMorador(req, res) {
     try {
       const idCondominioToken = this._toInt(req.id_condominio, null);
@@ -8123,9 +8306,11 @@ class CondominioController {
       const apartamento = req.body.apartamento ? String(req.body.apartamento).trim() : null;
       const bloco = req.body.bloco ? String(req.body.bloco).trim() : null;
       const mensagem = req.body.mensagem ? String(req.body.mensagem).trim() : null;
-      const baseUrl = req.body.base_url
-        ? String(req.body.base_url).trim()
-        : process.env.APP_URL || process.env.BASE_URL || '';
+      // base_url do body só é aceita se a origem estiver na allowlist
+      // ALLOWED_INVITE_BASE_URLS (separada por vírgula) — evita que o link do
+      // convite (com o token) aponte para um site de terceiros.
+      const baseUrlPadrao = process.env.APP_URL || process.env.BASE_URL || '';
+      const baseUrl = this._baseUrlConvitePermitida(req.body.base_url) || baseUrlPadrao;
 
       const condominioRows = await postgres.query(
         `SELECT id, nome FROM "condominio-bh"."tb-condominios" WHERE id = :id LIMIT 1`,
@@ -8485,134 +8670,250 @@ class CondominioController {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Recuperação de senha — fluxo único (app React e frontend PHP)
+  //
+  // 1. request/lookup: gera um código de 6 dígitos (bcrypt em
+  //    tb_recovery_tokens) e envia por e-mail. A resposta é sempre genérica e
+  //    NUNCA contém token.
+  // 2. verify/verify-code: confere o código (máx. 5 tentativas) e devolve um
+  //    reset token opaco de uso único (15 min). Só o sha256 é gravado.
+  // 3. reset: consome o reset token de forma atômica, troca a senha e revoga
+  //    todas as sessões do usuário (token_version).
+  // ---------------------------------------------------------------------------
+
+  async _buscarUsuarioParaRecuperacao(loginRaw) {
+    const login = String(loginRaw || '').trim();
+    if (!login) {
+      return null;
+    }
+    const loginEmail = login.toLowerCase();
+    const loginCpf = login.replace(/\D/g, '');
+
+    const [usuario] = await postgres.query(
+      `SELECT tu.id, tu.id_condominio, tu.nome, tu.sobrenome, tu.email, tu.status,
+              tc.ativo AS condominio_ativo
+         FROM "condominio-bh"."tb-usuarios" tu
+         LEFT JOIN "condominio-bh"."tb-condominios" tc ON tc.id::text = tu.id_condominio::text
+        WHERE (lower(tu.email) = :email OR (:cpf <> '' AND tu.cpf = :cpf))
+        ORDER BY tu.id DESC LIMIT 1`,
+      { replacements: { email: loginEmail, cpf: loginCpf.length === 11 ? loginCpf : '' }, type: QueryTypes.SELECT }
+    );
+
+    return usuario || null;
+  }
+
+  _usuarioAptoParaRecuperacao(usuario) {
+    return Boolean(
+      usuario &&
+      String(usuario.status || '').trim().toLowerCase() === 'ativo' &&
+      usuario.condominio_ativo &&
+      this._normalizarEmailOuNull(usuario.email)
+    );
+  }
+
+  async _recuperacaoExcedeuLimite({ idUsuario, ip }) {
+    const [row] = await postgres.query(
+      `SELECT
+          SUM(CASE WHEN id_usuario = :id_usuario AND created_at > NOW() - CAST(:janela_usuario AS interval) THEN 1 ELSE 0 END) AS por_usuario,
+          SUM(CASE WHEN request_ip = :ip AND created_at > NOW() - CAST(:janela_ip AS interval) THEN 1 ELSE 0 END) AS por_ip
+         FROM "condominio-bh".tb_recovery_tokens
+        WHERE created_at > NOW() - CAST(:janela_usuario AS interval)
+          AND (id_usuario = :id_usuario OR request_ip = :ip)`,
+      {
+        replacements: {
+          id_usuario: idUsuario,
+          ip: ip || '',
+          janela_usuario: `${RECOVERY_JANELA_USUARIO_MIN} minutes`,
+          janela_ip: `${RECOVERY_JANELA_IP_MIN} minutes`
+        },
+        type: QueryTypes.SELECT
+      }
+    );
+    const porUsuario = Number.parseInt(row?.por_usuario, 10) || 0;
+    const porIp = Number.parseInt(row?.por_ip, 10) || 0;
+    return porUsuario >= RECOVERY_MAX_POR_USUARIO || porIp >= RECOVERY_MAX_POR_IP;
+  }
+
+  // Cria um novo desafio (código por e-mail). Os desafios pendentes anteriores
+  // são encerrados (consumed_at), não apagados, para manter a contagem do
+  // rate limit e a trilha de investigação.
+  async _criarDesafioRecuperacao({ usuario, ip }) {
+    const idUsuario = this._toInt(usuario.id, null);
+    const idCondominio = this._toInt(usuario.id_condominio, null);
+
+    if (await this._recuperacaoExcedeuLimite({ idUsuario, ip })) {
+      console.warn(`[recovery] Limite de solicitações atingido id_usuario=${idUsuario} ip=${ip || '-'}`);
+      return { criado: false, motivo: 'rate_limit' };
+    }
+
+    const otpCode = String(crypto.randomInt(100000, 1000000));
+    const codeHash = await bcrypt.hash(otpCode, 10);
+    const expiresAt = new Date(Date.now() + RECOVERY_OTP_TTL_MS);
+
+    await postgres.query(
+      `UPDATE "condominio-bh".tb_recovery_tokens
+          SET consumed_at = NOW(), updated_at = NOW()
+        WHERE id_usuario = :id_usuario AND consumed_at IS NULL`,
+      { replacements: { id_usuario: idUsuario }, type: QueryTypes.UPDATE }
+    );
+
+    await postgres.query(
+      `INSERT INTO "condominio-bh".tb_recovery_tokens
+         (id_usuario, id_condominio, code_hash, invite_token, expires_at, attempts, request_ip, created_at, updated_at)
+       VALUES (:id_usuario, :id_condominio, :code_hash, NULL, :expires_at, 0, :request_ip, NOW(), NOW())`,
+      {
+        replacements: {
+          id_usuario: idUsuario,
+          id_condominio: idCondominio,
+          code_hash: codeHash,
+          expires_at: expiresAt,
+          request_ip: ip || null
+        },
+        type: QueryTypes.INSERT
+      }
+    );
+
+    const emailUsuario = this._normalizarEmailOuNull(usuario.email);
+    const nomeCompleto = this._normalizarNomeCapitalizado(`${usuario.nome || ''} ${usuario.sobrenome || ''}`.trim()) || null;
+
+    waitUntil((async () => {
+      try {
+        await despacharEmail({
+          _ref: `recovery_${idUsuario}`,
+          template: 'auth_recovery_token',
+          email: emailUsuario || '',
+          nome: nomeCompleto || '',
+          token: otpCode
+        });
+      } catch (emailErr) {
+        console.error('[recovery] Erro ao enviar e-mail:', emailErr?.message);
+      }
+    })());
+
+    return { criado: true, idUsuario, expiresAt };
+  }
+
+  // Confere o código do desafio pendente mais recente do usuário. Em caso de
+  // sucesso, encerra o desafio e emite o reset token de uso único.
+  async _validarCodigoEEmitirResetToken({ idUsuario, code }) {
+    const [record] = await postgres.query(
+      `SELECT id, code_hash, expires_at, attempts
+         FROM "condominio-bh".tb_recovery_tokens
+        WHERE id_usuario = :id_usuario
+          AND consumed_at IS NULL
+        ORDER BY created_at DESC LIMIT 1`,
+      { replacements: { id_usuario: idUsuario }, type: QueryTypes.SELECT }
+    );
+
+    if (!record) {
+      return { ok: false, status: 401, code: 'INVALID_CODE', message: 'Código inválido ou expirado.' };
+    }
+
+    if (new Date(record.expires_at) < new Date()) {
+      return { ok: false, status: 401, code: 'CODE_EXPIRED', message: 'Código expirado. Solicite um novo.' };
+    }
+
+    // Incremento atômico: duas requisições paralelas não ganham tentativas extras.
+    const [incrementado] = await postgres.query(
+      `UPDATE "condominio-bh".tb_recovery_tokens
+          SET attempts = attempts + 1, updated_at = NOW()
+        WHERE id = :id AND consumed_at IS NULL AND attempts < :max
+        RETURNING id`,
+      { replacements: { id: record.id, max: RECOVERY_MAX_TENTATIVAS }, type: QueryTypes.SELECT }
+    );
+
+    if (!incrementado) {
+      return { ok: false, status: 429, code: 'MAX_ATTEMPTS', message: 'Limite de tentativas atingido. Solicite um novo código.' };
+    }
+
+    const codeValido = await bcrypt.compare(String(code || ''), record.code_hash);
+    if (!codeValido) {
+      return { ok: false, status: 401, code: 'INVALID_CODE', message: 'Código incorreto.' };
+    }
+
+    const resetToken = crypto.randomBytes(32).toString('base64url');
+    const resetTokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
+
+    const [emitido] = await postgres.query(
+      `UPDATE "condominio-bh".tb_recovery_tokens
+          SET consumed_at = NOW(),
+              reset_token_hash = :reset_token_hash,
+              reset_expires_at = :reset_expires_at,
+              updated_at = NOW()
+        WHERE id = :id AND consumed_at IS NULL
+        RETURNING id`,
+      {
+        replacements: {
+          id: record.id,
+          reset_token_hash: resetTokenHash,
+          reset_expires_at: new Date(Date.now() + RECOVERY_RESET_TOKEN_TTL_MS)
+        },
+        type: QueryTypes.SELECT
+      }
+    );
+
+    if (!emitido) {
+      return { ok: false, status: 401, code: 'INVALID_CODE', message: 'Código inválido ou expirado.' };
+    }
+
+    return { ok: true, resetToken };
+  }
+
+  _respostaResetToken(resetToken) {
+    // Campos invite_token/token mantidos por compatibilidade com o app; o valor
+    // agora é um reset token opaco de uso único (não é mais JWT).
+    return {
+      success: true,
+      message: 'Código validado.',
+      reset_token: resetToken,
+      invite_token: resetToken,
+      token: resetToken,
+      token_type: 'reset_token',
+      expires_in: RECOVERY_RESET_TOKEN_TTL_LABEL
+    };
+  }
+
+  async _resolverIdUsuarioRecuperacao(req) {
+    const idInformado = this._toInt(req.body?.user_id, null);
+    if (idInformado) {
+      return idInformado;
+    }
+    const login = req.body?.login ?? req.body?.email;
+    if (!login) {
+      return null;
+    }
+    const usuario = await this._buscarUsuarioParaRecuperacao(login);
+    return usuario ? this._toInt(usuario.id, null) : null;
+  }
+
+  // POST /api/condominio/auth-recovery-lookup(.php) — usado pelo frontend PHP.
+  // Agora apenas dispara o código por e-mail. Não devolve token nem dados do
+  // usuário, e responde igual exista ou não o cadastro.
   async authRecoveryLookup(req, res) {
+    const respostaGenerica = {
+      success: true,
+      message: 'Se os dados estiverem cadastrados, você receberá um código por e-mail.'
+    };
     try {
       const loginRaw = this._normalizarTextoOuNull(req.body?.login);
       if (!loginRaw) {
-        return res.status(400).json({
-          success: false,
-          message: 'Campo login é obrigatório.'
-        });
+        return res.status(400).json({ success: false, message: 'Campo login é obrigatório.' });
       }
 
-      const loginEmail = String(loginRaw).trim().toLowerCase();
-      const loginCpf = String(loginRaw).replace(/\D/g, '');
-
-      const usuarios = await postgres.query(
-        `SELECT
-            tu.id,
-            tu.id_condominio,
-            tu.nome,
-            tu.sobrenome,
-            tu.email,
-            tu.cpf,
-            tu.status,
-            tc.nome AS nome_condominio,
-            tc.ativo AS condominio_ativo
-           FROM "condominio-bh"."tb-usuarios" tu
-           LEFT JOIN "condominio-bh"."tb-condominios" tc
-             ON tc.id::text = tu.id_condominio::text
-          WHERE (lower(tu.email) = :login_email OR tu.cpf = :login_cpf)
-          ORDER BY tu.id DESC
-          LIMIT 1`,
-        {
-          replacements: {
-            login_email: loginEmail,
-            login_cpf: loginCpf
-          },
-          type: QueryTypes.SELECT
-        }
-      );
-
-      if (!usuarios || usuarios.length === 0) {
-        return res.status(404).json({
-          success: false,
-          message: 'Usuario nao encontrado para o e-mail/CPF informado.'
-        });
+      const usuario = await this._buscarUsuarioParaRecuperacao(loginRaw);
+      if (this._usuarioAptoParaRecuperacao(usuario)) {
+        await this._criarDesafioRecuperacao({ usuario, ip: ipDaRequisicao(req) });
       }
 
-      const usuario = usuarios[0];
-      const usuarioAtivo = ['ativo'].includes(String(usuario.status || '').trim().toLowerCase());
-      const condominioAtivo = Boolean(usuario.condominio_ativo);
-
-      if (!usuarioAtivo || !condominioAtivo) {
-        return res.status(200).json({
-          success: false,
-          message: 'Dados com impedimentos, favor procurar o sindico.'
-        });
-      }
-
-      const inviteToken = jwt.sign(
-        {
-          id_usuario: this._toInt(usuario.id, null),
-          id_condominio: this._toInt(usuario.id_condominio, null),
-          email: this._normalizarEmailOuNull(usuario.email),
-          flow: 'password_recovery',
-          jti: crypto.randomBytes(16).toString('hex')
-        },
-        INVITE_TOKEN_SECRET,
-        { expiresIn: '24h' }
-      );
-
-      // Código de 6 dígitos para exibição no e-mail — válido por 10 minutos
-      const otpCode = String(Math.floor(100000 + Math.random() * 900000));
-      const emailUsuario = this._normalizarEmailOuNull(usuario.email);
-      const idUsuarioLookup = this._toInt(usuario.id, null);
-      const idCondominioLookup = this._toInt(usuario.id_condominio, null);
-      const codeHashLookup = await bcrypt.hash(otpCode, 10);
-      const expiresAtLookup = new Date(Date.now() + RECOVERY_OTP_TTL_MS);
-
-      // Persistido em tb_recovery_tokens (não em memória) — precisa sobreviver
-      // entre esta requisição e a de verificação, que pode cair numa instância
-      // serverless diferente na Vercel.
-      await postgres.query(
-        `DELETE FROM "condominio-bh".tb_recovery_tokens WHERE id_usuario = :id_usuario AND consumed_at IS NULL`,
-        { replacements: { id_usuario: idUsuarioLookup }, type: QueryTypes.DELETE }
-      );
-
-      await postgres.query(
-        `INSERT INTO "condominio-bh".tb_recovery_tokens
-           (id_usuario, id_condominio, code_hash, invite_token, expires_at, attempts, created_at, updated_at)
-         VALUES (:id_usuario, :id_condominio, :code_hash, :invite_token, :expires_at, 0, NOW(), NOW())`,
-        {
-          replacements: {
-            id_usuario: idUsuarioLookup,
-            id_condominio: idCondominioLookup,
-            code_hash: codeHashLookup,
-            invite_token: inviteToken,
-            expires_at: expiresAtLookup
-          },
-          type: QueryTypes.INSERT
-        }
-      );
-
-      const nomeCompleto = this._normalizarNomeCapitalizado(`${usuario.nome || ''} ${usuario.sobrenome || ''}`.trim()) || null;
-      const nomeCondominio = this._normalizarTextoOuNull(usuario.nome_condominio);
-
-      return res.status(200).json({
-        success: true,
-        message: 'Dados validos.',
-        data: {
-          id_usuario: this._toInt(usuario.id, null),
-          id_condominio: this._toInt(usuario.id_condominio, null),
-          nome: nomeCompleto,
-          email: emailUsuario,
-          nome_condominio: nomeCondominio
-        },
-        invite_token: inviteToken,
-        token: inviteToken,
-        token_type: 'invite_token',
-        expires_in: '24h'
-      });
+      return res.status(200).json(respostaGenerica);
     } catch (error) {
-      return res.status(500).json({
-        success: false,
-        message: 'Falha ao validar dados para recuperacao de senha.',
-        detail: error.message
-      });
+      console.error('[recovery/lookup] Erro:', error?.message);
+      return res.status(500).json({ success: false, message: 'Falha ao processar recuperação de senha.' });
     }
   }
 
+  // POST /api/condominio/auth-recovery-verify-code — usado pelo frontend PHP.
   async authRecoveryVerifyOtp(req, res) {
     try {
       const email = this._normalizarEmailOuNull(req.body?.email);
@@ -8622,151 +8923,44 @@ class CondominioController {
         return res.status(400).json({ success: false, message: 'Campos email e code são obrigatórios.' });
       }
 
-      const MAX_ATTEMPTS_VERIFY = 5;
-
-      const [entry] = await postgres.query(
-        `SELECT rt.id, rt.code_hash, rt.invite_token, rt.expires_at, rt.attempts
-           FROM "condominio-bh".tb_recovery_tokens rt
-           JOIN "condominio-bh"."tb-usuarios" tu ON tu.id = rt.id_usuario
-          WHERE lower(tu.email) = :email
-            AND rt.consumed_at IS NULL
-          ORDER BY rt.created_at DESC LIMIT 1`,
-        { replacements: { email }, type: QueryTypes.SELECT }
-      );
-
-      if (!entry) {
+      const usuario = await this._buscarUsuarioParaRecuperacao(email);
+      if (!usuario) {
         return res.status(422).json({ success: false, message: 'Código inválido ou expirado.' });
       }
 
-      if (new Date(entry.expires_at) < new Date()) {
-        return res.status(422).json({ success: false, message: 'Código expirado. Solicite um novo.' });
+      const resultado = await this._validarCodigoEEmitirResetToken({ idUsuario: this._toInt(usuario.id, null), code });
+      if (!resultado.ok) {
+        // Mantém os status históricos deste endpoint (422/429).
+        const status = resultado.status === 429 ? 429 : 422;
+        return res.status(status).json({ success: false, code: resultado.code, message: resultado.message });
       }
 
-      if (entry.attempts >= MAX_ATTEMPTS_VERIFY) {
-        return res.status(429).json({ success: false, message: 'Limite de tentativas atingido. Solicite um novo código.' });
-      }
-
-      // Incrementa tentativas antes de validar (evita timing attack)
-      await postgres.query(
-        `UPDATE "condominio-bh".tb_recovery_tokens SET attempts = attempts + 1, updated_at = NOW() WHERE id = :id`,
-        { replacements: { id: entry.id }, type: QueryTypes.UPDATE }
-      );
-
-      const codeValido = await bcrypt.compare(code, entry.code_hash);
-      if (!codeValido) {
-        return res.status(422).json({ success: false, message: 'Código incorreto.' });
-      }
-
-      await postgres.query(
-        `UPDATE "condominio-bh".tb_recovery_tokens SET consumed_at = NOW(), updated_at = NOW() WHERE id = :id`,
-        { replacements: { id: entry.id }, type: QueryTypes.UPDATE }
-      );
-
-      return res.status(200).json({
-        success: true,
-        message: 'Código validado.',
-        invite_token: entry.invite_token,
-        token: entry.invite_token,
-        token_type: 'invite_token',
-        expires_in: '24h'
-      });
+      return res.status(200).json({ ...this._respostaResetToken(resultado.resetToken), user_id: this._toInt(usuario.id, null) });
     } catch (error) {
-      return res.status(500).json({ success: false, message: 'Falha ao verificar código.', detail: error.message });
+      console.error('[recovery/verify-code] Erro:', error?.message);
+      return res.status(500).json({ success: false, message: 'Falha ao verificar código.' });
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Recuperação de senha — fluxo completo para o APP React
-  // ---------------------------------------------------------------------------
-
+  // POST /api/auth/recovery/request — app React.
   async recoveryRequest(req, res) {
-    const ip = req.ip || req.headers['x-forwarded-for'] || 'unknown';
     try {
-      const loginRaw = String(req.body.login || '').trim();
-      const loginEmail = loginRaw.toLowerCase();
-      const loginCpf = loginRaw.replace(/\D/g, '');
+      const usuario = await this._buscarUsuarioParaRecuperacao(req.body.login);
 
-      // Rate limit: 5 requisições por IP a cada 15 min
-      const rateLimitKey = `recovery_req:${ip}`;
-      const RATE_WINDOW = 15 * 60 * 1000;
-      const RATE_MAX = 5;
-      const rateEntry = recoveryOtpStore.get(rateLimitKey);
-      const now = Date.now();
-      if (rateEntry && rateEntry._rateLimit) {
-        if (now - rateEntry.windowStart < RATE_WINDOW && rateEntry.count >= RATE_MAX) {
-          return res.status(429).json({ success: false, code: 'RATE_LIMIT', message: 'Muitas tentativas. Aguarde 15 minutos.' });
-        }
-        if (now - rateEntry.windowStart >= RATE_WINDOW) {
-          recoveryOtpStore.delete(rateLimitKey);
-        }
-      }
-      const newRate = rateEntry && rateEntry._rateLimit && now - rateEntry.windowStart < RATE_WINDOW
-        ? { _rateLimit: true, count: rateEntry.count + 1, windowStart: rateEntry.windowStart }
-        : { _rateLimit: true, count: 1, windowStart: now };
-      recoveryOtpStore.set(rateLimitKey, newRate);
-
-      const [usuario] = await postgres.query(
-        `SELECT tu.id, tu.id_condominio, tu.nome, tu.sobrenome, tu.email, tu.status,
-                tc.nome AS nome_condominio, tc.ativo AS condominio_ativo
-           FROM "condominio-bh"."tb-usuarios" tu
-           LEFT JOIN "condominio-bh"."tb-condominios" tc ON tc.id::text = tu.id_condominio::text
-          WHERE (lower(tu.email) = :email OR tu.cpf = :cpf)
-          ORDER BY tu.id DESC LIMIT 1`,
-        { replacements: { email: loginEmail, cpf: loginCpf }, type: QueryTypes.SELECT }
-      );
-
-      // Resposta genérica para não vazar se o usuário existe
-      if (!usuario || !['ativo'].includes(String(usuario.status || '').toLowerCase()) || !usuario.condominio_ativo) {
+      // Resposta genérica para não vazar se o usuário existe.
+      if (!this._usuarioAptoParaRecuperacao(usuario)) {
         return res.status(200).json({ success: true, message: 'Se o e-mail estiver cadastrado, você receberá o código.' });
       }
 
-      const otpCode = String(Math.floor(100000 + Math.random() * 900000));
-      const codeHash = await bcrypt.hash(otpCode, 10);
-      const expiresAt = new Date(Date.now() + RECOVERY_OTP_TTL_MS);
-      const idUsuario = this._toInt(usuario.id, null);
-      const idCondominio = this._toInt(usuario.id_condominio, null);
+      const desafio = await this._criarDesafioRecuperacao({ usuario, ip: ipDaRequisicao(req) });
 
-      const inviteToken = jwt.sign(
-        { id_usuario: idUsuario, id_condominio: idCondominio, email: this._normalizarEmailOuNull(usuario.email), flow: 'password_recovery', jti: crypto.randomBytes(16).toString('hex') },
-        INVITE_TOKEN_SECRET,
-        { expiresIn: '24h' }
-      );
-
-      // Remove tokens anteriores pendentes e insere o novo
-      await postgres.query(
-        `DELETE FROM "condominio-bh".tb_recovery_tokens WHERE id_usuario = :id_usuario AND consumed_at IS NULL`,
-        { replacements: { id_usuario: idUsuario }, type: QueryTypes.DELETE }
-      );
-
-      await postgres.query(
-        `INSERT INTO "condominio-bh".tb_recovery_tokens
-           (id_usuario, id_condominio, code_hash, invite_token, expires_at, attempts, created_at, updated_at)
-         VALUES (:id_usuario, :id_condominio, :code_hash, :invite_token, :expires_at, 0, NOW(), NOW())`,
-        { replacements: { id_usuario: idUsuario, id_condominio: idCondominio, code_hash: codeHash, invite_token: inviteToken, expires_at: expiresAt }, type: QueryTypes.INSERT }
-      );
-
-      const emailUsuario = this._normalizarEmailOuNull(usuario.email);
-      const nomeCompleto = this._normalizarNomeCapitalizado(`${usuario.nome || ''} ${usuario.sobrenome || ''}`.trim()) || null;
-
-      waitUntil((async () => {
-        try {
-          await despacharEmail({
-            _ref: `recovery_${idUsuario}`,
-            template: 'auth_recovery_token',
-            email: emailUsuario || '',
-            nome: nomeCompleto || '',
-            token: otpCode
-          });
-        } catch (emailErr) {
-          console.error('[recovery] Erro ao enviar e-mail:', emailErr?.message);
-        }
-      })());
-
+      // user_id mantido apenas por compatibilidade com versões publicadas do
+      // app (ele é enviado de volta no verify). Versões novas usam `login`.
       return res.status(200).json({
         success: true,
         message: 'Se o e-mail estiver cadastrado, você receberá o código.',
-        user_id: idUsuario,
-        expires_at: expiresAt.toISOString()
+        user_id: this._toInt(usuario.id, null),
+        ...(desafio.expiresAt ? { expires_at: desafio.expiresAt.toISOString() } : {})
       });
     } catch (error) {
       console.error('[recovery/request] Erro:', error?.message);
@@ -8774,136 +8968,265 @@ class CondominioController {
     }
   }
 
+  // POST /api/auth/recovery/verify — app React. Aceita user_id (legado) ou login.
   async recoveryVerify(req, res) {
     try {
-      const idUsuario = this._toInt(req.body.user_id, null);
+      const idUsuario = await this._resolverIdUsuarioRecuperacao(req);
       const code = String(req.body.code || '').trim();
-      const MAX_ATTEMPTS = 5;
 
-      const [record] = await postgres.query(
-        `SELECT id, code_hash, invite_token, expires_at, attempts, consumed_at
-           FROM "condominio-bh".tb_recovery_tokens
-          WHERE id_usuario = :id_usuario
-            AND consumed_at IS NULL
-          ORDER BY created_at DESC LIMIT 1`,
-        { replacements: { id_usuario: idUsuario }, type: QueryTypes.SELECT }
-      );
-
-      if (!record) {
+      if (!idUsuario) {
         return res.status(401).json({ success: false, code: 'INVALID_CODE', message: 'Código inválido ou expirado.' });
       }
 
-      if (new Date(record.expires_at) < new Date()) {
-        return res.status(401).json({ success: false, code: 'CODE_EXPIRED', message: 'Código expirado. Solicite um novo.' });
+      const resultado = await this._validarCodigoEEmitirResetToken({ idUsuario, code });
+      if (!resultado.ok) {
+        return res.status(resultado.status).json({ success: false, code: resultado.code, message: resultado.message });
       }
 
-      if (record.attempts >= MAX_ATTEMPTS) {
-        return res.status(429).json({ success: false, code: 'MAX_ATTEMPTS', message: 'Limite de tentativas atingido. Solicite um novo código.' });
-      }
-
-      // Incrementa tentativas antes de validar (evita timing attack)
-      await postgres.query(
-        `UPDATE "condominio-bh".tb_recovery_tokens SET attempts = attempts + 1, updated_at = NOW() WHERE id = :id`,
-        { replacements: { id: record.id }, type: QueryTypes.UPDATE }
-      );
-
-      const codeValido = await bcrypt.compare(code, record.code_hash);
-      if (!codeValido) {
-        return res.status(401).json({ success: false, code: 'INVALID_CODE', message: 'Código incorreto.' });
-      }
-
-      // Marca como consumido
-      await postgres.query(
-        `UPDATE "condominio-bh".tb_recovery_tokens SET consumed_at = NOW(), updated_at = NOW() WHERE id = :id`,
-        { replacements: { id: record.id }, type: QueryTypes.UPDATE }
-      );
-
-      return res.status(200).json({
-        success: true,
-        message: 'Código validado.',
-        invite_token: record.invite_token,
-        token: record.invite_token,
-        token_type: 'invite_token',
-        expires_in: '24h'
-      });
+      return res.status(200).json({ ...this._respostaResetToken(resultado.resetToken), user_id: idUsuario });
     } catch (error) {
       console.error('[recovery/verify] Erro:', error?.message);
       return res.status(500).json({ success: false, code: 'INTERNAL_ERROR', message: 'Erro interno ao verificar código.' });
     }
   }
 
+  // POST /api/auth/recovery/reset — app React e frontend PHP.
+  // Exige o reset token emitido pelo verify. JWTs de recuperação antigos
+  // (invite_token "password_recovery") não são mais aceitos.
   async recoveryReset(req, res) {
+    let transaction = null;
     try {
-      const idUsuario = this._toInt(req.body.user_id, null);
-      const inviteTokenInput = String(req.body.invite_token || '').trim();
-      const novaSenha = String(req.body.password || '').trim();
+      const idUsuario = await this._resolverIdUsuarioRecuperacao(req);
+      const resetToken = String(req.body.reset_token || req.body.invite_token || req.body.token || '').trim();
+      const novaSenha = String(req.body.password || '');
 
-      let payload;
-      try {
-        payload = jwt.verify(inviteTokenInput, INVITE_TOKEN_SECRET);
-      } catch {
+      if (!idUsuario || !resetToken) {
         return res.status(401).json({ success: false, code: 'INVALID_TOKEN', message: 'Token inválido ou expirado.' });
       }
 
-      if (payload.flow !== 'password_recovery') {
-        return res.status(403).json({ success: false, code: 'FORBIDDEN', message: 'Token não autorizado para esta operação.' });
+      if (novaSenha.trim().length < 6) {
+        return res.status(422).json({ success: false, code: 'WEAK_PASSWORD', message: 'password deve ter no mínimo 6 caracteres.' });
       }
 
-      if (this._toInt(payload.id_usuario, null) !== idUsuario) {
-        return res.status(403).json({ success: false, code: 'FORBIDDEN', message: 'Token não pertence a este usuário.' });
-      }
-
+      const resetTokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
       const senhaHash = await bcrypt.hash(novaSenha, 10);
 
-      const updated = await postgres.query(
+      transaction = await postgres.transaction();
+
+      // Consumo atômico: só uma requisição consegue usar o token.
+      const [consumido] = await postgres.query(
+        `UPDATE "condominio-bh".tb_recovery_tokens
+            SET reset_used_at = NOW(), updated_at = NOW()
+          WHERE reset_token_hash = :hash
+            AND id_usuario = :id_usuario
+            AND reset_used_at IS NULL
+            AND reset_expires_at > NOW()
+          RETURNING id, id_condominio`,
+        { replacements: { hash: resetTokenHash, id_usuario: idUsuario }, type: QueryTypes.SELECT, transaction }
+      );
+
+      if (!consumido) {
+        await transaction.rollback();
+        transaction = null;
+        return res.status(401).json({ success: false, code: 'INVALID_TOKEN', message: 'Token inválido ou expirado.' });
+      }
+
+      const atualizado = await postgres.query(
         `UPDATE "condominio-bh"."tb-usuarios"
             SET senha_hash = :senha_hash, updated_at = NOW()
           WHERE id = :id
-          RETURNING id`,
-        { replacements: { id: idUsuario, senha_hash: senhaHash }, type: QueryTypes.UPDATE }
+          RETURNING id, id_condominio`,
+        { replacements: { id: idUsuario, senha_hash: senhaHash }, type: QueryTypes.SELECT, transaction }
       );
 
-      if (!updated?.[0]?.length) {
+      if (!atualizado || atualizado.length === 0) {
+        await transaction.rollback();
+        transaction = null;
         return res.status(404).json({ success: false, code: 'NOT_FOUND', message: 'Usuário não encontrado.' });
       }
 
-      // Invalida todos os tokens de recovery pendentes deste usuário
+      // Encerra qualquer outro desafio/token pendente do usuário.
       await postgres.query(
-        `DELETE FROM "condominio-bh".tb_recovery_tokens WHERE id_usuario = :id_usuario`,
-        { replacements: { id_usuario: idUsuario }, type: QueryTypes.DELETE }
+        `UPDATE "condominio-bh".tb_recovery_tokens
+            SET consumed_at = COALESCE(consumed_at, NOW()),
+                reset_used_at = COALESCE(reset_used_at, NOW()),
+                updated_at = NOW()
+          WHERE id_usuario = :id_usuario`,
+        { replacements: { id_usuario: idUsuario }, type: QueryTypes.UPDATE, transaction }
       );
 
-      console.log(`[recovery/reset] Senha redefinida para id_usuario=${idUsuario}`);
+      await transaction.commit();
+      transaction = null;
+
+      // Revoga todas as sessões anteriores do usuário.
+      await incrementarTokenVersion(idUsuario);
+
+      await registrarAuditoria({
+        req,
+        acao: 'senha_redefinida_recuperacao',
+        entidade: 'usuario',
+        entidadeId: idUsuario,
+        idUsuarioAtor: idUsuario,
+        idCondominio: this._toInt(atualizado[0].id_condominio, null)
+      });
 
       return res.status(200).json({ success: true, message: 'Senha redefinida com sucesso.' });
     } catch (error) {
+      if (transaction) {
+        try { await transaction.rollback(); } catch (_) { /* noop */ }
+      }
       console.error('[recovery/reset] Erro:', error?.message);
       return res.status(500).json({ success: false, code: 'INTERNAL_ERROR', message: 'Erro interno ao redefinir senha.' });
     }
+  }
+
+  // Campos que só gestores (Admin/Síndico/Sub-Síndico) podem alterar.
+  static get CAMPOS_USUARIO_ADMINISTRATIVOS() {
+    return ['tipo_perfil_id', 'tipo', 'status', 'morador_principal', 'id_unidade', 'apartamento', 'bloco', 'observacoes'];
+  }
+
+  // Campos proibidos quando a edição vem por invite_token (sem sessão).
+  static get CAMPOS_USUARIO_SENSIVEIS() {
+    return ['password', 'nova_senha', 'senha', 'email', 'cpf', 'tipo_perfil_id', 'tipo', 'status', 'morador_principal', 'id_unidade', 'apartamento', 'bloco'];
+  }
+
+  // Um campo enviado com o MESMO valor atual não conta como alteração — os
+  // formulários costumam reenviar o registro inteiro.
+  _campoUsuarioMudou(body, campo, atual) {
+    if (!body || body[campo] === undefined) {
+      return false;
+    }
+    const enviado = body[campo];
+    if (campo === 'id_unidade') {
+      return this._toInt(enviado, null) !== this._toInt(atual.id_unidade_predio, null);
+    }
+    if (campo === 'tipo_perfil_id') {
+      return this._toInt(enviado, null) !== this._toInt(atual.tipo_perfil_id, null);
+    }
+    if (campo === 'morador_principal') {
+      return this._toBoolOrNull(enviado) !== (atual.morador_principal === true);
+    }
+    if (campo === 'password' || campo === 'nova_senha' || campo === 'senha') {
+      return enviado !== null && String(enviado).trim() !== '';
+    }
+    const normalizar = (v) => (v === null || v === undefined ? '' : String(v).trim().toLowerCase());
+    const valorAtual = campo === 'cpf' ? normalizarCpf(atual.cpf) : atual[campo];
+    const valorEnviado = campo === 'cpf' ? normalizarCpf(enviado) : enviado;
+    return normalizar(valorEnviado) !== normalizar(valorAtual);
+  }
+
+  _camposUsuarioAlterados(anterior, novo, senhaAlterada) {
+    const campos = ['nome', 'sobrenome', 'cpf', 'email', 'telefone', 'tipo_perfil_id', 'tipo', 'status', 'apartamento', 'bloco', 'id_unidade_predio', 'morador_principal', 'path_avatar'];
+    const alterados = campos.filter((campo) => String(anterior?.[campo] ?? '') !== String(novo?.[campo] ?? ''));
+    if (senhaAlterada) {
+      alterados.push('senha');
+    }
+    return alterados;
+  }
+
+  // Regras de quem pode editar o quê em PUT/PATCH /usuarios/:id.
+  //  - invite_token: nenhum campo sensível (senha, e-mail, CPF, perfil, status,
+  //    unidade) e somente o próprio usuário do token.
+  //  - Próprio usuário sem perfil de gestão: só dados pessoais; troca de senha
+  //    exige senha_atual.
+  //  - Gestor: usuários do próprio condomínio, sem mexer em Admin (e
+  //    Sub-Síndico sem mexer em Síndico) e sem atribuir perfil acima do seu.
+  // Retorna { ok, status, message, error_code, novaSenha }.
+  async _autorizarEdicaoUsuario({ req, atual, idUsuario, invitePayload }) {
+    const body = req.body || {};
+    const negar = (status, message, error_code = 'forbidden') => ({ ok: false, status, message, error_code });
+
+    if (invitePayload) {
+      const idUsuarioInvite = this._toInt(
+        invitePayload.id_usuario ?? invitePayload.usuario_id ?? invitePayload.idUsuario ?? invitePayload.id,
+        null
+      );
+      if (!idUsuarioInvite || idUsuarioInvite !== idUsuario) {
+        return negar(403, 'invite_token não autorizado para este usuário.');
+      }
+      const proibidos = CondominioController.CAMPOS_USUARIO_SENSIVEIS.filter((campo) => this._campoUsuarioMudou(body, campo, atual));
+      if (proibidos.length > 0) {
+        return negar(403, `Campos não permitidos via invite_token: ${proibidos.join(', ')}.`);
+      }
+      return { ok: true, novaSenha: null };
+    }
+
+    const idAtor = this._toInt(req.idcliente, null);
+    const ehProprio = idAtor !== null && idAtor === idUsuario;
+    const gestor = permissoes.ehGestor(req);
+
+    if (!ehProprio && !gestor) {
+      return negar(403, 'Você só pode editar o seu próprio cadastro.');
+    }
+
+    if (!ehProprio && !permissoes.podeGerenciarUsuarioComPerfil(req, atual.tipo_perfil_id)) {
+      return negar(403, 'Seu perfil não pode editar este usuário.');
+    }
+
+    const administrativosAlterados = CondominioController.CAMPOS_USUARIO_ADMINISTRATIVOS.filter((campo) =>
+      this._campoUsuarioMudou(body, campo, atual)
+    );
+    if (administrativosAlterados.length > 0 && !gestor) {
+      return negar(403, `Seu perfil não pode alterar: ${administrativosAlterados.join(', ')}.`);
+    }
+
+    if (this._campoUsuarioMudou(body, 'tipo_perfil_id', atual) && !permissoes.podeAtribuirPerfil(req, body.tipo_perfil_id)) {
+      return negar(403, 'Seu perfil não pode atribuir este perfil de acesso.');
+    }
+
+    // `tipo` é sempre derivado de tipo_perfil_id (exceto para Admin), para que
+    // ninguém ganhe permissões baseadas no nome do perfil.
+    if (!permissoes.ehAdmin(req) && body.tipo !== undefined) {
+      delete body.tipo;
+    }
+
+    // Senha. Próprio usuário: exige senha_atual (contrato do app: senha_atual,
+    // nova_senha, confirmar_senha). Gestor editando outro: pode redefinir.
+    const novaSenhaInformada = [body.nova_senha, body.password, body.senha].find(
+      (valor) => valor !== undefined && valor !== null && String(valor).trim() !== ''
+    );
+    let novaSenha = null;
+    if (novaSenhaInformada !== undefined) {
+      if (body.confirmar_senha !== undefined && String(body.confirmar_senha) !== String(novaSenhaInformada)) {
+        return negar(422, 'A confirmação não confere com a nova senha.', 'password_mismatch');
+      }
+      if (String(novaSenhaInformada).trim().length < 6) {
+        return negar(422, 'A nova senha deve ter no mínimo 6 caracteres.', 'weak_password');
+      }
+      if (ehProprio) {
+        const senhaAtual = body.senha_atual;
+        if (senhaAtual === undefined || senhaAtual === null || String(senhaAtual) === '') {
+          return negar(422, 'Informe a senha atual para trocar a senha.', 'current_password_required');
+        }
+        const hashAtual = String(atual.senha_hash || '');
+        const confere = hashAtual.startsWith('$2')
+          ? await bcrypt.compare(String(senhaAtual), hashAtual)
+          : this._timingSafeTextEqual(String(senhaAtual), hashAtual);
+        if (!confere) {
+          return negar(403, 'Senha atual incorreta.', 'current_password_invalid');
+        }
+      }
+      novaSenha = String(novaSenhaInformada);
+    }
+
+    return { ok: true, novaSenha };
+  }
+
+  _timingSafeTextEqual(a, b) {
+    const ha = crypto.createHash('sha256').update(String(a)).digest();
+    const hb = crypto.createHash('sha256').update(String(b)).digest();
+    return crypto.timingSafeEqual(ha, hb);
   }
 
   async editarUsuario(req, res) {
     let transaction = null;
     try {
       let idCondominioToken = this._toInt(req.id_condominio, null);
-      let invitePayload = null;
+      // Convite já verificado pelo middleware authOrInviteToken (assinatura,
+      // validade e finalidade). Sem sessão e sem convite válido → 401 lá.
+      const invitePayload = !idCondominioToken && req.inviteAuth ? req.inviteAuth.payload : null;
 
-      if (!idCondominioToken) {
-        const inviteToken = this._normalizarTextoOuNull(req.body?.invite_token ?? req.body?.token);
-        if (!inviteToken) {
-          return res.status(403).json({
-            message: 'Token sem id_condominio para editar usuário.'
-          });
-        }
-
-        try {
-          invitePayload = this._verifyInviteToken(inviteToken);
-        } catch (tokenError) {
-          return res.status(401).json({
-            message: 'invite_token inválido ou expirado.'
-          });
-        }
-
+      if (!idCondominioToken && invitePayload) {
         idCondominioToken = this._toInt(
           invitePayload.id_condominio ?? invitePayload.condominio_id ?? invitePayload.idCondominio,
           null
@@ -8944,25 +9267,9 @@ class CondominioController {
 
       const atual = usuarioAtual[0];
 
-      if (invitePayload) {
-        const idUsuarioInvite = this._toInt(
-          invitePayload.id_usuario ?? invitePayload.usuario_id ?? invitePayload.idUsuario ?? invitePayload.id,
-          null
-        );
-        const emailInvite = this._normalizarEmailOuNull(invitePayload.email ?? invitePayload.email_usuario);
-        const emailAtual = this._normalizarEmailOuNull(atual.email);
-
-        if (idUsuarioInvite && idUsuarioInvite !== idUsuario) {
-          return res.status(403).json({
-            message: 'invite_token não autorizado para este usuário.'
-          });
-        }
-
-        if (emailInvite && emailAtual && emailInvite !== emailAtual) {
-          return res.status(403).json({
-            message: 'invite_token não autorizado para este usuário.'
-          });
-        }
+      const autorizacao = await this._autorizarEdicaoUsuario({ req, atual, idUsuario, invitePayload });
+      if (!autorizacao.ok) {
+        return res.status(autorizacao.status).json({ message: autorizacao.message, error_code: autorizacao.error_code });
       }
 
       const nome = req.body.nome !== undefined ? req.body.nome : atual.nome;
@@ -9012,12 +9319,8 @@ class CondominioController {
       }
 
       let senha_hash = atual.senha_hash;
-      if (
-        req.body.password !== undefined &&
-        req.body.password !== null &&
-        String(req.body.password).trim() !== ''
-      ) {
-        senha_hash = await bcrypt.hash(String(req.body.password), 10);
+      if (autorizacao.novaSenha) {
+        senha_hash = await bcrypt.hash(String(autorizacao.novaSenha), 10);
       }
 
       const tipoPerfilIdNovo =
@@ -9219,10 +9522,42 @@ class CondominioController {
         }
       );
       await transaction.commit();
+      transaction = null;
+
+      const camposAlterados = this._camposUsuarioAlterados(atual, update[0][0], Boolean(autorizacao.novaSenha));
+      const revogarSessoes =
+        camposAlterados.includes('senha') ||
+        camposAlterados.includes('tipo_perfil_id') ||
+        camposAlterados.includes('status') ||
+        camposAlterados.includes('email');
+      if (revogarSessoes) {
+        await incrementarTokenVersion(idUsuario);
+      }
+      if (camposAlterados.length > 0) {
+        await registrarAuditoria({
+          req,
+          acao: 'usuario_editado',
+          entidade: 'usuario',
+          entidadeId: idUsuario,
+          idCondominio: idCondominioToken,
+          idUsuarioAtor: this._toInt(req.idcliente, null),
+          detalhes: {
+            campos: camposAlterados,
+            via: invitePayload ? 'invite_token' : 'sessao',
+            perfil_ator: permissoes.idPerfil(req),
+            tipo_perfil_id_anterior: this._toInt(atual.tipo_perfil_id, null),
+            tipo_perfil_id_novo: this._toInt(update[0][0].tipo_perfil_id, null),
+            status_anterior: atual.status,
+            status_novo: update[0][0].status
+          }
+        });
+      }
 
       return res.status(200).json({
-        message: 'Usuário atualizado com sucesso.',
-        data: this._anexarAvatarUrlUsuario(req, update[0][0])
+        success: true,
+        message: autorizacao.novaSenha ? 'Senha alterada com sucesso.' : 'Usuário atualizado com sucesso.',
+        data: this._anexarAvatarUrlUsuario(req, update[0][0]),
+        sessoes_revogadas: revogarSessoes
       });
     } catch (error) {
       if (transaction && !transaction.finished) {
@@ -9588,7 +9923,7 @@ class CondominioController {
         });
       }
 
-      const blobUrl = resolveBlobUrl(pathAvatar);
+      const blobUrl = resolveBlobUrl(pathAvatar, { idCondominio: idCondominioToken });
       if (!blobUrl) {
         return res.status(500).json({
           message: 'Falha ao resolver URL do avatar no blob privado.'
@@ -9666,14 +10001,22 @@ class CondominioController {
         });
       }
 
-      const idCondominio = this._toInt(
-        req.id_condominio ??
-        req.body.id_condominio ??
-        req.body.condominio_id ??
-        req.query.id_condominio ??
-        req.query.condominio_id,
-        null
-      );
+      // Só o próprio usuário ou um gestor troca o avatar.
+      const idUsuarioToken = this._toInt(req.idcliente, null);
+      if (idUsuarioToken !== idUsuario && !permissoes.ehGestor(req)) {
+        return res.status(403).json({
+          success: false,
+          message: 'Você só pode alterar o seu próprio avatar.'
+        });
+      }
+
+      // Condomínio vem do token. Só o Admin pode informar outro (override).
+      const idCondominio = permissoes.ehAdmin(req)
+        ? this._toInt(
+            req.body.id_condominio ?? req.body.condominio_id ?? req.query.id_condominio ?? req.query.condominio_id ?? req.id_condominio,
+            null
+          )
+        : this._toInt(req.id_condominio, null);
 
       if (!idCondominio) {
         return res.status(400).json({
@@ -9706,7 +10049,7 @@ class CondominioController {
 
       const usuarioAtual = usuarioRows[0];
 
-      const extByOriginalName = path.extname(String(arquivoRecebido.originalname || '')).replace('.', '').toLowerCase();
+      const extByOriginalName = (arquivoRecebido.extensaoSegura || path.extname(String(arquivoRecebido.originalname || '')).replace('.', '').toLowerCase());
       const extByMime = String(arquivoRecebido.mimetype || '')
         .split('/')
         .pop()
@@ -11730,12 +12073,30 @@ class CondominioController {
       }
 
       const idUsuarioToken = this._toInt(req.idcliente, null);
-      const idUsuarioTratamento = this._toInt(
-        req.body.id_usuario_tratamento !== undefined
-          ? req.body.id_usuario_tratamento
-          : idUsuarioToken,
-        null
-      );
+      // Quem tratou é sempre o usuário autenticado (antes vinha do body).
+      const idUsuarioTratamento = idUsuarioToken;
+
+      // Gestor (1/3/4) trata qualquer reserva do condomínio. Demais perfis só
+      // podem CANCELAR (status 5) a própria reserva — mesma regra do app.
+      if (!permissoes.ehGestor(req)) {
+        const STATUS_CANCELADO = 5;
+        if (idStatus !== STATUS_CANCELADO) {
+          return res.status(403).json({ message: 'Seu perfil só pode cancelar a própria reserva.' });
+        }
+        const [donoReserva] = await postgres.query(
+          `SELECT id_usuario
+             FROM "condominio-bh".tb_espaco_agenda
+            WHERE id = :id AND id_condominio = :id_condominio
+            LIMIT 1`,
+          { replacements: { id: idAgenda, id_condominio: idCondominioToken }, type: QueryTypes.SELECT }
+        );
+        if (!donoReserva) {
+          return res.status(404).json({ message: 'Reserva de agenda não encontrada para este condomínio.' });
+        }
+        if (this._toInt(donoReserva.id_usuario, null) !== idUsuarioToken) {
+          return res.status(403).json({ message: 'Você só pode cancelar as suas próprias reservas.' });
+        }
+      }
 
       const avisarPortaria =
         req.body.avisar_portaria === true ||

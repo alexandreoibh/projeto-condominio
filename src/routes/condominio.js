@@ -7,6 +7,8 @@ const CondominioController = require('../controllers/condominioController');
 const auth = require('../helpers/auth');
 const { authOrImageToken } = require('../helpers/auth');
 const validate = require('../helpers/validate');
+const { validarUploads } = require('../helpers/uploadPolicy');
+const { exigirGestor, exigirAdmin } = require('../helpers/permissoes');
 
 const controller = new CondominioController();
 const uploadAvatar = multer({
@@ -63,22 +65,33 @@ const telegramWebhookSecretGuard = (req, res, next) => {
 	return next();
 };
 
-const authOrInviteToken = (req, res, next) => {
-	const inviteToken =
-		req.body?.invite_token ||
-		req.body?.token ||
-		req.query?.invite_token ||
-		req.query?.token ||
-		req.header('x-invite-token') ||
-		req.header('X-Invite-Token') ||
-		req.header('invite-token') ||
-		req.header('Invite-Token');
-
-	if (inviteToken && String(inviteToken).trim() !== '') {
-		return next();
+// Aceita JWT de sessão (preferencial) OU um invite_token válido. Antes, a mera
+// presença de qualquer string em token/invite_token pulava a autenticação.
+// Agora o convite é verificado aqui (assinatura, validade e finalidade) e o
+// handler recebe req.inviteAuth; sem token válido a resposta é 401.
+const authOrInviteToken = async (req, res, next) => {
+	const sessionToken = auth.extractTokenFromRequest(req);
+	if (sessionToken) {
+		try {
+			await auth.verificarTokenDeSessao(sessionToken);
+			return auth(req, res, next);
+		} catch (sessionError) {
+			// Não é um JWT de sessão válido — tenta como convite abaixo.
+		}
 	}
 
-	return auth(req, res, next);
+	const inviteToken = controller._extractInviteTokenFromRequest(req);
+	if (!inviteToken) {
+		return res.status(401).json({ message: 'Token necessário' });
+	}
+
+	try {
+		const invitePayload = controller._verifyInviteToken(inviteToken);
+		req.inviteAuth = { token: inviteToken, payload: invitePayload };
+		return next();
+	} catch (inviteError) {
+		return res.status(401).json({ message: 'invite_token inválido ou expirado.' });
+	}
 };
 
 router.get('/status', controller.status.bind(controller));
@@ -378,6 +391,7 @@ router.post(
 		{ name: 'foto', maxCount: 1 },
 		{ name: 'arquivo', maxCount: 1 }
 	]),
+	validarUploads('imagem'),
 	[
 		body('id_tipo_consumo')
 			.notEmpty()
@@ -443,6 +457,7 @@ router.put(
 		{ name: 'foto', maxCount: 1 },
 		{ name: 'arquivo', maxCount: 1 }
 	]),
+	validarUploads('imagem'),
 	[
 		param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.'),
 		body('id_tipo_consumo')
@@ -663,6 +678,7 @@ router.get(
 router.post(
 	'/condominios',
 	auth,
+	exigirAdmin,
 	[
 		body().custom((value, { req }) => {
 			const qtdeBlocos = req.body.qtde_blocos !== undefined ? req.body.qtde_blocos : req.body.qtde_bloco;
@@ -753,6 +769,7 @@ router.post(
 router.put(
 	'/condominios/:id(\\d+)',
 	auth,
+	exigirGestor,
 	[
 		param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.'),
 		body('nome')
@@ -825,6 +842,7 @@ router.put(
 router.patch(
 	'/condominios/:id(\\d+)',
 	auth,
+	exigirGestor,
 	[
 		param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.'),
 		body('nome')
@@ -915,6 +933,7 @@ router.get(
 router.post(
 	'/dashboard/tipos',
 	auth,
+	exigirAdmin,
 	[
 		body('codigo')
 			.notEmpty()
@@ -939,6 +958,7 @@ router.post(
 router.put(
 	'/dashboard/tipos/:id(\\d+)',
 	auth,
+	exigirAdmin,
 	[
 		param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.'),
 		body('codigo')
@@ -960,6 +980,7 @@ router.put(
 router.delete(
 	'/dashboard/tipos/:id(\\d+)',
 	auth,
+	exigirAdmin,
 	[param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.')],
 	validate,
 	controller.excluirDashboardTipo.bind(controller)
@@ -1004,6 +1025,7 @@ router.post(
 		{ name: 'foto', maxCount: 1 },
 		{ name: 'arquivo', maxCount: 1 }
 	]),
+	validarUploads('imagem'),
 	[
 		body('tipo')
 			.optional({ nullable: true, checkFalsy: true })
@@ -1096,6 +1118,7 @@ router.put(
 		{ name: 'foto', maxCount: 1 },
 		{ name: 'arquivo', maxCount: 1 }
 	]),
+	validarUploads('imagem'),
 	[
 		param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.'),
 		body('tipo')
@@ -1185,7 +1208,8 @@ router.get(
 
 router.post(
 	'/relatorios/envio-config',
-	authOrInviteToken,
+	auth,
+	exigirGestor,
 	[
 		body('id_condominio')
 			.optional({ nullable: true, checkFalsy: true })
@@ -1226,7 +1250,8 @@ router.post(
 
 router.patch(
 	'/relatorios/envio-config/:id(\\d+)',
-	authOrInviteToken,
+	auth,
+	exigirGestor,
 	[
 		param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.'),
 		body('dia_envio')
@@ -1260,7 +1285,8 @@ router.patch(
 
 router.delete(
 	'/relatorios/envio-config/:id(\\d+)',
-	authOrInviteToken,
+	auth,
+	exigirGestor,
 	[param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.')],
 	validate,
 	controller.excluirRelEnvioConfig.bind(controller)
@@ -1915,6 +1941,7 @@ router.post(
 		{ name: 'foto', maxCount: 1 },
 		{ name: 'arquivo', maxCount: 1 }
 	]),
+	validarUploads('imagem'),
 	[
 		body('id_usuario')
 			.optional({ nullable: true, checkFalsy: true })

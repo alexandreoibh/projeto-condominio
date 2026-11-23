@@ -2,11 +2,13 @@
 
 const express = require('express');
 const multer = require('multer');
+const { validarUploads } = require('../helpers/uploadPolicy');
 const router = express.Router();
 const { body } = require('express-validator');
 
 const IntegracaoBancariaController = require('../controllers/integracaoBancariaController');
 const auth = require('../helpers/auth');
+const { exigirGestor } = require('../helpers/permissoes');
 const validate = require('../helpers/validate');
 
 const controller = new IntegracaoBancariaController();
@@ -38,7 +40,7 @@ const uploadCertificado = multer({
 
 // ── Listagem ──────────────────────────────────────────────────────────────
 
-router.get('/', auth, controller.listarIntegracoes.bind(controller));
+router.get('/', auth, exigirGestor, controller.listarIntegracoes.bind(controller));
 
 // ── Conectar Inter (multipart: client_id, client_secret, ambiente + arquivos) ──
 
@@ -49,6 +51,7 @@ router.post(
     { name: 'certificado', maxCount: 1 },
     { name: 'chave_privada', maxCount: 1 },
   ]),
+  validarUploads('certificado'),
   [
     body('client_id').notEmpty().withMessage('client_id é obrigatório.'),
     body('client_secret').notEmpty().withMessage('client_secret é obrigatório.'),
@@ -68,6 +71,7 @@ router.post(
     { name: 'certificado', maxCount: 1 },
     { name: 'chave_privada', maxCount: 1 },
   ]),
+  validarUploads('certificado'),
   [
     body('client_id').notEmpty().withMessage('client_id é obrigatório.'),
     body('client_secret').notEmpty().withMessage('client_secret é obrigatório.'),
@@ -86,6 +90,7 @@ router.post(
     { name: 'certificado', maxCount: 1 },
     { name: 'chave_privada', maxCount: 1 },
   ]),
+  validarUploads('certificado'),
   [
     body('client_id').notEmpty().withMessage('client_id é obrigatório.'),
     body('client_secret').notEmpty().withMessage('client_secret é obrigatório.'),
@@ -108,9 +113,9 @@ router.put(
 
 // ── Testar / Saldo / Desativar ───────────────────────────────────────────────
 
-router.post('/:id/testar', auth, controller.testarIntegracao.bind(controller));
-router.get('/:id/saldo', auth, controller.consultarSaldo.bind(controller));
-router.get('/:id/extrato', auth, controller.consultarExtrato.bind(controller));
+router.post('/:id/testar', auth, exigirGestor, controller.testarIntegracao.bind(controller));
+router.get('/:id/saldo', auth, exigirGestor, controller.consultarSaldo.bind(controller));
+router.get('/:id/extrato', auth, exigirGestor, controller.consultarExtrato.bind(controller));
 router.delete('/:id', auth, controller.desativarIntegracao.bind(controller));
 
 module.exports = router;

@@ -1,4 +1,5 @@
 const { signImageAccessToken } = require('./auth');
+const { parseUrlBlob } = require('./blobUrl');
 
 const API_AVATAR_PREFIX = '/api/condominio/usuarios';
 
@@ -17,12 +18,12 @@ const joinUrl = (base, resourcePath) => {
   return `${baseNormalized}/${pathNormalized}`;
 };
 
-const resolveBlobUrl = (pathAvatar) => {
-  const avatarPath = normalizeText(pathAvatar);
-  if (!avatarPath) {
-    return null;
-  }
-
+// Resolve o caminho gravado (path_avatar, origem_imagem, origem) para uma URL
+// do Vercel Blob. O resultado é buscado pelo servidor COM o token do Blob, por
+// isso só são aceitas URLs https de *.blob.vercel-storage.com — qualquer
+// outro host (inclusive internos) devolve null e não é buscado (anti-SSRF e
+// anti-vazamento do token).
+const _resolveBlobUrlCandidata = (avatarPath) => {
   if (/^https?:\/\//i.test(avatarPath)) {
     return avatarPath;
   }
@@ -41,6 +42,38 @@ const resolveBlobUrl = (pathAvatar) => {
   }
 
   return joinUrl(blobStorageUrl, avatarPath);
+};
+
+// Com `idCondominio`, o arquivo precisa estar sob /condominios/<id>/ (formato
+// atual de upload) e nunca em áreas financeiras/boletos. Caminhos legados sem
+// segmento de condomínio continuam aceitos se não forem financeiros.
+const _caminhoPermitidoParaCondominio = (pathname, idCondominio) => {
+  if (idCondominio === undefined || idCondominio === null) {
+    return true;
+  }
+  const caminho = String(pathname || '');
+  if (/\/financeiro\//i.test(caminho) || /(^|\/)cobranca\//i.test(caminho)) {
+    return false;
+  }
+  const match = caminho.match(/\/condominios\/(\d+)\//);
+  if (!match) {
+    return true;
+  }
+  return Number.parseInt(match[1], 10) === Number.parseInt(idCondominio, 10);
+};
+
+const resolveBlobUrl = (pathAvatar, { idCondominio = null } = {}) => {
+  const avatarPath = normalizeText(pathAvatar);
+  if (!avatarPath) {
+    return null;
+  }
+
+  const candidata = _resolveBlobUrlCandidata(avatarPath);
+  const blob = candidata ? parseUrlBlob(candidata, { aceitarQualquerStoreVercel: true }) : null;
+  if (!blob || !_caminhoPermitidoParaCondominio(blob.pathname, idCondominio)) {
+    return null;
+  }
+  return blob.url.toString();
 };
 
 const isAvatarProxyUrl = (value) => {

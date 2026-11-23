@@ -2,6 +2,7 @@ const express = require('express');
 const { body } = require('express-validator');
 
 const auth = require('../helpers/auth');
+const { exigirAdmin } = require('../helpers/permissoes');
 const validate = require('../helpers/validate');
 const UsuarioController = require('../controllers/usuarioController');
 
@@ -39,6 +40,7 @@ router.post(
 router.post(
   '/push/teste',
   auth,
+  exigirAdmin,
   [
     body().custom((value, { req }) => {
       const temToken = req.body?.to !== undefined && String(req.body.to).trim() !== '';
@@ -81,6 +83,7 @@ router.post(
 router.post(
   '/push/teste/massa',
   auth,
+  exigirAdmin,
   [
     body().custom((value, { req }) => {
       const messages = Array.isArray(req.body?.messages) ? req.body.messages : [];

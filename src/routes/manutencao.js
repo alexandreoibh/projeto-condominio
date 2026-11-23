@@ -2,6 +2,7 @@
 
 const express = require('express');
 const multer = require('multer');
+const { validarUploads } = require('../helpers/uploadPolicy');
 const router = express.Router();
 const { body, param, query } = require('express-validator');
 
@@ -182,6 +183,7 @@ router.post(
   '/rotinas/:id/execucoes',
   auth,
   uploadFotos.array('fotos', 10),
+  validarUploads('imagem'),
   [
     param('id').isInt({ min: 1 }).withMessage('id inválido.'),
     body('data_execucao').optional({ nullable: true, checkFalsy: true }).isISO8601().withMessage('data_execucao deve ser data válida.'),

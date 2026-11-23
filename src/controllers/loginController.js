@@ -4,10 +4,20 @@ const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const { QueryTypes } = require("sequelize");
 const postgres = require("../database/postgres");
+const crypto = require("crypto");
 const { buildAvatarProxyUrl } = require("../helpers/avatarProxy");
+const { getJwtSecret } = require("../helpers/segredos");
+const { lerTokenVersion, incrementarTokenVersion } = require("../helpers/sessao");
 
+// Hash bcrypt fixo usado só para equalizar o tempo de resposta quando o login
+// não existe (evita enumeração de usuários por timing).
+const DUMMY_BCRYPT_HASH = bcrypt.hashSync("dummy-password-for-timing", 10);
 
-const JWT_SECRET = process.env.JWT_SECRET || "dev_jwt_secret_change_me";
+// Rate limit persistente (serverless: memória não é compartilhada entre
+// instâncias). Contado em tb_sgw_log_acesso.
+const LOGIN_RATE_WINDOW_MINUTES = 15;
+const LOGIN_MAX_FALHAS_POR_LOGIN = 10;
+const LOGIN_MAX_FALHAS_POR_IP = 30;
 
 class Login {
   _normalizeCpf(value) {
@@ -41,18 +51,71 @@ class Login {
       return false;
     }
 
-    if (passwordHash.startsWith("$2a$") || passwordHash.startsWith("$2b$") || passwordHash.startsWith("$2y$")) {
+    if (this._ehHashBcrypt(passwordHash)) {
       return bcrypt.compare(password, passwordHash);
     }
 
-    return password === passwordHash;
+    // Legado: senha gravada em texto puro. Comparação em tempo constante; se
+    // conferir, o login regrava como bcrypt (ver _migrarSenhaLegada).
+    const a = crypto.createHash("sha256").update(String(password)).digest();
+    const b = crypto.createHash("sha256").update(String(passwordHash)).digest();
+    return crypto.timingSafeEqual(a, b);
   }
 
+  _ehHashBcrypt(passwordHash) {
+    const valor = String(passwordHash || "");
+    return valor.startsWith("$2a$") || valor.startsWith("$2b$") || valor.startsWith("$2y$");
+  }
+
+  async _migrarSenhaLegada(idUsuario, password) {
+    try {
+      const novoHash = await bcrypt.hash(String(password), 10);
+      await postgres.query(
+        `UPDATE "condominio-bh"."tb-usuarios" SET senha_hash = :senha_hash WHERE id = :id`,
+        { replacements: { id: idUsuario, senha_hash: novoHash }, type: QueryTypes.UPDATE }
+      );
+    } catch (error) {
+      console.error("[login] Falha ao migrar senha legada para bcrypt:", error?.message);
+    }
+  }
+
+  async _excedeuLimiteFalhas(req, login) {
+    try {
+      const ip = this._resolveRequestIp(req) || "";
+      const rows = await postgres.query(
+        `SELECT
+            SUM(CASE WHEN lower(email_informado) = :login THEN 1 ELSE 0 END) AS falhas_login,
+            SUM(CASE WHEN ip = :ip THEN 1 ELSE 0 END) AS falhas_ip
+           FROM "condominio-bh".tb_sgw_log_acesso
+          WHERE acao = 'LOGIN'
+            AND sucesso = false
+            AND data_evento > now() - CAST(:janela AS interval)
+            AND (lower(email_informado) = :login OR ip = :ip)`,
+        {
+          replacements: {
+            login: String(login || "").toLowerCase(),
+            ip,
+            janela: `${LOGIN_RATE_WINDOW_MINUTES} minutes`
+          },
+          type: QueryTypes.SELECT
+        }
+      );
+      const row = rows && rows[0] ? rows[0] : {};
+      const falhasLogin = Number.parseInt(row.falhas_login, 10) || 0;
+      const falhasIp = Number.parseInt(row.falhas_ip, 10) || 0;
+      return falhasLogin >= LOGIN_MAX_FALHAS_POR_LOGIN || falhasIp >= LOGIN_MAX_FALHAS_POR_IP;
+    } catch (error) {
+      // Falha ao consultar o limite não bloqueia o login.
+      console.error("[login] Falha ao consultar rate limit:", error?.message);
+      return false;
+    }
+  }
+
+  // IP observado pelo servidor. Com app.set("trust proxy", 1), req.ip vem do
+  // X-Forwarded-For gravado pelo proxy da Vercel. Nunca usar IP enviado pelo
+  // cliente (body.ip, x-client-ip) para decisões de segurança.
   _resolveRequestIp(req) {
-    const forwarded = req.headers?.["x-forwarded-for"];
-    const forwardedValue = Array.isArray(forwarded) ? forwarded[0] : forwarded;
-    const forwardedIp = forwardedValue ? String(forwardedValue).split(",")[0].trim() : null;
-    const rawIp = forwardedIp || req.ip || req.socket?.remoteAddress || null;
+    const rawIp = req.ip || req.socket?.remoteAddress || null;
 
     if (!rawIp) {
       return null;
@@ -160,16 +223,18 @@ class Login {
         255
       );
 
-      const ip = ipPayload || ipHeader;
+      // O IP declarado pelo cliente (ex.: back-cond.php) só é registrado como
+      // informação adicional; a coluna ip guarda sempre o IP observado.
+      const ip = ipHeader || null;
+      const mensagemFinal =
+        ipPayload && ipPayload !== ipHeader
+          ? `${mensagem || ""} [ip_informado=${ipPayload}]`.trim().slice(0, 1000)
+          : mensagem;
       const dispositivo = dispositivoPayload || dispositivoInferido;
       const sistemaOperacional = soPayload || soInferido;
       const navegador = navegadorPayload || navegadorInferido;
       const emailNormalizado = this._normalizarTextoOuNull(emailInformado, 255);
       const emailParaLog = emailNormalizado || loginPayload;
-
-      if (String(emailParaLog || "").trim().toLowerCase() === "alexandreoibh@hotmail.com") {
-        return;
-      }
 
       await postgres.query(
         `INSERT INTO "condominio-bh".tb_sgw_log_acesso (
@@ -214,7 +279,7 @@ class Login {
             sistema_operacional: sistemaOperacional,
             navegador,
             localizacao_aproximada: localizacaoPayload,
-            mensagem
+            mensagem: mensagemFinal
           },
           type: QueryTypes.INSERT
         }
@@ -233,6 +298,11 @@ class Login {
       const idUsuario = Number.parseInt(req.idcliente, 10) || null;
       const idCondominio = Number.parseInt(req.id_condominio, 10) || null;
       const emailInformado = req.emailUsuario ? String(req.emailUsuario).toLowerCase() : null;
+
+      // Revoga este e os demais tokens de sessão do usuário.
+      if (idUsuario) {
+        await incrementarTokenVersion(idUsuario);
+      }
 
       await this._registrarLogAcesso(req, {
         idUsuario,
@@ -286,6 +356,20 @@ class Login {
         });
       }
 
+      if (await this._excedeuLimiteFalhas(req, login)) {
+        await this._registrarLogAcesso(req, {
+          idUsuario: null,
+          idCondominio: null,
+          emailInformado: login,
+          sucesso: false,
+          mensagem: "Bloqueado por excesso de tentativas."
+        });
+        return res.status(429).send({
+          check: false,
+          message: "Muitas tentativas de login. Aguarde alguns minutos e tente novamente."
+        });
+      }
+
       const user = await postgres.query(
         `SELECT
             tu.id,
@@ -333,10 +417,11 @@ class Login {
 
       const result = user && user.length > 0 ? user[0] : null;
       if (!result) {
+        await bcrypt.compare(password, DUMMY_BCRYPT_HASH);
         await this._registrarLogAcesso(req, {
           idUsuario: null,
           idCondominio: null,
-          emailInformado,
+          emailInformado: login,
           sucesso: false,
           mensagem: "Usuário não encontrado ou inativo."
         });
@@ -363,6 +448,12 @@ class Login {
           message: "Usuário ou senha inválidos."
         });
       }
+
+      if (!this._ehHashBcrypt(result.senha_hash)) {
+        await this._migrarSenhaLegada(result.id, password);
+      }
+
+      const tokenVersion = await lerTokenVersion(result.id);
 
       await postgres.query(
         `UPDATE "condominio-bh"."tb-usuarios"
@@ -403,10 +494,11 @@ class Login {
           id_condominio: result.id_condominio,
           id_unidade: result.id_unidade || null,
           nome_condominio: result.nome_condominio || null,
-          empresa: "condominio"
+          empresa: "condominio",
+          tv: tokenVersion
         },
-        JWT_SECRET,
-        { expiresIn: "1d" }
+        getJwtSecret(),
+        { expiresIn: "1d", algorithm: "HS256" }
       );
 
       const nomeCompleto = `${result.nome || ""} ${result.sobrenome || ""}`.trim();

@@ -1,6 +1,7 @@
 ﻿"use strict";
 
 const { QueryTypes } = require("sequelize");
+const permissoes = require('../helpers/permissoes');
 const { put, del } = require("@vercel/blob");
 const postgres = require("../database/postgres");
 const pushNotificationService = require("../service/pushNotificationService");
@@ -20,8 +21,10 @@ class ReuniaoController {
     return Number.isNaN(parsed) ? fallback : parsed;
   }
 
+  // Por id numérico do perfil (JWT), não pelo nome — o nome deriva da coluna
+  // editável "tb-usuarios".tipo.
   _isGestor(req) {
-    return PERFIS_GESTAO.has(req.nomePerfil);
+    return permissoes.ehGestor(req);
   }
 
   _normalizarTextoOuNull(value, maxLength = null) {
@@ -484,7 +487,7 @@ class ReuniaoController {
       const minhaPresenca = !presenca ? null : (presenca.presente === true ? "CONFIRMADO" : "RECUSADO");
 
       const participantes = (reuniao.participantes || "todos").toLowerCase();
-      const ehGestorReuniao = PERFIS_SEMPRE_VEEM_CONVOCACAO.has(req.nomePerfil);
+      const ehGestorReuniao = permissoes.temPerfil(req, permissoes.PERFIL.SINDICO, permissoes.PERFIL.SUB_SINDICO);
       if (participantes !== "todos" && !ehGestorReuniao) {
         const [usuario] = await postgres.query(
           `SELECT tipo_morador FROM "condominio-bh"."tb-usuarios"
@@ -658,7 +661,7 @@ class ReuniaoController {
       if (!reuniao) return res.status(404).json({ message: "Reuniao nao encontrada." });
 
       const arquivo = req.file;
-      const ext = (arquivo.originalname.split(".").pop() || "bin").toLowerCase();
+      const ext = (arquivo.extensaoSegura || 'bin');
       const ambiente = process.env.NODE_ENV === "production" ? "prod" : "dev";
       const nomeArquivo = `${Date.now()}_${Math.random().toString(36).substr(2, 8)}.${ext}`;
       const blobPath = `${ambiente}/condominios/${idCondominio}/reunioes/${idReuniao}/${nomeArquivo}`;

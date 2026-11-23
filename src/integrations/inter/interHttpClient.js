@@ -41,9 +41,26 @@ const PREFIXOS_PATH_PERMITIDOS = [
   '/pix/v2/webhook',        // configurar webhook Pix
 ];
 
+// Saídas de dinheiro dentro de prefixos permitidos (ex.: devolução de Pix
+// recebido em /pix/v2/pix/{e2eid}/devolucao/{id}) continuam bloqueadas.
+const PADROES_PATH_PROIBIDOS = [/\/devolucao(\/|$)/i];
+
 function _validarPathPermitido(path) {
-  const caminho = path.split('?')[0];
-  const permitido = PREFIXOS_PATH_PERMITIDOS.some((prefixo) => caminho.startsWith(prefixo));
+  // Normaliza antes de comparar: "/cobranca/v3/cobrancas/../../banking/v2/pagamento"
+  // passaria num startsWith direto, mas resolve para /banking/v2/pagamento.
+  let caminho;
+  try {
+    caminho = new URL(String(path), 'https://inter.invalid').pathname;
+  } catch (_) {
+    caminho = '';
+  }
+  if (/%2e|%2f|%5c/i.test(String(path))) {
+    caminho = '';
+  }
+  const permitido =
+    caminho !== '' &&
+    PREFIXOS_PATH_PERMITIDOS.some((prefixo) => caminho === prefixo || caminho.startsWith(`${prefixo}/`) || caminho.startsWith(`${prefixo}?`)) &&
+    !PADROES_PATH_PROIBIDOS.some((padrao) => padrao.test(caminho));
   if (!permitido) {
     throw new Error(
       `Chamada bloqueada por política de segurança: "${caminho}" não está na allowlist de endpoints permitidos ` +

@@ -2,6 +2,7 @@
 
 const express = require('express');
 const multer = require('multer');
+const { validarUploads } = require('../helpers/uploadPolicy');
 const router = express.Router();
 const { body, param, query } = require('express-validator');
 
@@ -321,6 +322,7 @@ router.post(
   '/despesas/:id/documentos',
   auth,
   uploadDoc.single('arquivo'),
+  validarUploads('documento'),
   [
     param('id').isInt({ min: 1 }).withMessage('id inválido.'),
     body('tipo')
@@ -460,6 +462,7 @@ router.post(
   '/inadimplencia/boletos/upload',
   auth,
   uploadDoc.single('arquivo'),
+  validarUploads('boleto'),
   validate,
   controller.uploadBoletoCobranca.bind(controller)
 );
@@ -532,6 +535,7 @@ router.post(
   '/documentos',
   auth,
   uploadDoc.single('arquivo'),
+  validarUploads('documento'),
   [
     body('competencia')
       .notEmpty().withMessage('competencia é obrigatório.')
@@ -574,6 +578,7 @@ router.post(
   '/receitas/:id/documentos',
   auth,
   uploadDoc.single('arquivo'),
+  validarUploads('documento'),
   [
     param('id').isInt({ min: 1 }).withMessage('id inválido.'),
     body('tipo')

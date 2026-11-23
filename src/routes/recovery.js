@@ -27,11 +27,23 @@ router.post(
   controller.recoveryRequest.bind(controller)
 );
 
+// user_id (app legado) ou login (e-mail/CPF) identifica o usuário.
+const userIdOuLogin = [
+  body('user_id').optional({ nullable: true, checkFalsy: true }).isInt({ min: 1 }).withMessage('Campo user_id inválido.'),
+  body('login').optional({ nullable: true, checkFalsy: true }).isLength({ max: 255 }).withMessage('Campo login inválido.'),
+  body().custom((value, { req }) => {
+    if (!req.body?.user_id && !req.body?.login) {
+      throw new Error('Informe user_id ou login.');
+    }
+    return true;
+  })
+];
+
 // POST /api/auth/recovery/verify
 router.post(
   '/verify',
   [
-    body('user_id').notEmpty().isInt({ min: 1 }).withMessage('Campo user_id inválido.'),
+    ...userIdOuLogin,
     body('code')
       .notEmpty().withMessage('Campo code é obrigatório.')
       .isLength({ min: 6, max: 6 }).withMessage('code deve ter exatamente 6 dígitos.')
@@ -45,8 +57,13 @@ router.post(
 router.post(
   '/reset',
   [
-    body('user_id').notEmpty().isInt({ min: 1 }).withMessage('Campo user_id inválido.'),
-    body('invite_token').notEmpty().withMessage('Campo invite_token é obrigatório.'),
+    ...userIdOuLogin,
+    body().custom((value, { req }) => {
+      if (!req.body?.reset_token && !req.body?.invite_token && !req.body?.token) {
+        throw new Error('Campo reset_token (ou invite_token) é obrigatório.');
+      }
+      return true;
+    }),
     body('password')
       .notEmpty().withMessage('Campo password é obrigatório.')
       .isLength({ min: 6 }).withMessage('password deve ter no mínimo 6 caracteres.')

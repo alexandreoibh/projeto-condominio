@@ -98,4 +98,4 @@ cron.schedule(
 
 console.log('[reconciliarCobrancasBancarias] Cron de reconciliação de cobranças bancárias agendado (a cada hora, minuto 15).');
 
-module.exports = { reconciliarCobrancasBancarias };
+module.exports = { reconciliarCobrancasBancarias, normalizarSituacaoProvider: _normalizarSituacaoInter };

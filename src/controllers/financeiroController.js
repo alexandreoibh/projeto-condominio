@@ -1,6 +1,10 @@
 'use strict';
 
 const { QueryTypes } = require('sequelize');
+const permissoes = require('../helpers/permissoes');
+const { parseUrlBlob, assinarLinkDownload, verificarLinkDownload } = require('../helpers/blobUrl');
+const { registrarAuditoria } = require('../helpers/auditoria');
+const { extractTokenFromRequest, verificarTokenDeSessao } = require('../helpers/auth');
 const { put } = require('@vercel/blob');
 const postgres = require('../database/postgres');
 const pushNotificationService = require('../service/pushNotificationService');
@@ -47,8 +51,10 @@ class FinanceiroController {
     return this._normalizarPeriodo(req.query.competencia) || this._normalizarPeriodo(req.query.periodo);
   }
 
+  // Por id numérico do perfil (JWT), não pelo nome — o nome deriva da coluna
+  // editável "tb-usuarios".tipo.
   _isGestor(req) {
-    return PERFIS_GESTAO.has(req.nomePerfil);
+    return permissoes.ehGestor(req);
   }
 
   _clausulaOrdenacao(req, whitelist, desempate, padrao) {
@@ -330,6 +336,27 @@ class FinanceiroController {
       const idUsuario = this._toInt(id_usuario, null);
       const idUnidade = this._toInt(id_unidade, null);
 
+      // O morador/unidade da receita precisam ser do próprio condomínio (antes
+      // aceitava id_usuario de outro condomínio e expunha nome/CPF dele).
+      if (idUsuario) {
+        const [usuarioDoCondominio] = await postgres.query(
+          `SELECT id FROM "condominio-bh"."tb-usuarios" WHERE id = :id AND id_condominio = :id_condominio LIMIT 1`,
+          { replacements: { id: idUsuario, id_condominio: idCondominio }, type: QueryTypes.SELECT }
+        );
+        if (!usuarioDoCondominio) {
+          return res.status(422).json({ message: 'id_usuario não pertence a este condomínio.' });
+        }
+      }
+      if (idUnidade) {
+        const [unidadeDoCondominio] = await postgres.query(
+          `SELECT id FROM "condominio-bh".tb_condominios_unidades WHERE id = :id AND id_condominio = :id_condominio LIMIT 1`,
+          { replacements: { id: idUnidade, id_condominio: idCondominio }, type: QueryTypes.SELECT }
+        );
+        if (!unidadeDoCondominio) {
+          return res.status(422).json({ message: 'id_unidade não pertence a este condomínio.' });
+        }
+      }
+
       const isRotina = is_rotina === true || is_rotina === 'true';
       let idRotina = null;
 
@@ -564,6 +591,21 @@ class FinanceiroController {
 
       if (!rows[0]) return res.status(404).json({ message: 'Receita não encontrada.' });
       const receitaAtualizada = rows[0];
+
+      if (req.body.situacao !== undefined || req.body.data_pagamento !== undefined || req.body.valor !== undefined) {
+        await registrarAuditoria({
+          req,
+          acao: 'receita_editada',
+          entidade: 'receita',
+          entidadeId: receitaAtualizada.id,
+          detalhes: {
+            situacao: receitaAtualizada.situacao,
+            data_pagamento: receitaAtualizada.data_pagamento,
+            valor: receitaAtualizada.valor,
+            campos: Object.keys(req.body || {}).filter((campo) => camposPermitidos.includes(campo))
+          }
+        });
+      }
 
       // Auto-recuperação: se a receita é MORADOR, está em aberto, tem
       // pagador definido, e NÃO existe boleto válido vinculado (nunca
@@ -1115,12 +1157,38 @@ class FinanceiroController {
     }
   }
 
+  // Gestor acessa qualquer receita do condomínio; demais perfis só as da
+  // própria unidade (id_unidade do token) ou as lançadas no próprio usuário.
+  async _autorizarAcessoReceita(req, idReceita, idCondominio) {
+    if (this._isGestor(req)) {
+      return { ok: true };
+    }
+    const [receita] = await postgres.query(
+      `SELECT id_unidade, id_usuario FROM "condominio-bh".tb_fin_receitas WHERE id = :id AND id_condominio = :id_condominio`,
+      { replacements: { id: idReceita, id_condominio: idCondominio }, type: QueryTypes.SELECT }
+    );
+    if (!receita) {
+      return { ok: false, status: 404, message: 'Receita não encontrada.' };
+    }
+    const idUnidadeToken = this._toInt(req.id_unidade, null);
+    const idUsuarioToken = this._toInt(req.idcliente, null);
+    const daUnidade = idUnidadeToken && this._toInt(receita.id_unidade, null) === idUnidadeToken;
+    const doUsuario = idUsuarioToken && this._toInt(receita.id_usuario, null) === idUsuarioToken;
+    if (!daUnidade && !doUsuario) {
+      return { ok: false, status: 403, message: 'Sem permissão para consultar boleto de outra unidade.' };
+    }
+    return { ok: true };
+  }
+
   async consultarBoletoBancario(req, res) {
     try {
       const idCondominio = this._toInt(req.id_condominio, null);
       if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
 
       const idReceita = this._toInt(req.params.id, null);
+
+      const acesso = await this._autorizarAcessoReceita(req, idReceita, idCondominio);
+      if (!acesso.ok) return res.status(acesso.status).json({ message: acesso.message });
 
       const [cobranca] = await postgres.query(
         `SELECT id, id_receita, provider, tipo_cobranca, situacao, id_externo, nosso_numero,
@@ -1153,6 +1221,9 @@ class FinanceiroController {
       if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
 
       const idReceita = this._toInt(req.params.id, null);
+
+      const acesso = await this._autorizarAcessoReceita(req, idReceita, idCondominio);
+      if (!acesso.ok) return res.status(acesso.status).json({ message: acesso.message });
 
       const [cobranca] = await postgres.query(
         `SELECT cb.id_externo, ib.*
@@ -1209,6 +1280,14 @@ class FinanceiroController {
           WHERE id = :id`,
         { replacements: { id: cobranca.id_cobranca }, type: QueryTypes.UPDATE }
       );
+
+      await registrarAuditoria({
+        req,
+        acao: 'boleto_cancelado',
+        entidade: 'cobranca_bancaria',
+        entidadeId: cobranca.id_cobranca,
+        detalhes: { id_receita: this._toInt(req.params.id, null), motivo: req.body?.motivo || null }
+      });
 
       return res.status(200).json({ message: 'Boleto cancelado com sucesso.' });
     } catch (error) {
@@ -1272,7 +1351,7 @@ class FinanceiroController {
       if (!receitas[0]) return res.status(404).json({ message: 'Receita não encontrada.' });
 
       const arquivo = req.file;
-      const ext = (arquivo.originalname.split('.').pop() || 'bin').toLowerCase();
+      const ext = (arquivo.extensaoSegura || 'bin');
       const ambiente = process.env.NODE_ENV === 'production' ? 'prod' : 'dev';
       const nomeArquivo = `${Date.now()}_${Math.random().toString(36).substr(2, 8)}.${ext}`;
       const blobPath = `${ambiente}/condominios/${idCondominio}/financeiro/receitas/${idReceita}/${nomeArquivo}`;
@@ -2036,7 +2115,7 @@ class FinanceiroController {
       if (!despesas[0]) return res.status(404).json({ message: 'Despesa não encontrada.' });
 
       const arquivo = req.file;
-      const ext = (arquivo.originalname.split('.').pop() || 'bin').toLowerCase();
+      const ext = (arquivo.extensaoSegura || 'bin');
       const ambiente = process.env.NODE_ENV === 'production' ? 'prod' : 'dev';
       const nomeArquivo = `${Date.now()}_${Math.random().toString(36).substr(2, 8)}.${ext}`;
       const blobPath = `${ambiente}/condominios/${idCondominio}/financeiro/despesas/${idDespesa}/${nomeArquivo}`;
@@ -2073,7 +2152,7 @@ class FinanceiroController {
       if (!req.file) return res.status(400).json({ message: 'Arquivo não enviado.' });
 
       const arquivo = req.file;
-      const ext = (arquivo.originalname.split('.').pop() || 'bin').toLowerCase();
+      const ext = (arquivo.extensaoSegura || 'bin');
       const anomes = this._periodoAtual().replace('-', '');
       const nomeArquivo = `${Date.now()}_${Math.random().toString(36).substr(2, 8)}.${ext}`;
       const blobPath = `cobranca/boletos/condominio-${idCondominio}/${anomes}/${nomeArquivo}`;
@@ -2087,27 +2166,55 @@ class FinanceiroController {
     }
   }
 
+  // GET /financeiro/boletos/download?url=...&exp=...&sig=...
+  // Sem `auth` porque é aberto pelo morador a partir do e-mail. A URL precisa
+  // ser (1) do Blob configurado (host comparado após parse) e de
+  // /cobranca/boletos/, e (2) vir com assinatura HMAC válida gerada pelo
+  // backend no envio do e-mail — ou o chamador ser gestor autenticado do
+  // condomínio dono do arquivo. Links antigos sem assinatura são recusados.
   async downloadBoletoCobranca(req, res) {
     try {
-      const url = String(req.query.url || '');
-      const baseBlobUrl = process.env.BLOB_STORAGE_URL || '';
-
-      if (!url || !baseBlobUrl || !url.startsWith(baseBlobUrl) || !url.includes('/cobranca/boletos/')) {
+      const urlTexto = String(req.query.url || '');
+      const blob = parseUrlBlob(urlTexto);
+      const match = blob ? blob.pathname.match(/^\/cobranca\/boletos\/condominio-(\d+)\/[^/]+\/[^/]+$/) : null;
+      if (!blob || !match) {
         return res.status(400).json({ message: 'Parâmetro url inválido.' });
       }
+      const idCondominioArquivo = this._toInt(match[1], null);
 
-      const blobResponse = await fetch(url, {
+      let autorizado = verificarLinkDownload(urlTexto, req.query.exp, req.query.sig);
+      if (!autorizado) {
+        const token = extractTokenFromRequest(req);
+        if (token) {
+          try {
+            const sessao = await verificarTokenDeSessao(token);
+            const reqSessao = { IdPerfil: sessao.IdPerfil };
+            autorizado =
+              permissoes.ehAdmin(reqSessao) ||
+              (permissoes.ehGestor(reqSessao) && this._toInt(sessao.id_condominio, null) === idCondominioArquivo);
+          } catch (_) {
+            autorizado = false;
+          }
+        }
+      }
+      if (!autorizado) {
+        return res.status(403).json({ message: 'Link de download inválido ou expirado.' });
+      }
+
+      const blobResponse = await fetch(blob.url.toString(), {
         headers: { Authorization: `Bearer ${process.env.BLOB_READ_WRITE_TOKEN}` },
+        redirect: 'error',
       });
 
       if (!blobResponse.ok) {
-        return res.status(blobResponse.status).json({ message: 'Falha ao obter o boleto.' });
+        return res.status(blobResponse.status === 404 ? 404 : 502).json({ message: 'Falha ao obter o boleto.' });
       }
 
-      const nomeArquivo = url.split('/').pop() || 'boleto.pdf';
+      const nomeArquivo = (blob.pathname.split('/').pop() || 'boleto.pdf').replace(/[^a-zA-Z0-9._-]/g, '_');
       const buffer = Buffer.from(await blobResponse.arrayBuffer());
 
-      res.setHeader('Content-Type', blobResponse.headers.get('content-type') || 'application/octet-stream');
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
       res.setHeader('Content-Disposition', `attachment; filename="${nomeArquivo}"`);
       return res.status(200).send(buffer);
     } catch (error) {
@@ -2115,8 +2222,8 @@ class FinanceiroController {
     }
   }
 
-  _extrairIdReceitaDoPath(url) {
-    const match = String(url || '').match(/\/financeiro\/receitas\/(\d+)\//);
+  _extrairIdReceitaDoPath(pathname) {
+    const match = String(pathname || '').match(/\/financeiro\/receitas\/(\d+)\//);
     return match ? this._toInt(match[1], null) : null;
   }
 
@@ -2131,14 +2238,19 @@ class FinanceiroController {
         return res.status(403).json({ message: 'Acesso negado.' });
       }
 
-      const url = String(req.query.url || '');
-      const baseBlobUrl = process.env.BLOB_STORAGE_URL || '';
-
-      const ehDocumentoReceita = url.includes('/financeiro/receitas/');
-      const caminhoValido = url.includes('/financeiro/despesas/') || url.includes('/financeiro/competencias/') || ehDocumentoReceita;
-      if (!url || !baseBlobUrl || !url.startsWith(baseBlobUrl) || !caminhoValido) {
+      const blob = parseUrlBlob(String(req.query.url || ''));
+      // Caminho: <ambiente>/condominios/<id do token>/financeiro/<tipo>/...
+      const match = blob
+        ? blob.pathname.match(/^\/[^/]+\/condominios\/(\d+)\/financeiro\/(despesas|competencias|receitas)\/.+/)
+        : null;
+      if (!blob || !match) {
         return res.status(400).json({ message: 'Parâmetro url inválido.' });
       }
+      if (this._toInt(match[1], null) !== idCondominio) {
+        return res.status(403).json({ message: 'Sem permissão para baixar documento de outro condomínio.' });
+      }
+      const ehDocumentoReceita = match[2] === 'receitas';
+      const url = blob.url.toString();
 
       // Documentos de despesa/competência continuam gestor-only; documentos de
       // receita liberam Morador da própria unidade.
@@ -2147,7 +2259,7 @@ class FinanceiroController {
       }
 
       if (!ehGestor && ehDocumentoReceita) {
-        const idReceitaNaUrl = this._extrairIdReceitaDoPath(url);
+        const idReceitaNaUrl = this._extrairIdReceitaDoPath(blob.pathname);
         const receitas = await postgres.query(
           `SELECT id_unidade FROM "condominio-bh".tb_fin_receitas WHERE id = :id AND id_condominio = :id_condominio`,
           { replacements: { id: idReceitaNaUrl, id_condominio: idCondominio }, type: QueryTypes.SELECT }
@@ -2159,17 +2271,26 @@ class FinanceiroController {
 
       const blobResponse = await fetch(url, {
         headers: { Authorization: `Bearer ${process.env.BLOB_READ_WRITE_TOKEN}` },
+        redirect: 'error',
       });
 
       if (!blobResponse.ok) {
-        return res.status(blobResponse.status).json({ message: 'Falha ao obter o documento.' });
+        return res.status(blobResponse.status === 404 ? 404 : 502).json({ message: 'Falha ao obter o documento.' });
       }
 
-      const nomeArquivo = url.split('/').pop() || 'documento';
+      const nomeArquivo = (blob.pathname.split('/').pop() || 'documento').replace(/[^a-zA-Z0-9._-]/g, '_');
       const buffer = Buffer.from(await blobResponse.arrayBuffer());
 
-      res.setHeader('Content-Type', blobResponse.headers.get('content-type') || 'application/octet-stream');
-      res.setHeader('Content-Disposition', `inline; filename="${nomeArquivo}"`);
+      const tipoArquivo = String(blobResponse.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+      const tiposInline = new Set(['application/pdf', 'image/jpeg', 'image/png', 'image/webp']);
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      if (tiposInline.has(tipoArquivo)) {
+        res.setHeader('Content-Type', tipoArquivo);
+        res.setHeader('Content-Disposition', `inline; filename="${nomeArquivo}"`);
+      } else {
+        res.setHeader('Content-Type', 'application/octet-stream');
+        res.setHeader('Content-Disposition', `attachment; filename="${nomeArquivo}"`);
+      }
       return res.status(200).send(buffer);
     } catch (error) {
       return res.status(500).json({ message: 'Falha ao baixar documento.', detail: error.message });
@@ -2464,7 +2585,7 @@ class FinanceiroController {
     try {
       const idCondominio = this._toInt(req.id_condominio, null);
       if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
-      if (!['Admin', 'Sindico'].includes(req.nomePerfil)) return res.status(403).json({ message: 'Apenas Admin ou Síndico podem atualizar a meta do fundo de reserva.' });
+      if (!permissoes.temPerfil(req, permissoes.PERFIL.ADMIN, permissoes.PERFIL.SINDICO)) return res.status(403).json({ message: 'Apenas Admin ou Síndico podem atualizar a meta do fundo de reserva.' });
 
       const valorMeta = this._parseDecimalOuNull(req.body.valor_meta);
       if (valorMeta === null || valorMeta < 0) return res.status(422).json({ message: 'valor_meta é obrigatório e deve ser um número maior ou igual a zero.' });
@@ -2982,7 +3103,10 @@ class FinanceiroController {
               : `Você possui débito pendente: ${receitaPrincipal.descricao} — vencido em ${receitaPrincipal.data_vencimento}.`;
 
             const boletosParaEmail = anexosUrls.map(
-              (url) => `${this._publicApiBaseUrl()}/api/condominio/financeiro/boletos/download?url=${encodeURIComponent(url)}`
+              (url) => {
+                const { exp, sig } = assinarLinkDownload(url);
+                return `${this._publicApiBaseUrl()}/api/condominio/financeiro/boletos/download?url=${encodeURIComponent(url)}&exp=${exp}&sig=${sig}`;
+              }
             );
 
             // `details` carrega só os pares chave→valor de exibição já
@@ -3370,7 +3494,7 @@ class FinanceiroController {
     try {
       const idCondominio = this._toInt(req.id_condominio, null);
       if (!idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
-      if (!['Admin', 'Sindico'].includes(req.nomePerfil)) return res.status(403).json({ message: 'Apenas Admin ou Síndico podem publicar balancetes.' });
+      if (!permissoes.temPerfil(req, permissoes.PERFIL.ADMIN, permissoes.PERFIL.SINDICO)) return res.status(403).json({ message: 'Apenas Admin ou Síndico podem publicar balancetes.' });
 
       const periodo = this._normalizarPeriodo(req.body.competencia) || this._normalizarPeriodo(req.body.periodo);
       if (!periodo) return res.status(422).json({ message: 'competencia (ou periodo) é obrigatório.' });
@@ -3628,7 +3752,7 @@ class FinanceiroController {
       const periodo = this._normalizarPeriodo(req.body.competencia);
       const tipo = req.body.tipo;
       const arquivo = req.file;
-      const ext = (arquivo.originalname.split('.').pop() || 'bin').toLowerCase();
+      const ext = (arquivo.extensaoSegura || 'bin');
       const ambiente = process.env.NODE_ENV === 'production' ? 'prod' : 'dev';
       const nomeArquivo = `${Date.now()}_${Math.random().toString(36).substr(2, 8)}.${ext}`;
       const blobPath = `${ambiente}/condominios/${idCondominio}/financeiro/competencias/${periodo}/${nomeArquivo}`;
