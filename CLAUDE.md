@@ -148,7 +148,10 @@ Rotas especiais em `condominio.js`:
 - ORM: **Sequelize** com driver `pg`
 - Conexão: instância única em `src/database/postgres.js`
 - Queries complexas usam `postgres.query(sql, { replacements, type: QueryTypes.SELECT })`
-- **Produção roda PostgreSQL 9.2.24** (lançado em 2012, sem suporte oficial desde 2017) — confirmado via `SELECT version()` direto no servidor. Isso bloqueia qualquer recurso introduzido depois do 9.2: **sem** `jsonb` (tipo só existe desde 9.4), **sem** `json_build_object`/`jsonb_build_object` (9.4/9.5), **sem** `ON CONFLICT`/upsert nativo (9.5), **sem** `json_agg`/`jsonb_agg` com todas as variações modernas. Para agregar linhas em JSON, usar o padrão compatível já validado no projeto: `array_to_json(array_agg(row_to_json(subquery_com_alias) ORDER BY ...))` — ver uso em `financeiroController.js` (documentos de despesa) e `condominioController.js` (`listarCondominios`/`buscarCondominioPorId`, unidades por bloco). Antes de usar qualquer função JSON/array nova em SQL raw, testar contra o banco real primeiro (não confiar em docs do Postgres atual).
+- **Produção roda PostgreSQL 18.7** (atualizado em 11/2026 a partir do 9.2.24; confirmado via `SELECT version()`).
+  - As restrições do 9.2 não valem mais: `jsonb`, `json_build_object`, `json_agg`, `ON CONFLICT`, `ADD COLUMN IF NOT EXISTS`/`CREATE INDEX IF NOT EXISTS` e `to_regclass` estão disponíveis.
+  - O código e as migrations antigas usam padrões compatíveis com o 9.2, que continuam válidos: `array_to_json(array_agg(row_to_json(...)))`, `DO $$ IF NOT EXISTS`, `translate` no lugar de `unaccent`. Os comentários "produção está na 9.2" nas migrations são históricos.
+  - SSL é obrigatório na conexão, com o certificado verificado (`config_postgres.js`).
 - Schema das tabelas SGW (perfis/menu): `sgw` — ex: `sgw.tb_sgw_perfil_menu`
 - Schema das tabelas de condomínio (moradores, espaços, agenda): `"condominio-bh"` — ex: `"condominio-bh"."tb-usuarios"`, `"condominio-bh".tb_espaco`
 - O schema `"condominio-bh"` tem nomes de tabelas mistos (com e sem hifens), sempre usar aspas duplas quando necessário no SQL raw

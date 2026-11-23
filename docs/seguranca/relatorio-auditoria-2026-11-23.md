@@ -141,7 +141,7 @@ Também verificado, sem problema encontrado:
 | `financeiro.test.js` | Saldo e extrato por perfil; boleto de outra unidade; webhook forjado; download assinado, host falso e outro condomínio. |
 | `uploads-exposicao.test.js` | Upload sem auth; HTML, SVG, EXE e script disfarçados; SSRF; `detail` oculto; headers; estáticos. |
 
-**Não testado em ambiente real:** a migration no PostgreSQL 9.2, o envio real de e-mail, a reconsulta real ao Inter e o fluxo completo pelo PHP.
+**Não testado em ambiente real:** a migration no PostgreSQL 18 (o banco foi atualizado do 9.2), o envio real de e-mail, a reconsulta real ao Inter e o fluxo completo pelo PHP.
 
 ### Impacto no frontend
 
@@ -243,7 +243,7 @@ Todos a partir de `tb_auditoria_seguranca` e `tb_sgw_log_acesso`. Sugestão: uma
 - Toda URL buscada pelo servidor passa por `helpers/blobUrl.parseUrlBlob`.
 - Todo upload passa por `validarUploads`.
 - Rodar `npm test` e `npm audit --omit=dev` no CI. Os testes deste relatório servem de regressão de segurança.
-- Atualizar o PostgreSQL 9.2 (sem suporte desde 2017). Usar um usuário de banco da aplicação **sem** privilégios de DDL/superuser, e um usuário separado para as migrations.
+- ~~Atualizar o PostgreSQL 9.2~~: feito, produção está no 18.7. No `pg_hba.conf`, usar `hostssl` + `scram-sha-256` (`md5` está obsoleto no 18). Usar um usuário de banco da aplicação **sem** privilégios de DDL/superuser, e um usuário separado para as migrations.
 
 ### Riscos residuais
 
