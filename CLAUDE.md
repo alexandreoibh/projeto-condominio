@@ -239,6 +239,7 @@ Três Maps no `CondominioController` sobrevivem apenas enquanto o processo estiv
 | `USER_SQL_POSTGRE` | Usuário PostgreSQL |
 | `PASSWORD_SQL_POSTGRE` | Senha PostgreSQL |
 | `DATABASE_POSTGRE` | Nome do banco |
+| `TRUSTED_PROXY_IPS` | Opcional. IPs (separados por vírgula) de proxies confiáveis, como o servidor do PHP quando chama a Vercel. Loopback (`127.0.0.1`/`::1`) já é confiável. Só deles o login aceita o IP do cliente (`X-Client-IP`/`body.ip`) para o rate limit por IP e o log |
 | `DB_SSL_CA` | Opcional. PEM do CA do servidor PostgreSQL (texto, `\n` escapado ou base64). SSL é sempre ligado com `rejectUnauthorized: true`; sem CA, o certificado precisa ser de CA pública |
 | `DB_SSL_SERVERNAME` | Opcional. Nome no certificado, quando difere de `DB_HOST_SQL_POSTGRE` |
 | `DB_SSL_REJECT_UNAUTHORIZED` | `false` desliga a verificação do certificado (emergência; gera `console.warn`). Não existe opção para desligar o SSL |

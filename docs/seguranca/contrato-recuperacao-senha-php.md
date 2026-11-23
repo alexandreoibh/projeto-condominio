@@ -67,7 +67,10 @@ O `login` (e-mail ou CPF) é aceito no lugar de `user_id`, e `invite_token` no l
 
 ## Outras mudanças que o PHP precisa conhecer
 
-- **`back-cond.php` (login):** o IP enviado pelo navegador (`ip`, `X-Client-IP`) **não** é mais gravado como IP do acesso; vai só como `ip_informado` na mensagem do log. Login tem limite: 10 falhas por login ou 30 por IP em 15 min → `429`.
+- **`back-cond.php` (login):** limite de 10 falhas por login ou 30 por IP em 15 min → `429`.
+  - **O PHP deve enviar o IP real do morador** em `X-Client-IP` (ou `ip` no body). Sem isso, todos os moradores aparecem com o IP do servidor PHP, e o limite por IP fica desligado para eles (vale só o limite por login).
+  - Esse IP só é aceito quando a chamada vem de um proxy confiável: `localhost` ou um IP listado em `TRUSTED_PROXY_IPS`. Nesse caso ele vai para a coluna `ip` do log, e a mensagem leva `via_proxy=...`.
+  - Vindo de qualquer outra origem, o IP declarado é ignorado e vai só como `ip_informado` na mensagem.
 - **Troca da própria senha** (`PUT`/`PATCH /usuarios/:id` com o JWT do próprio usuário): exige `senha_atual`. Envie `senha_atual`, `nova_senha` e `confirmar_senha` (`password` também é aceito no lugar de `nova_senha`). Síndico e admin redefinem a senha de **outro** usuário sem `senha_atual`.
 - **Perfis:** apenas os perfis 1, 3 e 4 criam usuários e mudam perfil, status ou unidade. Síndico não atribui Admin; sub-síndico não atribui Admin nem Síndico. Ninguém além do Admin edita um Admin.
 - **Relatórios automáticos:** criar, editar e excluir `relatorios/envio-config` exige JWT de Admin, Síndico ou Sub-Síndico. Com `invite_token` só é possível listar as configurações e gravar logs.

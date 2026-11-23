@@ -115,6 +115,57 @@ describe('Login', () => {
     expect(log.replacements.mensagem).toContain('ip_informado=1.2.3.4');
   });
 
+  describe('proxy confiável (back-cond.php chamando em localhost)', () => {
+    const logDoLogin = () => callsMatching(/INSERT INTO "condominio-bh"\.tb_sgw_log_acesso/)[0];
+    const rateDoLogin = () => callsMatching(SQL_RATE)[0];
+
+    beforeEach(() => {
+      on(SQL_RATE, () => [{ falhas_login: 0, falhas_ip: 0 }]);
+      on(SQL_LOGIN, () => []);
+    });
+
+    test('loopback com X-Client-IP: limite e log usam o IP do cliente', async () => {
+      await request(app).post('/api/login').set('X-Client-IP', '198.51.100.7').send({ login: 'a@teste.local', password: 'x' });
+      expect(rateDoLogin().replacements.ip).toBe('198.51.100.7');
+      expect(logDoLogin().replacements.ip).toBe('198.51.100.7');
+      expect(logDoLogin().replacements.mensagem).toMatch(/via_proxy=(127\.0\.0\.1|::1)/);
+    });
+
+    test('loopback sem IP do cliente: vale só o limite por login', async () => {
+      on(SQL_RATE, () => [{ falhas_login: 0, falhas_ip: 999 }]);
+      const res = await request(app).post('/api/login').send({ login: 'a@teste.local', password: 'x' });
+      expect(res.status).not.toBe(429);
+      expect(rateDoLogin().replacements.ip).toBeNull();
+    });
+
+    test('loopback com IP do cliente inválido é ignorado', async () => {
+      await request(app).post('/api/login').send({ login: 'a@teste.local', password: 'x', ip: 'nao-e-ip' });
+      expect(rateDoLogin().replacements.ip).toBeNull();
+    });
+
+    test('cliente externo com X-Client-IP forjado continua limitado pelo IP real', async () => {
+      on(SQL_RATE, (r) => [{ falhas_login: 0, falhas_ip: r.ip === '203.0.113.9' ? 30 : 0 }]);
+      const res = await request(app).post('/api/login')
+        .set('X-Forwarded-For', '203.0.113.9')
+        .set('X-Client-IP', '198.51.100.7')
+        .send({ login: 'a@teste.local', password: 'x' });
+      expect(res.status).toBe(429);
+    });
+
+    test('TRUSTED_PROXY_IPS: o IP do servidor PHP também é proxy confiável', async () => {
+      process.env.TRUSTED_PROXY_IPS = '192.0.2.50';
+      try {
+        await request(app).post('/api/login')
+          .set('X-Forwarded-For', '192.0.2.50')
+          .set('X-Client-IP', '198.51.100.8')
+          .send({ login: 'a@teste.local', password: 'x' });
+        expect(rateDoLogin().replacements.ip).toBe('198.51.100.8');
+      } finally {
+        delete process.env.TRUSTED_PROXY_IPS;
+      }
+    });
+  });
+
   test('senha legada em texto puro é migrada para bcrypt e o JWT traz tv', async () => {
     on(SQL_RATE, () => [{ falhas_login: 0, falhas_ip: 0 }]);
     on(SQL_LOGIN, () => [{ id: 10, id_condominio: 1, email: 'a@teste.local', senha_hash: 'senha123', status: 'ativo', tipo_perfil_id: 2 }]);
