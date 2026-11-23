@@ -119,6 +119,42 @@ describe('POST /api/condominio/auth-recovery-lookup (frontend PHP)', () => {
     await global.aguardarPendentes();
     expect(despacharEmail).not.toHaveBeenCalled();
   });
+
+  describe('IP do cliente via proxy (back-cond.php em localhost)', () => {
+    const LOOKUP = '/api/condominio/auth-recovery-lookup';
+    const ipDoRate = () => callsMatching(SQL_RATE)[0].replacements.ip;
+    const ipGravado = () => callsMatching(/INSERT INTO "condominio-bh"\.tb_recovery_tokens/)[0]?.replacements.request_ip;
+
+    test('loopback com X-Client-IP: limite e request_ip usam o IP do morador', async () => {
+      instalarTabelaRecovery();
+      instalarUsuario();
+      await request(app).post(LOOKUP).set('X-Client-IP', '198.51.100.7').send({ login: VITIMA.email });
+      expect(ipDoRate()).toBe('198.51.100.7');
+      expect(ipGravado()).toBe('198.51.100.7');
+    });
+
+    test('loopback sem IP do morador: o limite por IP (do servidor PHP) não bloqueia ninguém', async () => {
+      instalarTabelaRecovery();
+      instalarUsuario(VITIMA, { porIp: 999 });
+      await request(app).post(LOOKUP).send({ login: VITIMA.email });
+      expect(callsMatching(/INSERT INTO "condominio-bh"\.tb_recovery_tokens/)).toHaveLength(1);
+      expect(await codigoEnviado()).toMatch(/^\d{6}$/);
+    });
+
+    test('cliente externo com X-Client-IP forjado continua limitado pelo IP real', async () => {
+      instalarTabelaRecovery();
+      instalarUsuario();
+      on(SQL_RATE, (r) => [{ por_usuario: 0, por_ip: r.ip === '203.0.113.9' ? 10 : 0 }]);
+      const res = await request(app).post(LOOKUP)
+        .set('X-Forwarded-For', '203.0.113.9')
+        .set('X-Client-IP', '198.51.100.7')
+        .send({ login: VITIMA.email });
+      expect(res.status).toBe(200);
+      expect(callsMatching(/INSERT INTO "condominio-bh"\.tb_recovery_tokens/)).toHaveLength(0);
+      await global.aguardarPendentes();
+      expect(despacharEmail).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe('Fluxo request → verify → reset (app React)', () => {

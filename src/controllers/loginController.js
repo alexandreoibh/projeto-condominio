@@ -5,7 +5,7 @@ const bcrypt = require("bcryptjs");
 const { QueryTypes } = require("sequelize");
 const postgres = require("../database/postgres");
 const crypto = require("crypto");
-const net = require("net");
+const { ipEfetivo } = require("../helpers/ipCliente");
 const { buildAvatarProxyUrl } = require("../helpers/avatarProxy");
 const { getJwtSecret } = require("../helpers/segredos");
 const { lerTokenVersion, incrementarTokenVersion } = require("../helpers/sessao");
@@ -19,20 +19,6 @@ const DUMMY_BCRYPT_HASH = bcrypt.hashSync("dummy-password-for-timing", 10);
 const LOGIN_RATE_WINDOW_MINUTES = 15;
 const LOGIN_MAX_FALHAS_POR_LOGIN = 10;
 const LOGIN_MAX_FALHAS_POR_IP = 30;
-
-// Proxies confiáveis: o back-cond.php chama este backend em localhost (ou, na
-// Vercel, a partir do IP do servidor PHP). Para o backend, todos os moradores
-// teriam o mesmo IP e o limite por IP bloquearia o site inteiro. Só quando a
-// requisição vem de um destes IPs o IP do cliente informado pelo PHP
-// (X-Client-IP / body.ip) é aceito.
-const LOOPBACK_IPS = new Set(["127.0.0.1", "::1"]);
-const _lerProxiesConfiaveis = () =>
-  new Set(
-    String(process.env.TRUSTED_PROXY_IPS || "")
-      .split(",")
-      .map((ip) => ip.trim().replace(/^::ffff:/, ""))
-      .filter(Boolean)
-  );
 
 class Login {
   _normalizeCpf(value) {
@@ -94,34 +80,11 @@ class Login {
     }
   }
 
-  _ehProxyConfiavel(ip) {
-    if (!ip) return false;
-    return LOOPBACK_IPS.has(ip) || _lerProxiesConfiaveis().has(ip);
-  }
-
-  // IP do cliente informado pelo proxy (back-cond.php), só se for um IP válido.
-  _ipInformadoPeloProxy(req) {
-    const headers = req.headers && typeof req.headers === "object" ? req.headers : {};
-    const bruto = req.body?.ip ?? headers["x-client-ip"] ?? headers["x-ip"];
-    const ip = String(bruto || "").trim().replace(/^::ffff:/, "");
-    return ip && net.isIP(ip) ? ip : null;
-  }
-
-  // IP usado no rate limit e na coluna ip do log:
-  // - requisição direta: req.ip (o IP declarado pelo cliente é ignorado);
-  // - via proxy confiável: o IP do cliente informado pelo proxy, ou null
-  //   (nesse caso vale só o limite por login).
-  _ipEfetivo(req) {
-    const ipObservado = this._resolveRequestIp(req);
-    if (!this._ehProxyConfiavel(ipObservado)) {
-      return { ip: ipObservado, viaProxy: null };
-    }
-    return { ip: this._ipInformadoPeloProxy(req), viaProxy: ipObservado };
-  }
-
   async _excedeuLimiteFalhas(req, login) {
     try {
-      const { ip } = this._ipEfetivo(req);
+      // Via proxy confiável (back-cond.php), o IP do cliente; null se o proxy
+      // não informou (vale só o limite por login). Ver helpers/ipCliente.js.
+      const { ip } = ipEfetivo(req);
       const rows = await postgres.query(
         `SELECT
             SUM(CASE WHEN lower(email_informado) = :login THEN 1 ELSE 0 END) AS falhas_login,
@@ -267,8 +230,8 @@ class Login {
       // Coluna ip: o IP observado; via proxy confiável (back-cond.php), o IP do
       // cliente que ele informou. Um IP declarado por cliente direto só vai na
       // mensagem, como ip_informado.
-      const { ip: ipEfetivo, viaProxy } = this._ipEfetivo(req);
-      const ip = viaProxy ? ipEfetivo || ipHeader || null : ipHeader || null;
+      const { ip: ipCliente, viaProxy } = ipEfetivo(req);
+      const ip = viaProxy ? ipCliente || ipHeader || null : ipHeader || null;
       let mensagemFinal = mensagem;
       if (viaProxy) {
         mensagemFinal = `${mensagem || ""} [via_proxy=${viaProxy}]`.trim().slice(0, 1000);

@@ -6,6 +6,7 @@
 
 const { QueryTypes } = require('sequelize');
 const postgres = require('../database/postgres');
+const { ipEfetivo } = require('./ipCliente');
 
 const CHAVES_PROIBIDAS = /senha|password|token|secret|segredo|certificado|chave_privada|hash/i;
 
@@ -24,9 +25,12 @@ function _sanitizar(valor, profundidade = 0) {
   return valor;
 }
 
+// IP do cliente: via proxy confiável (back-cond.php), o IP informado por ele;
+// senão, req.ip. Pode ser null (proxy que não informou o cliente).
 function ipDaRequisicao(req) {
-  const ip = req?.ip || req?.socket?.remoteAddress || null;
-  return ip ? String(ip).replace(/^::ffff:/, '').slice(0, 64) : null;
+  if (!req) return null;
+  const { ip } = ipEfetivo(req);
+  return ip ? ip.slice(0, 64) : null;
 }
 
 async function registrarAuditoria({

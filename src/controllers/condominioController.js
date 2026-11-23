@@ -8731,7 +8731,8 @@ class CondominioController {
       }
     );
     const porUsuario = Number.parseInt(row?.por_usuario, 10) || 0;
-    const porIp = Number.parseInt(row?.por_ip, 10) || 0;
+    // Sem IP do cliente (proxy que não informou X-Client-IP): só o limite por usuário.
+    const porIp = ip ? Number.parseInt(row?.por_ip, 10) || 0 : 0;
     return porUsuario >= RECOVERY_MAX_POR_USUARIO || porIp >= RECOVERY_MAX_POR_IP;
   }
 
