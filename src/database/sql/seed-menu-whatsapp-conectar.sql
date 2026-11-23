@@ -10,7 +10,7 @@ SELECT 'WhatsApp', '/whatsapp-conectar', 'whatsapp', 1, NULL, 999, true
 WHERE NOT EXISTS (
   SELECT 1 FROM "condominio-bh".tb_sgw_menu WHERE rota = '/whatsapp-conectar'
 );
-
+  
 -- 2) Permissões de visualização (pode_ver = true) para Admin (1), Sindico (3), Sub-Sindico (4).
 INSERT INTO "condominio-bh".tb_sgw_perfil_menu (id_perfil, id_menu, pode_ver, pode_criar, pode_editar, pode_excluir)
 SELECT p.id_perfil, m.id, true, false, false, false
