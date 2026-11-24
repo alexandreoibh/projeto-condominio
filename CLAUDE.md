@@ -140,7 +140,7 @@ routes/condominio.js  →  router.get('/rota', auth, [validações], validate, c
 - `controller.metodo.bind(controller)` — método do controller correspondente
 
 Rotas especiais em `condominio.js`:
-- `publicRegistrationKeyGuard` — guarda por header `X-Public-Registration-Key` (timing-safe compare), sem JWT
+- `publicRegistrationKeyGuard` — guarda por header `X-Public-Registration-Key` (timing-safe compare), sem JWT. Usado só por `POST /usuarios/cadastro-por-convite`. A antiga `GET /planos/publicos` foi removida em 24/11/2026 (incidente de segurança) e responde 404.
 - `authOrInviteToken` — aceita invite_token no lugar de JWT (fluxo de convite de morador)
 
 ## Banco de dados
