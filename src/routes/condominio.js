@@ -8,7 +8,10 @@ const auth = require('../helpers/auth');
 const { authOrImageToken } = require('../helpers/auth');
 const validate = require('../helpers/validate');
 const { validarUploads } = require('../helpers/uploadPolicy');
-const { exigirGestor, exigirAdmin } = require('../helpers/permissoes');
+const { exigirGestor, exigirSuperAdmin, exigirPerfis, PERFIL } = require('../helpers/permissoes');
+// Escrita de leituras de consumo: gestão, Portaria e Colaborador (quem faz a
+// medição). Morador só consulta.
+const exigirEscritaConsumo = exigirPerfis(PERFIL.ADMIN, PERFIL.SINDICO, PERFIL.SUB_SINDICO, PERFIL.PORTARIA, PERFIL.COLABORADOR);
 
 const controller = new CondominioController();
 const uploadAvatar = multer({
@@ -381,6 +384,8 @@ router.get(
 router.post(
 	'/consumo/registros',
 	auth,
+	// Incidente 22/11/2026: escrita restrita por perfil.
+	exigirEscritaConsumo,
 	uploadAvatar.fields([
 		{ name: 'imagem', maxCount: 1 },
 		{ name: 'foto', maxCount: 1 },
@@ -447,6 +452,8 @@ router.post(
 router.put(
 	'/consumo/registros/:id(\\d+)',
 	auth,
+	// Incidente 22/11/2026: escrita restrita por perfil.
+	exigirEscritaConsumo,
 	uploadAvatar.fields([
 		{ name: 'imagem', maxCount: 1 },
 		{ name: 'foto', maxCount: 1 },
@@ -514,6 +521,8 @@ router.put(
 router.patch(
 	'/consumo/registros/:id(\\d+)',
 	auth,
+	// Incidente 22/11/2026: escrita restrita por perfil.
+	exigirEscritaConsumo,
 	[
 		param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.'),
 		body().custom((value, { req }) => {
@@ -673,7 +682,7 @@ router.get(
 router.post(
 	'/condominios',
 	auth,
-	exigirAdmin,
+	exigirSuperAdmin,
 	[
 		body().custom((value, { req }) => {
 			const qtdeBlocos = req.body.qtde_blocos !== undefined ? req.body.qtde_blocos : req.body.qtde_bloco;
@@ -928,7 +937,7 @@ router.get(
 router.post(
 	'/dashboard/tipos',
 	auth,
-	exigirAdmin,
+	exigirSuperAdmin,
 	[
 		body('codigo')
 			.notEmpty()
@@ -953,7 +962,7 @@ router.post(
 router.put(
 	'/dashboard/tipos/:id(\\d+)',
 	auth,
-	exigirAdmin,
+	exigirSuperAdmin,
 	[
 		param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.'),
 		body('codigo')
@@ -975,7 +984,7 @@ router.put(
 router.delete(
 	'/dashboard/tipos/:id(\\d+)',
 	auth,
-	exigirAdmin,
+	exigirSuperAdmin,
 	[param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.')],
 	validate,
 	controller.excluirDashboardTipo.bind(controller)
@@ -1453,6 +1462,8 @@ router.post(
 router.put(
 	'/regulamentos/aceites/:id(\\d+)',
 	auth,
+	// Aceite é registro de prova: só a gestão corrige.
+	exigirGestor,
 	[
 		param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.'),
 		body('id_regulamento')
@@ -1495,6 +1506,8 @@ router.get(
 router.post(
 	'/regulamentos',
 	auth,
+	// Incidente 22/11/2026: escrita restrita por perfil.
+	exigirGestor,
 	[
 		body('titulo')
 			.notEmpty()
@@ -1534,6 +1547,8 @@ router.post(
 router.put(
 	'/regulamentos/:id(\\d+)',
 	auth,
+	// Incidente 22/11/2026: escrita restrita por perfil.
+	exigirGestor,
 	[
 		param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.'),
 		body('titulo')
@@ -1572,6 +1587,8 @@ router.put(
 router.delete(
 	'/regulamentos/:id(\\d+)',
 	auth,
+	// Incidente 22/11/2026: escrita restrita por perfil.
+	exigirGestor,
 	[param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.')],
 	validate,
 	controller.excluirRegulamento.bind(controller)
@@ -2449,6 +2466,8 @@ router.patch(
 router.post(
 	'/espacos',
 	auth,
+	// Incidente 22/11/2026: escrita restrita por perfil.
+	exigirGestor,
 	[
 		body('nome')
 			.notEmpty()
@@ -2536,6 +2555,8 @@ router.post(
 router.put(
 	'/espacos/:id(\\d+)',
 	auth,
+	// Incidente 22/11/2026: escrita restrita por perfil.
+	exigirGestor,
 	[
 		param('id').isInt({ min: 1 }).withMessage('Parâmetro id inválido.'),
 		body('nome')
@@ -3166,15 +3187,8 @@ router.post(
 router.post(
 	'/telegram/configurar-webhook',
 	auth,
-	[
-		body('webhook_url')
-			.notEmpty()
-			.withMessage('Campo webhook_url é obrigatório.')
-			.bail()
-			.isURL({ require_protocol: true })
-			.withMessage('Campo webhook_url deve ser uma URL válida.')
-	],
-	validate,
+	exigirSuperAdmin,
+	// webhook_url do body é ignorado: a URL vem de TELEGRAM_WEBHOOK_URL.
 	controller.configurarWebhookTelegram.bind(controller)
 );
 

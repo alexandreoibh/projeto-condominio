@@ -108,7 +108,7 @@ class ManutencaoController {
     try {
       const idPerfilToken = this._toInt(req.IdPerfil, null);
       const idCondominio = this._toInt(req.id_condominio, null);
-      const ehAdmin = idPerfilToken === 1;
+      const ehAdmin = permissoes.ehSuperAdmin(req);
       if (!ehAdmin && !idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
 
       const idCondominioFiltro = this._toInt(req.query.id_condominio, null);
@@ -178,7 +178,7 @@ class ManutencaoController {
     try {
       const idPerfilToken = this._toInt(req.IdPerfil, null);
       const idCondominio = this._toInt(req.id_condominio, null);
-      const ehAdmin = idPerfilToken === 1;
+      const ehAdmin = permissoes.ehSuperAdmin(req);
       if (!ehAdmin && !idCondominio) return res.status(403).json({ message: 'Token sem id_condominio.' });
 
       const idCondominioFiltro = this._toInt(req.query.id_condominio, null);

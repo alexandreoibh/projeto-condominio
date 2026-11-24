@@ -2,8 +2,11 @@
 
 // Revogação de sessões por usuário via "condominio-bh"."tb-usuarios".token_version.
 // O JWT de login carrega o claim `tv`; o middleware auth compara com o banco.
-// Trocar senha, perfil ou status, ou fazer logout, incrementa a versão e
-// invalida todos os tokens anteriores daquele usuário.
+// Trocar senha, perfil, status, e-mail ou CPF, ou fazer logout, incrementa a
+// versão e invalida todos os tokens anteriores daquele usuário.
+//
+// Fail closed (incidente 22/11/2026): sem a coluna token_version não há como
+// revogar sessões, então a validação falha (503) em vez de ignorar a checagem.
 
 const { QueryTypes } = require('sequelize');
 const postgres = require('../database/postgres');
@@ -11,14 +14,16 @@ const postgres = require('../database/postgres');
 const CACHE_TTL_MS = 60 * 1000;
 const cache = new Map(); // id_usuario -> { versao, status, expiraEm }
 
-// Antes da migration 20261123000001 a coluna não existe. Nesse caso a checagem
-// de versão é ignorada (com aviso), mas a checagem de status continua.
-let colunaTokenVersionAusente = false;
-let avisoColunaAusente = false;
-
 function _ehErroColunaInexistente(error) {
   const code = error?.original?.code || error?.parent?.code || error?.code;
   return code === '42703';
+}
+
+function _erroColunaAusente() {
+  console.error('[sessao] Coluna token_version ausente — rode a migration 20261123000001.');
+  const erro = new Error('Revogação de sessão indisponível.');
+  erro.status = 503;
+  return erro;
 }
 
 async function lerEstadoSessao(idUsuario, { usarCache = true } = {}) {
@@ -36,31 +41,17 @@ async function lerEstadoSessao(idUsuario, { usarCache = true } = {}) {
   }
 
   let row = null;
-  if (!colunaTokenVersionAusente) {
-    try {
-      const rows = await postgres.query(
-        `SELECT id, status, token_version FROM "condominio-bh"."tb-usuarios" WHERE id = :id LIMIT 1`,
-        { replacements: { id }, type: QueryTypes.SELECT }
-      );
-      row = rows && rows[0] ? rows[0] : null;
-    } catch (error) {
-      if (!_ehErroColunaInexistente(error)) {
-        throw error;
-      }
-      colunaTokenVersionAusente = true;
-      if (!avisoColunaAusente) {
-        avisoColunaAusente = true;
-        console.warn('[sessao] Coluna token_version ausente — rode a migration 20261123000001.');
-      }
-    }
-  }
-
-  if (colunaTokenVersionAusente) {
+  try {
     const rows = await postgres.query(
-      `SELECT id, status FROM "condominio-bh"."tb-usuarios" WHERE id = :id LIMIT 1`,
+      `SELECT id, status, token_version FROM "condominio-bh"."tb-usuarios" WHERE id = :id LIMIT 1`,
       { replacements: { id }, type: QueryTypes.SELECT }
     );
-    row = rows && rows[0] ? { ...rows[0], token_version: null } : null;
+    row = rows && rows[0] ? rows[0] : null;
+  } catch (error) {
+    if (_ehErroColunaInexistente(error)) {
+      throw _erroColunaAusente();
+    }
+    throw error;
   }
 
   if (!row) {
@@ -68,12 +59,10 @@ async function lerEstadoSessao(idUsuario, { usarCache = true } = {}) {
     return { existe: false, versao: null, status: null, expiraEm: agora + CACHE_TTL_MS };
   }
 
+  const versao = Number.parseInt(row.token_version, 10);
   const estado = {
     existe: true,
-    versao:
-      row.token_version === null || row.token_version === undefined
-        ? null
-        : Number.parseInt(row.token_version, 10) || 0,
+    versao: Number.isInteger(versao) ? versao : 0,
     status: String(row.status || '').trim().toLowerCase(),
     expiraEm: agora + CACHE_TTL_MS
   };
@@ -83,18 +72,18 @@ async function lerEstadoSessao(idUsuario, { usarCache = true } = {}) {
 
 async function lerTokenVersion(idUsuario) {
   const estado = await lerEstadoSessao(idUsuario, { usarCache: false });
-  return estado && estado.versao !== null ? estado.versao : 0;
+  return estado && Number.isInteger(estado.versao) ? estado.versao : 0;
 }
 
+// Com `transaction`, o incremento entra na mesma transação da alteração
+// (senha, perfil etc.): ou as duas coisas acontecem, ou nenhuma. Nesse caso
+// chame invalidarCacheSessao(id) depois do commit.
 async function incrementarTokenVersion(idUsuario, { transaction = null } = {}) {
   const id = Number.parseInt(idUsuario, 10);
   if (!Number.isInteger(id) || id <= 0) {
     return;
   }
   cache.delete(id);
-  if (colunaTokenVersionAusente) {
-    return;
-  }
   try {
     await postgres.query(
       `UPDATE "condominio-bh"."tb-usuarios"
@@ -104,11 +93,11 @@ async function incrementarTokenVersion(idUsuario, { transaction = null } = {}) {
     );
   } catch (error) {
     if (_ehErroColunaInexistente(error)) {
-      colunaTokenVersionAusente = true;
-      return;
+      throw _erroColunaAusente();
     }
     throw error;
   }
+  cache.delete(id);
 }
 
 function invalidarCacheSessao(idUsuario) {
@@ -120,8 +109,6 @@ function invalidarCacheSessao(idUsuario) {
 
 function _resetParaTestes() {
   cache.clear();
-  colunaTokenVersionAusente = false;
-  avisoColunaAusente = false;
 }
 
 module.exports = {

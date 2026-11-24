@@ -12,6 +12,11 @@ const _pareceJwt = (valor) => {
   return texto.length > 20 && texto.split('.').length === 3 ? texto : null;
 };
 
+// JWT de sessão só por header (Authorization: Bearer, x-access-token ou
+// token). Incidente 22/11/2026: tokens em ?token= e no body vazam em logs de
+// acesso, histórico do navegador e Referer, então deixaram de ser aceitos.
+// O ?token= continua existindo apenas para tokens de IMAGEM (aud=image, 5 min),
+// tratados em authOrImageToken.
 const extractTokenFromRequest = (req) => {
   const authHeader = req.header('Authorization') || req.header('authorization');
 
@@ -37,32 +42,21 @@ const extractTokenFromRequest = (req) => {
     req.header('token') ||
     req.header('Token');
 
-  const viaHeader = _pareceJwt(headerToken);
-  if (viaHeader) {
-    return viaHeader;
-  }
-
-  const viaQuery = _pareceJwt(req.query?.token);
-  if (viaQuery) {
-    return viaQuery;
-  }
-
-  const viaBody = _pareceJwt(req.body?.token);
-  if (viaBody) {
-    return viaBody;
-  }
-
-  return null;
+  return _pareceJwt(headerToken);
 };
 
 // Um JWT de sessão é o emitido pelo login (loginController). Tokens de imagem
 // (aud=image / claim tipo), de convite e de recuperação (claim flow) são
 // assinados para outros fins e NUNCA valem como sessão.
+// Exige também o claim `tv` (token_version) inteiro: tokens emitidos antes do
+// hardening (v2.57 e anteriores, inclusive por deployments antigos) não o têm
+// e deixam de valer.
 const _ehPayloadDeSessao = (payload) => {
   if (!payload || typeof payload !== 'object') return false;
   if (payload.aud !== undefined) return false;
   if (payload.tipo !== undefined) return false;
   if (payload.flow !== undefined) return false;
+  if (!Number.isInteger(payload.tv) || payload.tv < 0) return false;
   const id = Number.parseInt(payload.id, 10);
   return Number.isInteger(id) && id > 0;
 };
@@ -92,9 +86,7 @@ const verificarTokenDeSessao = async (token) => {
     throw erro;
   }
 
-  // Tokens emitidos antes do token_version não têm `tv` → tratados como 0.
-  const versaoToken = Number.parseInt(payload.tv, 10) || 0;
-  if (estado.versao !== null && versaoToken !== estado.versao) {
+  if (!Number.isInteger(estado.versao) || payload.tv !== estado.versao) {
     const erro = new Error('Sessão expirada');
     erro.status = 401;
     throw erro;
@@ -131,6 +123,9 @@ const auth = async (req, res, next) => {
   } catch (err) {
     if (err && err.status === 401) {
       return res.status(401).send({ message: err.message || 'Token inválido' });
+    }
+    if (err && err.status === 503) {
+      return res.status(503).send({ message: 'Não foi possível validar a sessão. Tente novamente.' });
     }
     console.error('[auth] Falha ao validar sessão:', err?.message);
     return res.status(503).send({ message: 'Não foi possível validar a sessão. Tente novamente.' });

@@ -98,11 +98,12 @@ describe('Troca da própria senha (contrato do app: senha_atual / nova_senha)', 
     expect(res.status).toBe(422);
   });
 
-  test('senha_atual errada → 403', async () => {
+  test('senha_atual errada → 422 (nunca 401, que o app trataria como sessão expirada)', async () => {
     const res = await request(app).patch('/api/condominio/usuarios/10')
       .set('Authorization', `Bearer ${sessao({ id: 10 })}`)
       .send({ senha_atual: 'errada', nova_senha: 'Nova#1234', confirmar_senha: 'Nova#1234' });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(422);
+    expect(res.body.error_code).toBe('current_password_invalid');
   });
 
   test('confirmação divergente → 422', async () => {

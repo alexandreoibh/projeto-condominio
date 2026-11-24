@@ -271,3 +271,59 @@ describe('Cadeia do incidente: token de recuperação antigo (JWT)', () => {
     expect(callsMatching(/UPDATE "condominio-bh"\."tb-usuarios"/)).toHaveLength(0);
   });
 });
+
+describe('Usuário com senha NULL ou inválida (redefinição forçada / primeiro acesso)', () => {
+  test.each([
+    ['NULL', null],
+    ['vazia', ''],
+    ['marcador', 'RESET'],
+    ['texto puro legado', 'senha123']
+  ])('senha_hash %s: recupera pelo e-mail cadastrado e passa a ter bcrypt', async (_nome, senhaHash) => {
+    instalarTabelaRecovery();
+    // A elegibilidade da recuperação não depende do hash (só status, condomínio e e-mail).
+    instalarUsuario({ ...VITIMA, senha_hash: senhaHash });
+
+    const pedido = await request(app).post('/api/auth/recovery/request').send({ login: VITIMA.email });
+    expect(pedido.status).toBe(200);
+    const codigo = await codigoEnviado();
+    expect(codigo).toMatch(/^\d{6}$/);
+    expect(despacharEmail.mock.calls[despacharEmail.mock.calls.length - 1][0].email).toBe(VITIMA.email);
+
+    const ver = await request(app).post('/api/auth/recovery/verify').send({ user_id: VITIMA.id, code: codigo });
+    expect(ver.status).toBe(200);
+    const reset = await request(app).post('/api/auth/recovery/reset')
+      .send({ user_id: VITIMA.id, reset_token: ver.body.invite_token, password: 'NovaSenha#1' });
+    expect(reset.status).toBe(200);
+    const update = callsMatching(/UPDATE "condominio-bh"\."tb-usuarios"\s+SET senha_hash = :senha_hash/)[0];
+    expect(update.replacements.senha_hash).toMatch(/^\$2[aby]\$/);
+    expect(update.sql).toContain('token_version = COALESCE(token_version, 0) + 1');
+  });
+
+  test('o código não pode ir para um e-mail informado pelo cliente', async () => {
+    instalarTabelaRecovery();
+    instalarUsuario({ ...VITIMA, senha_hash: null });
+    await request(app).post('/api/auth/recovery/request').send({ login: VITIMA.email, email: 'atacante@evil.tld', destino: 'atacante@evil.tld' });
+    await global.aguardarPendentes();
+    const enviado = despacharEmail.mock.calls[despacharEmail.mock.calls.length - 1][0];
+    expect(enviado.email).toBe(VITIMA.email);
+  });
+
+  test('verify bloqueado por limite de IP/global (fail closed)', async () => {
+    instalarTabelaRecovery();
+    instalarUsuario();
+    on(/FROM "condominio-bh"\.tb_auditoria_seguranca\s+WHERE acao = 'recuperacao_codigo_falho'/, () => [{ total: 0, por_ip: 20 }]);
+    const res = await request(app).post('/api/auth/recovery/verify')
+      .set('X-Forwarded-For', '203.0.113.9')
+      .send({ user_id: VITIMA.id, code: '123456' });
+    expect(res.status).toBe(429);
+  });
+
+  test('falha ao contar tentativas do verify → erro, nunca emite reset token', async () => {
+    instalarTabelaRecovery();
+    instalarUsuario();
+    on(/FROM "condominio-bh"\.tb_auditoria_seguranca\s+WHERE acao = 'recuperacao_codigo_falho'/, () => { throw new Error('db down'); });
+    const res = await request(app).post('/api/auth/recovery/verify').send({ user_id: VITIMA.id, code: '123456' });
+    expect(res.status).toBe(500);
+    expect(res.body.invite_token).toBeUndefined();
+  });
+});

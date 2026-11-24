@@ -8,12 +8,28 @@ const { QueryTypes } = require('sequelize');
 const postgres = require('../database/postgres');
 const { ipEfetivo } = require('./ipCliente');
 
-const CHAVES_PROIBIDAS = /senha|password|token|secret|segredo|certificado|chave_privada|hash/i;
+// Chaves cujo valor nunca é gravado (comparação sem diferenciar maiúsculas).
+const CHAVES_PROIBIDAS = /senha|password|passwd|token|secret|segredo|certificado|chave|private|hash|authorization|cookie|jwt|api[_-]?key|credencial|credential|client_id/i;
+
+// Valores com formato de segredo são omitidos mesmo sob uma chave "inocente"
+// (ex.: detalhes: { valor: '<jwt>' }).
+const VALORES_PROIBIDOS = [
+  /eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*/, // JWT
+  /\$2[aby]\$\d{2}\$[./A-Za-z0-9]{20,}/, // hash bcrypt
+  /vercel_blob_rw_[A-Za-z0-9_]+/i, // token do Vercel Blob
+  /\bBearer\s+[A-Za-z0-9._~+/=-]{10,}/i, // header Authorization
+  /-----BEGIN [A-Z ]*(PRIVATE KEY|CERTIFICATE)-----/ // PEM
+];
+
+function _valorSensivel(texto) {
+  return VALORES_PROIBIDOS.some((regex) => regex.test(texto));
+}
 
 function _sanitizar(valor, profundidade = 0) {
   if (valor === null || valor === undefined) return valor;
   if (profundidade > 4) return '[...]';
   if (Array.isArray(valor)) return valor.slice(0, 50).map((v) => _sanitizar(v, profundidade + 1));
+  if (Buffer.isBuffer(valor)) return '[omitido]';
   if (typeof valor === 'object') {
     const saida = {};
     for (const [chave, v] of Object.entries(valor)) {
@@ -21,7 +37,10 @@ function _sanitizar(valor, profundidade = 0) {
     }
     return saida;
   }
-  if (typeof valor === 'string' && valor.length > 500) return `${valor.slice(0, 500)}...`;
+  if (typeof valor === 'string') {
+    if (_valorSensivel(valor)) return '[omitido]';
+    if (valor.length > 500) return `${valor.slice(0, 500)}...`;
+  }
   return valor;
 }
 

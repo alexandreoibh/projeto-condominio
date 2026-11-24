@@ -12,11 +12,11 @@ const { despacharEncomendaEntregaEmail } = require('../service/encomendaEntregaE
 const { despacharWhatsapp } = require('../service/whatsappDispatchService');
 const { despacharTelegram } = require('../service/telegramDispatchService');
 const { waitUntil } = require('@vercel/functions');
-const { buildAvatarProxyUrl, buildConsumoImagemProxyUrl, buildDashboardImagemProxyUrl, getBlobReadToken, isAvatarProxyUrl, resolveBlobUrl } = require('../helpers/avatarProxy');
+const { buildAvatarProxyUrl, buildConsumoImagemProxyUrl, buildDashboardImagemProxyUrl, getBlobReadToken, isAvatarProxyUrl, resolveBlobUrl, contentTypeImagemSegura, caminhoImagemValidoParaGravar } = require('../helpers/avatarProxy');
 const { normalizarCpf, cpfValido } = require('../helpers/cpf');
 
 const { getInviteTokenSecret } = require('../helpers/segredos');
-const { incrementarTokenVersion } = require('../helpers/sessao');
+const { incrementarTokenVersion, invalidarCacheSessao } = require('../helpers/sessao');
 const { registrarAuditoria, ipDaRequisicao } = require('../helpers/auditoria');
 const permissoes = require('../helpers/permissoes');
 
@@ -38,6 +38,11 @@ const RECOVERY_MAX_POR_USUARIO = 3; // desafios por usuário na janela abaixo
 const RECOVERY_JANELA_USUARIO_MIN = 60;
 const RECOVERY_MAX_POR_IP = 10; // desafios por IP na janela abaixo
 const RECOVERY_JANELA_IP_MIN = 15;
+// Verificação de código: além das 5 tentativas por desafio, limite por IP e
+// global (contados em tb_auditoria_seguranca, acao 'recuperacao_codigo_falho').
+const RECOVERY_VERIFY_JANELA_MIN = 15;
+const RECOVERY_VERIFY_MAX_POR_IP = 20;
+const RECOVERY_VERIFY_MAX_GLOBAL = 300;
 // Flows de token assinados com INVITE_TOKEN_SECRET que NUNCA valem como
 // convite (recuperação de senha antiga).
 const INVITE_FLOWS_PROIBIDOS = ['password_recovery'];
@@ -243,17 +248,11 @@ class CondominioController {
     return Number.isNaN(parsed.getTime()) ? null : parsed;
   }
 
+  // IP do cliente para rate limit/log: o observado pelo servidor (trust proxy
+  // da Vercel) ou, só via proxy confiável, o informado por ele. Antes lia o
+  // primeiro item do X-Forwarded-For, que o cliente controla.
   _resolveRequestIp(req) {
-    const forwarded = req.headers?.['x-forwarded-for'];
-    const forwardedValue = Array.isArray(forwarded) ? forwarded[0] : forwarded;
-    const forwardedIp = forwardedValue ? String(forwardedValue).split(',')[0].trim() : null;
-    const rawIp = forwardedIp || req.ip || req.socket?.remoteAddress || null;
-
-    if (!rawIp) {
-      return null;
-    }
-
-    return String(rawIp).replace(/^::ffff:/, '');
+    return ipDaRequisicao(req);
   }
 
   _normalizarPerfil(value) {
@@ -720,9 +719,10 @@ class CondominioController {
     return [1, 3, 5, 54].includes(idPerfilDb);
   }
 
+  // tb_sgw_perfil_menu não tem condomínio: uma alteração vale para todos.
+  // Por isso só o super-admin da plataforma altera.
   _podeGerenciarPermissoesMenu(req) {
-    const idPerfilToken = this._toInt(req.IdPerfil, null);
-    return idPerfilToken === 1;
+    return permissoes.ehSuperAdmin(req);
   }
 
   async _buscarCondominioComUnidades(idCondominio, transaction = null) {
@@ -862,7 +862,7 @@ class CondominioController {
     try {
       const idPerfilToken = this._toInt(req.IdPerfil, null);
       const idCondominioToken = this._toInt(req.id_condominio, null);
-      const ehAdmin = idPerfilToken === 1;
+      const ehAdmin = permissoes.ehSuperAdmin(req);
 
       if (!ehAdmin && !idCondominioToken) {
         return res.status(403).json({
@@ -955,7 +955,7 @@ class CondominioController {
     try {
       const idPerfilToken = this._toInt(req.IdPerfil, null);
       const idCondominioToken = this._toInt(req.id_condominio, null);
-      const ehAdmin = idPerfilToken === 1;
+      const ehAdmin = permissoes.ehSuperAdmin(req);
 
       if (!ehAdmin && !idCondominioToken) {
         return res.status(403).json({
@@ -1169,7 +1169,7 @@ class CondominioController {
     try {
       const idPerfilToken = this._toInt(req.IdPerfil, null);
       const idCondominioToken = this._toInt(req.id_condominio, null);
-      const ehAdmin = idPerfilToken === 1;
+      const ehAdmin = permissoes.ehSuperAdmin(req);
 
       if (!ehAdmin && !idCondominioToken) {
         return res.status(403).json({
@@ -1272,7 +1272,7 @@ class CondominioController {
       const idPerfilToken = this._toInt(req.IdPerfil, null);
       const idCondominioToken = this._toInt(req.id_condominio, null);
       const idUsuarioToken = this._toInt(req.idcliente, null);
-      const ehAdmin = idPerfilToken === 1;
+      const ehAdmin = permissoes.ehSuperAdmin(req);
 
       if (!ehAdmin && !idCondominioToken) {
         return res.status(403).json({
@@ -1280,7 +1280,7 @@ class CondominioController {
         });
       }
 
-      if (!ehAdmin && idPerfilToken !== permissoes.PERFIL.SINDICO) {
+      if (!ehAdmin && !permissoes.temPerfil(req, permissoes.PERFIL.ADMIN, permissoes.PERFIL.SINDICO)) {
         return res.status(403).json({
           message: 'Apenas Admin ou Síndico podem alterar o plano de fatura.'
         });
@@ -1361,6 +1361,7 @@ class CondominioController {
 
         if (vinculoAtual && this._toInt(vinculoAtual.id_plano, null) === idPlanoNovo) {
           await transaction.rollback();
+          await registrarAuditoria({ req, acao: 'fatura_plano_alterado', entidade: 'condominio', entidadeId: req.body?.id_condominio || req.id_condominio, detalhes: { id_plano: this._toInt(req.body?.id_plano, null) } });
           return res.status(200).json({
             message: 'Condomínio já está vinculado ao plano informado.',
             data: {
@@ -1549,7 +1550,7 @@ class CondominioController {
     try {
       const idPerfilToken = this._toInt(req.IdPerfil, null);
       const idCondominioToken = this._toInt(req.id_condominio, null);
-      const ehAdmin = idPerfilToken === 1;
+      const ehAdmin = permissoes.ehSuperAdmin(req);
 
       if (!ehAdmin && !idCondominioToken) {
         return res.status(403).json({
@@ -2430,8 +2431,31 @@ class CondominioController {
     }
   }
 
+  // Incidente 22/11/2026: path_avatar / origem_imagem / origem vindos do body
+  // eram gravados livremente e depois servidos pelos proxies de imagem com o
+  // token do Blob. Só vale vazio, a URL do próprio proxy ou um caminho do Blob
+  // na área e no condomínio corretos (o mesmo que o proxy serviria).
+  // Valor inválido é IGNORADO (removido do body: o handler mantém o atual ou
+  // grava null), não recusado — o app reenvia o valor atual em todo save
+  // (MeusDadosModal / ocorrências), e um 422 quebraria telas legítimas.
+  // Retorna sempre null (mantido o nome por compatibilidade dos call sites).
+  _erroCaminhoImagemBody(req, campo, area) {
+    const body = req.body || {};
+    if (!Object.prototype.hasOwnProperty.call(body, campo)) return null;
+    const { idCondominio } = permissoes.escopoCondominio(req, body.id_condominio);
+    const idRef = idCondominio || this._toInt(req.id_condominio, null);
+    if (caminhoImagemValidoParaGravar(body[campo], { idCondominio: idRef, area })) return null;
+    delete body[campo];
+    console.warn(`[seguranca] Campo ${campo} ignorado: caminho de imagem fora do padrão do upload.`);
+    waitUntil(registrarAuditoria({ req, acao: 'caminho_imagem_ignorado', entidade: area, detalhes: { campo } }));
+    return null;
+  }
+
   async criarConsumoRegistro(req, res) {
     try {
+      const erroCaminhoImagem = this._erroCaminhoImagemBody(req, 'origem_imagem', 'consumo');
+      if (erroCaminhoImagem) return res.status(422).json(erroCaminhoImagem);
+
       const idCondominioToken = this._toInt(req.id_condominio, null);
       if (!idCondominioToken) {
         return res.status(403).json({
@@ -2614,6 +2638,9 @@ class CondominioController {
 
   async editarConsumoRegistro(req, res) {
     try {
+      const erroCaminhoImagem = this._erroCaminhoImagemBody(req, 'origem_imagem', 'consumo');
+      if (erroCaminhoImagem) return res.status(422).json(erroCaminhoImagem);
+
       const idCondominioToken = this._toInt(req.id_condominio, null);
       if (!idCondominioToken) {
         return res.status(403).json({
@@ -2855,7 +2882,7 @@ class CondominioController {
         return res.status(404).json({ message: 'Registro não possui imagem anexada.' });
       }
 
-      const blobUrl = resolveBlobUrl(origemImagem, { idCondominio: idCondominioToken });
+      const blobUrl = resolveBlobUrl(origemImagem, { idCondominio: idCondominioToken, area: 'consumo' });
       if (!blobUrl) {
         return res.status(500).json({ message: 'Falha ao resolver URL da imagem no blob.' });
       }
@@ -2866,7 +2893,8 @@ class CondominioController {
       }
 
       const blobResponse = await fetch(blobUrl, {
-        headers: { Authorization: `Bearer ${blobToken}` }
+        headers: { Authorization: `Bearer ${blobToken}` },
+        redirect: 'error'
       });
 
       if (!blobResponse.ok) {
@@ -2880,11 +2908,14 @@ class CondominioController {
       }
 
       const payload = await blobResponse.buffer();
-      const contentType = blobResponse.headers.get('content-type') || 'application/octet-stream';
+      // Content-Type pela extensão (allowlist de imagens), nunca o do Blob.
+      const contentType = contentTypeImagemSegura(blobUrl);
       const cacheControl = blobResponse.headers.get('cache-control') || 'private, max-age=300';
       const etag = blobResponse.headers.get('etag');
 
       res.set('Content-Type', contentType);
+      res.set('X-Content-Type-Options', 'nosniff');
+      res.set('Content-Disposition', 'inline');
       res.set('Cache-Control', cacheControl);
       if (etag) {
         res.set('ETag', etag);
@@ -2901,6 +2932,9 @@ class CondominioController {
 
   async atualizarParcialConsumoRegistro(req, res) {
     try {
+      const erroCaminhoImagem = this._erroCaminhoImagemBody(req, 'origem_imagem', 'consumo');
+      if (erroCaminhoImagem) return res.status(422).json(erroCaminhoImagem);
+
       const idCondominioToken = this._toInt(req.id_condominio, null);
       if (!idCondominioToken) {
         return res.status(403).json({
@@ -3090,9 +3124,10 @@ class CondominioController {
       let whereClause = 'p.status = true';
       const replacements = {};
 
-      if (idPerfilToken === 1) {
-        // Admin pode ver todos os perfis ativos.
-      } else if (idPerfilToken === 3) {
+      if (permissoes.ehSuperAdmin(req)) {
+        // Super-admin pode ver (e atribuir) todos os perfis ativos.
+      } else if (idPerfilToken === 1 || idPerfilToken === 3) {
+        // Admin local e Síndico: não atribuem Admin.
         // Sindico: não pode ver Admin.
         whereClause += ' AND p.id NOT IN (:ids_bloqueados)';
         replacements.ids_bloqueados = [1];
@@ -3476,6 +3511,8 @@ class CondominioController {
 
       await transaction.commit();
 
+      await registrarAuditoria({ req, acao: 'menu_permissoes_alteradas', entidade: 'perfil', entidadeId: req.params.id_perfil, detalhes: { total: Array.isArray(req.body?.permissoes) ? req.body.permissoes.length : null } });
+
       return res.status(200).json({
         message: 'Permissões de menu atualizadas com sucesso.',
         total: upserts.length
@@ -3500,7 +3537,7 @@ class CondominioController {
 
       // Só o Admin lista todos os condomínios; os demais perfis veem apenas o
       // condomínio do próprio token.
-      if (!permissoes.ehAdmin(req)) {
+      if (!permissoes.ehSuperAdmin(req)) {
         const idCondominioToken = this._toInt(req.id_condominio, null);
         if (!idCondominioToken) {
           return res.status(403).json({ message: 'Token sem id_condominio.' });
@@ -3600,7 +3637,7 @@ class CondominioController {
         return res.status(400).json({ message: 'Id inválido.' });
       }
 
-      if (!permissoes.ehAdmin(req) && id !== this._toInt(req.id_condominio, null)) {
+      if (!permissoes.ehSuperAdmin(req) && id !== this._toInt(req.id_condominio, null)) {
         return res.status(404).json({ message: 'Condomínio não encontrado.' });
       }
 
@@ -3737,6 +3774,8 @@ class CondominioController {
       const data = await this._buscarCondominioComUnidades(idCondominio, transaction);
       await transaction.commit();
 
+      await registrarAuditoria({ req, acao: 'condominio_criado', entidade: 'condominio', entidadeId: null, detalhes: { nome: req.body?.nome || null } });
+
       return res.status(201).json({
         message: 'Condomínio criado com sucesso.',
         data
@@ -3760,7 +3799,7 @@ class CondominioController {
       }
 
       // Gestores (rota exige 1/3/4) só editam o próprio condomínio.
-      if (!permissoes.ehAdmin(req) && id !== this._toInt(req.id_condominio, null)) {
+      if (!permissoes.ehSuperAdmin(req) && id !== this._toInt(req.id_condominio, null)) {
         await transaction.rollback();
         return res.status(403).json({ message: 'Sem permissão para editar outro condomínio.' });
       }
@@ -3875,6 +3914,8 @@ class CondominioController {
 
       const data = await this._buscarCondominioComUnidades(id, transaction);
       await transaction.commit();
+
+      await registrarAuditoria({ req, acao: 'condominio_editado', entidade: 'condominio', entidadeId: req.params.id, detalhes: { campos: Object.keys(req.body || {}).slice(0, 30) } });
 
       return res.status(200).json({
         message: 'Condomínio atualizado com sucesso.',
@@ -4418,7 +4459,7 @@ class CondominioController {
       const idPerfilToken = this._toInt(req.IdPerfil, null);
       const idCondominioToken = this._toInt(req.id_condominio, null);
       const idUsuarioToken = this._toInt(req.idcliente, null);
-      const ehAdmin = idPerfilToken === 1;
+      const ehAdmin = permissoes.ehSuperAdmin(req);
       const ehMorador = idPerfilToken === 2;
 
       const page = Math.max(this._toInt(req.query.page, 1), 1);
@@ -4597,7 +4638,7 @@ class CondominioController {
       const idPerfilToken = this._toInt(req.IdPerfil, null);
       const idCondominioToken = this._toInt(req.id_condominio, null);
       const idUsuarioToken = this._toInt(req.idcliente, null);
-      const ehAdmin = idPerfilToken === 1;
+      const ehAdmin = permissoes.ehSuperAdmin(req);
       const ehMorador = idPerfilToken === 2;
 
       const id = this._toInt(req.params.id, null);
@@ -4705,12 +4746,15 @@ class CondominioController {
   async criarDashboardRegistro(req, res) {
     let transaction;
     try {
+      const erroCaminhoImagem = this._erroCaminhoImagemBody(req, 'origem', 'dashboard');
+      if (erroCaminhoImagem) return res.status(422).json(erroCaminhoImagem);
+
       transaction = await postgres.transaction();
 
       const idPerfilToken = this._toInt(req.IdPerfil, null);
       const idUsuarioToken = this._toInt(req.idcliente, null);
       const idCondominioToken = this._toInt(req.id_condominio, null);
-      const ehAdmin = idPerfilToken === 1;
+      const ehAdmin = permissoes.ehSuperAdmin(req);
       const ehMorador = idPerfilToken === 2;
 
       const idCondominioRequest = this._toInt(
@@ -5170,7 +5214,7 @@ class CondominioController {
   // Filtro de condomínio para registros do dashboard: Admin vê todos; os
   // demais, só o condomínio do token. filtroSql é constante (sem input).
   _escopoDashboardRegistro(req) {
-    if (permissoes.ehAdmin(req)) {
+    if (permissoes.ehSuperAdmin(req)) {
       return { ok: true, filtroSql: '', replacements: {} };
     }
     const idCondominioToken = this._toInt(req.id_condominio, null);
@@ -5207,6 +5251,9 @@ class CondominioController {
 
   async editarDashboardRegistro(req, res) {
     try {
+      const erroCaminhoImagem = this._erroCaminhoImagemBody(req, 'origem', 'dashboard');
+      if (erroCaminhoImagem) return res.status(422).json(erroCaminhoImagem);
+
       console.log(
         '[diag-encomenda-entregue] editarDashboardRegistro chamado. params.id=%s body.tipo=%s body.status=%s',
         req.params.id, req.body?.tipo, req.body?.status
@@ -5247,7 +5294,7 @@ class CondominioController {
 
       // Só o Admin pode mover o registro de condomínio; fora isso o body é
       // ignorado. Morador não reatribui o registro a outro usuário.
-      if (!permissoes.ehAdmin(req)) {
+      if (!permissoes.ehSuperAdmin(req)) {
         delete req.body.id_condominio;
         delete req.body.condominio_id;
         delete req.body.encomenda_condominio_id;
@@ -5570,7 +5617,7 @@ class CondominioController {
     try {
       const idCondominioToken = this._toInt(req.id_condominio, null);
       const idPerfilToken = this._toInt(req.IdPerfil, null);
-      const ehAdmin = idPerfilToken === 1;
+      const ehAdmin = permissoes.ehSuperAdmin(req);
 
       const id = this._toInt(req.params.id, null);
       if (!id) {
@@ -5606,7 +5653,7 @@ class CondominioController {
         return res.status(404).json({ message: 'Registro não possui imagem anexada.' });
       }
 
-      const blobUrl = resolveBlobUrl(origemImagem, { idCondominio: idCondominioRegistro });
+      const blobUrl = resolveBlobUrl(origemImagem, { idCondominio: idCondominioRegistro, area: 'dashboard' });
       if (!blobUrl) {
         return res.status(500).json({ message: 'Falha ao resolver URL da imagem no blob.' });
       }
@@ -5617,7 +5664,8 @@ class CondominioController {
       }
 
       const blobResponse = await fetch(blobUrl, {
-        headers: { Authorization: `Bearer ${blobToken}` }
+        headers: { Authorization: `Bearer ${blobToken}` },
+        redirect: 'error'
       });
 
       if (!blobResponse.ok) {
@@ -5631,11 +5679,14 @@ class CondominioController {
       }
 
       const payload = await blobResponse.buffer();
-      const contentType = blobResponse.headers.get('content-type') || 'application/octet-stream';
+      // Content-Type pela extensão (allowlist de imagens), nunca o do Blob.
+      const contentType = contentTypeImagemSegura(blobUrl);
       const cacheControl = blobResponse.headers.get('cache-control') || 'private, max-age=300';
       const etag = blobResponse.headers.get('etag');
 
       res.set('Content-Type', contentType);
+      res.set('X-Content-Type-Options', 'nosniff');
+      res.set('Content-Disposition', 'inline');
       res.set('Cache-Control', cacheControl);
       if (etag) res.set('ETag', etag);
 
@@ -5724,7 +5775,7 @@ class CondominioController {
         }
       }
 
-      const ehAdmin = idPerfilToken === 1;
+      const ehAdmin = permissoes.ehSuperAdmin(req);
 
       if (!ehAdmin && !idCondominioToken) {
         return res.status(403).json({
@@ -5940,7 +5991,7 @@ class CondominioController {
         }
       }
 
-      const ehAdmin = idPerfilToken === 1;
+      const ehAdmin = permissoes.ehSuperAdmin(req);
 
       const idCondominioPayload = this._toInt(req.body.id_condominio, null);
 
@@ -6139,7 +6190,7 @@ class CondominioController {
         }
       }
 
-      const ehAdmin = idPerfilToken === 1;
+      const ehAdmin = permissoes.ehSuperAdmin(req);
 
       const id = this._toInt(req.params.id, null);
       if (!id) {
@@ -6356,7 +6407,7 @@ class CondominioController {
         }
       }
 
-      const ehAdmin = idPerfilToken === 1;
+      const ehAdmin = permissoes.ehSuperAdmin(req);
 
       const id = this._toInt(req.params.id, null);
       if (!id) {
@@ -6472,7 +6523,7 @@ class CondominioController {
         }
       }
 
-      const ehAdmin = idPerfilToken === 1;
+      const ehAdmin = permissoes.ehSuperAdmin(req);
 
       if (!ehAdmin && !idCondominioToken) {
         return res.status(403).json({
@@ -6622,7 +6673,7 @@ class CondominioController {
         }
       }
 
-      const ehAdmin = idPerfilToken === 1;
+      const ehAdmin = permissoes.ehSuperAdmin(req);
 
       const idCondominioPayload = this._toInt(req.body.id_condominio, null);
 
@@ -6739,7 +6790,7 @@ class CondominioController {
     try {
       const idCondominioToken = this._toInt(req.id_condominio, null);
       const idPerfilToken = this._toInt(req.IdPerfil, null);
-      const ehAdmin = idPerfilToken === 1;
+      const ehAdmin = permissoes.ehSuperAdmin(req);
 
       if (!ehAdmin && !idCondominioToken) {
         return res.status(403).json({
@@ -6951,7 +7002,7 @@ class CondominioController {
         pageSize,
         total,
         totalPages,
-        data: this._anexarAvatarUrlUsuarios(req, rows)
+        data: this._projetarUsuariosPorPerfil(req, this._anexarAvatarUrlUsuarios(req, rows))
       });
     } catch (error) {
       return res.status(500).json({
@@ -6961,11 +7012,45 @@ class CondominioController {
     }
   }
 
+  // Dados pessoais por perfil (incidente 22/11/2026, LGPD). Gestão (1/3/4)
+  // vê o cadastro completo dos usuários do próprio condomínio; o próprio
+  // usuário vê o seu. Demais perfis veem de terceiros só a identificação
+  // mínima; Portaria e Colaborador também o telefone (contato operacional).
+  static get CAMPOS_USUARIO_PUBLICOS() {
+    return ['id', 'nome', 'sobrenome', 'apartamento', 'bloco', 'id_unidade', 'id_unidade_predio', 'avatar_url',
+      'tipo_perfil_id', 'nome_perfil', 'tipo', 'status', 'tipo_morador', 'morador_principal', 'id_condominio'];
+  }
+
+  _projetarUsuarioPorPerfil(req, usuario) {
+    if (!usuario || typeof usuario !== 'object' || permissoes.ehGestor(req)) {
+      return usuario;
+    }
+    const idUsuario = this._toInt(usuario.id ?? usuario.id_usuario, null);
+    if (idUsuario !== null && idUsuario === this._toInt(req.idcliente, null)) {
+      return usuario;
+    }
+    const campos = new Set(CondominioController.CAMPOS_USUARIO_PUBLICOS);
+    if (permissoes.temPerfil(req, permissoes.PERFIL.PORTARIA, permissoes.PERFIL.COLABORADOR)) {
+      campos.add('telefone');
+    }
+    const projetado = {};
+    for (const campo of campos) {
+      if (Object.prototype.hasOwnProperty.call(usuario, campo)) {
+        projetado[campo] = usuario[campo];
+      }
+    }
+    return projetado;
+  }
+
+  _projetarUsuariosPorPerfil(req, lista) {
+    return Array.isArray(lista) ? lista.map((usuario) => this._projetarUsuarioPorPerfil(req, usuario)) : lista;
+  }
+
   async consultarUsuariosBase(req, res) {
     try {
       const idCondominioToken = this._toInt(req.id_condominio, null);
       const idPerfilToken = this._toInt(req.IdPerfil, null);
-      const ehAdmin = idPerfilToken === 1;
+      const ehAdmin = permissoes.ehSuperAdmin(req);
 
       if (!ehAdmin && !idCondominioToken) {
         return res.status(403).json({
@@ -7056,6 +7141,12 @@ class CondominioController {
         }
       );
 
+      if (ehAdmin) {
+
+        await registrarAuditoria({ req, acao: "leitura_cross_tenant", entidade: "usuarios_base", detalhes: { id_condominio_filtro: idCondominioFiltro || null, total: usuarios.length } });
+
+      }
+
       return res.status(200).json({
         success: true,
         total: usuarios.length,
@@ -7064,7 +7155,7 @@ class CondominioController {
           bloco: blocoFiltro,
           apartamento: apartamentoFiltro
         },
-        data: this._anexarAvatarUrlUsuarios(req, usuarios)
+        data: this._projetarUsuariosPorPerfil(req, this._anexarAvatarUrlUsuarios(req, usuarios))
       });
     } catch (error) {
       return res.status(500).json({
@@ -7079,7 +7170,7 @@ class CondominioController {
     try {
       const idCondominioToken = this._toInt(req.id_condominio, null);
       const idPerfilToken = this._toInt(req.IdPerfil, null);
-      const ehAdmin = idPerfilToken === 1;
+      const ehAdmin = permissoes.ehSuperAdmin(req);
 
       if (!ehAdmin && !idCondominioToken) {
         return res.status(403).json({
@@ -7190,7 +7281,7 @@ class CondominioController {
         pageSize,
         total,
         totalPages,
-        data: rows
+        data: this._projetarUsuariosPorPerfil(req, rows)
       });
     } catch (error) {
       return res.status(500).json({
@@ -7204,7 +7295,7 @@ class CondominioController {
     try {
       const idCondominioToken = this._toInt(req.id_condominio, null);
       const idPerfilToken = this._toInt(req.IdPerfil, null);
-      const ehAdmin = idPerfilToken === 1;
+      const ehAdmin = permissoes.ehSuperAdmin(req);
 
       if (!ehAdmin && !idCondominioToken) {
         return res.status(403).json({
@@ -7355,7 +7446,7 @@ class CondominioController {
     try {
       const idCondominioToken = this._toInt(req.id_condominio, null);
       const idPerfilToken = this._toInt(req.IdPerfil, null);
-      const ehAdmin = idPerfilToken === 1;
+      const ehAdmin = permissoes.ehSuperAdmin(req);
 
       if (!ehAdmin && !idCondominioToken) {
         return res.status(403).json({
@@ -7534,7 +7625,7 @@ class CondominioController {
     try {
       const idCondominioToken = this._toInt(req.id_condominio, null);
       const idPerfilToken = this._toInt(req.IdPerfil, null);
-      const ehAdmin = idPerfilToken === 1;
+      const ehAdmin = permissoes.ehSuperAdmin(req);
 
       if (!ehAdmin && !idCondominioToken) {
         return res.status(403).json({
@@ -7732,7 +7823,7 @@ class CondominioController {
       const idPerfilToken = this._toInt(req.IdPerfil, null);
       const idCondominioToken = this._toInt(req.id_condominio, null);
       const idUsuarioToken = this._toInt(req.idcliente, null);
-      const ehAdmin = idPerfilToken === 1;
+      const ehAdmin = permissoes.ehSuperAdmin(req);
 
       if (!ehAdmin && !idCondominioToken) {
         return res.status(403).json({
@@ -7860,7 +7951,7 @@ class CondominioController {
           perfil_ids: perfilIdsUnicos
         },
         usuario_logado: usuarioLogado,
-        data: this._anexarAvatarUrlUsuarios(req, data)
+        data: this._projetarUsuariosPorPerfil(req, this._anexarAvatarUrlUsuarios(req, data))
       });
     } catch (error) {
       return res.status(500).json({
@@ -7874,7 +7965,7 @@ class CondominioController {
     try {
       const idPerfilToken = this._toInt(req.IdPerfil, null);
       const idCondominioToken = this._toInt(req.id_condominio, null);
-      const ehAdmin = idPerfilToken === 1;
+      const ehAdmin = permissoes.ehSuperAdmin(req);
 
       const idCondominioParam = this._toInt(req.params.id_condominio, null);
       if (!idCondominioParam) {
@@ -7968,7 +8059,7 @@ class CondominioController {
         total,
         totalPages,
         id_condominio: idCondominioParam,
-        data: this._anexarAvatarUrlUsuarios(req, rows)
+        data: this._projetarUsuariosPorPerfil(req, this._anexarAvatarUrlUsuarios(req, rows))
       });
     } catch (error) {
       return res.status(500).json({
@@ -7981,6 +8072,9 @@ class CondominioController {
   async criarUsuario(req, res) {
     let transaction = null;
     try {
+      const erroCaminhoImagem = this._erroCaminhoImagemBody(req, 'path_avatar', 'avatar');
+      if (erroCaminhoImagem) return res.status(422).json(erroCaminhoImagem);
+
       const idCondominioToken = this._toInt(req.id_condominio, null);
       if (!idCondominioToken) {
         return res.status(403).json({
@@ -8000,7 +8094,7 @@ class CondominioController {
       }
 
       // `tipo` sempre derivado de tipo_perfil_id (exceto Admin).
-      if (!permissoes.ehAdmin(req)) {
+      if (!permissoes.ehSuperAdmin(req)) {
         delete req.body.tipo;
       }
 
@@ -8211,6 +8305,8 @@ class CondominioController {
         idUsuarioCriacao: this._toInt(req.idcliente, null)
       });
 
+      await registrarAuditoria({ req, acao: 'usuario_criado', entidade: 'usuario', entidadeId: null, detalhes: { tipo_perfil_id: this._toInt(req.body?.tipo_perfil_id, null), via: "gestao" } });
+
       return res.status(201).json({
         message: 'Usuário criado com sucesso.',
         data: this._anexarAvatarUrlUsuario(req, insert[0][0])
@@ -8341,6 +8437,9 @@ class CondominioController {
 
   async cadastrarUsuarioPorConvite(req, res) {
     try {
+      const erroCaminhoImagem = this._erroCaminhoImagemBody(req, 'path_avatar', 'avatar');
+      if (erroCaminhoImagem) return res.status(422).json(erroCaminhoImagem);
+
       const inviteToken = this._normalizarTextoOuNull(req.body.invite_token ?? req.body.token);
       if (!inviteToken) {
         return res.status(422).json({
@@ -8625,6 +8724,8 @@ class CondominioController {
         this._markInviteTokenAsUsed(inviteJtiKey);
       }
 
+      await registrarAuditoria({ req, acao: 'usuario_criado', entidade: 'usuario', entidadeId: null, detalhes: { tipo_perfil_id: 2, via: "convite" } });
+
       return res.status(201).json({
         message: 'Usuário criado com sucesso por convite.',
         data: this._anexarAvatarUrlUsuario(req, insert[0][0])
@@ -8759,12 +8860,60 @@ class CondominioController {
       }
     })());
 
+    await registrarAuditoria({
+      acao: 'recuperacao_solicitada',
+      entidade: 'usuario',
+      entidadeId: idUsuario,
+      idUsuarioAtor: idUsuario,
+      idCondominio,
+      detalhes: { ip: ip || null }
+    });
+
     return { criado: true, idUsuario, expiresAt };
   }
 
   // Confere o código do desafio pendente mais recente do usuário. Em caso de
   // sucesso, encerra o desafio e emite o reset token de uso único.
-  async _validarCodigoEEmitirResetToken({ idUsuario, code }) {
+  // Fail closed: se a contagem falhar, a exceção sobe e o handler responde 500.
+  async _verificacaoCodigoExcedeuLimite(req) {
+    const ip = ipDaRequisicao(req);
+    const [row] = await postgres.query(
+      `SELECT
+          COUNT(*) AS total,
+          SUM(CASE WHEN :ip <> '' AND ip = :ip THEN 1 ELSE 0 END) AS por_ip
+         FROM "condominio-bh".tb_auditoria_seguranca
+        WHERE acao = 'recuperacao_codigo_falho'
+          AND created_at > NOW() - CAST(:janela AS interval)`,
+      {
+        replacements: { ip: ip || '', janela: `${RECOVERY_VERIFY_JANELA_MIN} minutes` },
+        type: QueryTypes.SELECT
+      }
+    );
+    const total = Number.parseInt(row?.total, 10) || 0;
+    const porIp = ip ? Number.parseInt(row?.por_ip, 10) || 0 : 0;
+    return porIp >= RECOVERY_VERIFY_MAX_POR_IP || total >= RECOVERY_VERIFY_MAX_GLOBAL;
+  }
+
+  async _validarCodigoEEmitirResetToken({ idUsuario, code, req = null }) {
+    if (req && (await this._verificacaoCodigoExcedeuLimite(req))) {
+      console.warn(`[recovery] Limite de verificação de código atingido ip=${ipDaRequisicao(req) || '-'}`);
+      return { ok: false, status: 429, code: 'MAX_ATTEMPTS', message: 'Muitas tentativas. Aguarde alguns minutos e tente novamente.' };
+    }
+
+    const resultado = await this._validarCodigoEEmitirResetTokenInterno({ idUsuario, code });
+    await registrarAuditoria({
+      req,
+      acao: resultado.ok ? 'recuperacao_codigo_validado' : 'recuperacao_codigo_falho',
+      entidade: 'usuario',
+      entidadeId: idUsuario,
+      idUsuarioAtor: idUsuario,
+      idCondominio: null,
+      detalhes: resultado.ok ? null : { motivo: resultado.code }
+    });
+    return resultado;
+  }
+
+  async _validarCodigoEEmitirResetTokenInterno({ idUsuario, code }) {
     const [record] = await postgres.query(
       `SELECT id, code_hash, expires_at, attempts
          FROM "condominio-bh".tb_recovery_tokens
@@ -8896,7 +9045,7 @@ class CondominioController {
         return res.status(422).json({ success: false, message: 'Código inválido ou expirado.' });
       }
 
-      const resultado = await this._validarCodigoEEmitirResetToken({ idUsuario: this._toInt(usuario.id, null), code });
+      const resultado = await this._validarCodigoEEmitirResetToken({ idUsuario: this._toInt(usuario.id, null), code, req });
       if (!resultado.ok) {
         // Mantém os status históricos deste endpoint (422/429).
         const status = resultado.status === 429 ? 429 : 422;
@@ -8946,7 +9095,7 @@ class CondominioController {
         return res.status(401).json({ success: false, code: 'INVALID_CODE', message: 'Código inválido ou expirado.' });
       }
 
-      const resultado = await this._validarCodigoEEmitirResetToken({ idUsuario, code });
+      const resultado = await this._validarCodigoEEmitirResetToken({ idUsuario, code, req });
       if (!resultado.ok) {
         return res.status(resultado.status).json({ success: false, code: resultado.code, message: resultado.message });
       }
@@ -9001,7 +9150,9 @@ class CondominioController {
 
       const atualizado = await postgres.query(
         `UPDATE "condominio-bh"."tb-usuarios"
-            SET senha_hash = :senha_hash, updated_at = NOW()
+            SET senha_hash = :senha_hash,
+                token_version = COALESCE(token_version, 0) + 1,
+                updated_at = NOW()
           WHERE id = :id
           RETURNING id, id_condominio`,
         { replacements: { id: idUsuario, senha_hash: senhaHash }, type: QueryTypes.SELECT, transaction }
@@ -9026,8 +9177,9 @@ class CondominioController {
       await transaction.commit();
       transaction = null;
 
-      // Revoga todas as sessões anteriores do usuário.
-      await incrementarTokenVersion(idUsuario);
+      // As sessões anteriores já foram revogadas no mesmo UPDATE da senha
+      // (token_version + 1, atômico). Só limpa o cache local.
+      invalidarCacheSessao(idUsuario);
 
       await registrarAuditoria({
         req,
@@ -9084,7 +9236,7 @@ class CondominioController {
   }
 
   _camposUsuarioAlterados(anterior, novo, senhaAlterada) {
-    const campos = ['nome', 'sobrenome', 'cpf', 'email', 'telefone', 'tipo_perfil_id', 'tipo', 'status', 'apartamento', 'bloco', 'id_unidade_predio', 'morador_principal', 'path_avatar'];
+    const campos = ['nome', 'sobrenome', 'cpf', 'email', 'telefone', 'tipo_perfil_id', 'tipo', 'status', 'id_condominio', 'apartamento', 'bloco', 'id_unidade_predio', 'morador_principal', 'path_avatar'];
     const alterados = campos.filter((campo) => String(anterior?.[campo] ?? '') !== String(novo?.[campo] ?? ''));
     if (senhaAlterada) {
       alterados.push('senha');
@@ -9144,7 +9296,7 @@ class CondominioController {
 
     // `tipo` é sempre derivado de tipo_perfil_id (exceto para Admin), para que
     // ninguém ganhe permissões baseadas no nome do perfil.
-    if (!permissoes.ehAdmin(req) && body.tipo !== undefined) {
+    if (!permissoes.ehSuperAdmin(req) && body.tipo !== undefined) {
       delete body.tipo;
     }
 
@@ -9161,23 +9313,38 @@ class CondominioController {
       if (String(novaSenhaInformada).trim().length < 6) {
         return negar(422, 'A nova senha deve ter no mínimo 6 caracteres.', 'weak_password');
       }
-      if (ehProprio) {
-        const senhaAtual = body.senha_atual;
-        if (senhaAtual === undefined || senhaAtual === null || String(senhaAtual) === '') {
-          return negar(422, 'Informe a senha atual para trocar a senha.', 'current_password_required');
-        }
-        const hashAtual = String(atual.senha_hash || '');
-        const confere = hashAtual.startsWith('$2')
-          ? await bcrypt.compare(String(senhaAtual), hashAtual)
-          : this._timingSafeTextEqual(String(senhaAtual), hashAtual);
-        if (!confere) {
-          return negar(403, 'Senha atual incorreta.', 'current_password_invalid');
-        }
-      }
       novaSenha = String(novaSenhaInformada);
     }
 
+    // Próprio usuário: trocar senha, e-mail ou CPF (o e-mail recebe o código
+    // de recuperação; e-mail e CPF são identificadores de login) exige
+    // senha_atual. Sem isso, uma sessão roubada vira tomada de conta
+    // permanente via "esqueci minha senha".
+    const trocaCredencial =
+      novaSenha !== null ||
+      this._campoUsuarioMudou(body, 'email', atual) ||
+      this._campoUsuarioMudou(body, 'cpf', atual);
+    if (ehProprio && trocaCredencial) {
+      const senhaAtual = body.senha_atual;
+      if (senhaAtual === undefined || senhaAtual === null || String(senhaAtual) === '') {
+        return negar(422, 'Informe a senha atual para alterar senha, e-mail ou CPF.', 'current_password_required');
+      }
+      if (!(await this._senhaConfere(String(senhaAtual), atual.senha_hash))) {
+        return negar(422, 'Senha atual incorreta.', 'current_password_invalid');
+      }
+    }
+
     return { ok: true, novaSenha };
+  }
+
+  // Só bcrypt: senha legada em texto puro deixou de ser aceita (um valor
+  // qualquer em senha_hash, como 'RESET', viraria senha válida).
+  async _senhaConfere(senha, hash) {
+    const valor = String(hash || '');
+    if (!/^\$2[aby]\$/.test(valor)) {
+      return false;
+    }
+    return bcrypt.compare(String(senha), valor);
   }
 
   _timingSafeTextEqual(a, b) {
@@ -9189,6 +9356,9 @@ class CondominioController {
   async editarUsuario(req, res) {
     let transaction = null;
     try {
+      const erroCaminhoImagem = this._erroCaminhoImagemBody(req, 'path_avatar', 'avatar');
+      if (erroCaminhoImagem) return res.status(422).json(erroCaminhoImagem);
+
       let idCondominioToken = this._toInt(req.id_condominio, null);
       // Convite já verificado pelo middleware authOrInviteToken (assinatura,
       // validade e finalidade). Sem sessão e sem convite válido → 401 lá.
@@ -9489,17 +9659,19 @@ class CondominioController {
           transaction
         }
       );
+      // Revogação na MESMA transação da alteração: ou a senha/perfil/status/
+      // e-mail/CPF muda e as sessões antigas caem, ou nada muda.
+      const camposAlterados = this._camposUsuarioAlterados(atual, update[0][0], Boolean(autorizacao.novaSenha));
+      const revogarSessoes = ['senha', 'tipo_perfil_id', 'status', 'email', 'cpf', 'id_condominio'].some((campo) =>
+        camposAlterados.includes(campo)
+      );
+      if (revogarSessoes) {
+        await incrementarTokenVersion(idUsuario, { transaction });
+      }
       await transaction.commit();
       transaction = null;
-
-      const camposAlterados = this._camposUsuarioAlterados(atual, update[0][0], Boolean(autorizacao.novaSenha));
-      const revogarSessoes =
-        camposAlterados.includes('senha') ||
-        camposAlterados.includes('tipo_perfil_id') ||
-        camposAlterados.includes('status') ||
-        camposAlterados.includes('email');
       if (revogarSessoes) {
-        await incrementarTokenVersion(idUsuario);
+        invalidarCacheSessao(idUsuario);
       }
       if (camposAlterados.length > 0) {
         await registrarAuditoria({
@@ -9689,6 +9861,16 @@ class CondominioController {
 
       await transaction.commit();
 
+      if (cpfMudou) {
+        await registrarAuditoria({
+          req,
+          acao: 'usuario_cpf_alterado',
+          entidade: 'usuario',
+          entidadeId: idUsuarioToken,
+          detalhes: { via: 'baixar_boleto' }
+        });
+      }
+
       return res.status(200).json({
         message: 'Preferência de boleto digital atualizada com sucesso.',
         data: {
@@ -9835,11 +10017,11 @@ class CondominioController {
       delete usuarioData.chat_id_telegram;
 
       return res.status(200).json({
-        data: {
+        data: this._projetarUsuarioPorPerfil(req, {
           ...usuarioData,
           avatar_url: avatarUrl,
           telegram_vinculado: telegramVinculado
-        }
+        })
       });
     } catch (error) {
       return res.status(500).json({
@@ -9891,7 +10073,7 @@ class CondominioController {
         });
       }
 
-      const blobUrl = resolveBlobUrl(pathAvatar, { idCondominio: idCondominioToken });
+      const blobUrl = resolveBlobUrl(pathAvatar, { idCondominio: idCondominioToken, area: 'avatar' });
       if (!blobUrl) {
         return res.status(500).json({
           message: 'Falha ao resolver URL do avatar no blob privado.'
@@ -9906,6 +10088,7 @@ class CondominioController {
       }
 
       const blobResponse = await fetch(blobUrl, {
+        redirect: 'error',
         headers: {
           Authorization: `Bearer ${blobToken}`
         }
@@ -9923,11 +10106,14 @@ class CondominioController {
       }
 
       const payload = await blobResponse.buffer();
-      const contentType = blobResponse.headers.get('content-type') || 'application/octet-stream';
+      // Content-Type pela extensão (allowlist de imagens), nunca o do Blob.
+      const contentType = contentTypeImagemSegura(blobUrl);
       const cacheControl = blobResponse.headers.get('cache-control') || 'private, max-age=300';
       const etag = blobResponse.headers.get('etag');
 
       res.set('Content-Type', contentType);
+      res.set('X-Content-Type-Options', 'nosniff');
+      res.set('Content-Disposition', 'inline');
       res.set('Cache-Control', cacheControl);
       if (etag) {
         res.set('ETag', etag);
@@ -9979,7 +10165,7 @@ class CondominioController {
       }
 
       // Condomínio vem do token. Só o Admin pode informar outro (override).
-      const idCondominio = permissoes.ehAdmin(req)
+      const idCondominio = permissoes.ehSuperAdmin(req)
         ? this._toInt(
             req.body.id_condominio ?? req.body.condominio_id ?? req.query.id_condominio ?? req.query.condominio_id ?? req.id_condominio,
             null
@@ -10115,6 +10301,8 @@ class CondominioController {
           type: QueryTypes.UPDATE
         }
       );
+
+      await registrarAuditoria({ req, acao: 'avatar_enviado', entidade: 'usuario', entidadeId: req.body?.id_usuario || req.params?.id || req.idcliente, detalhes: { id_condominio_informado: req.body?.id_condominio || null } });
 
       return res.status(200).json({
         success: true,
@@ -10718,7 +10906,7 @@ class CondominioController {
     try {
       const idCondominioToken = this._toInt(req.id_condominio, null);
       const idPerfilToken = this._toInt(req.IdPerfil, null);
-      const ehAdmin = idPerfilToken === 1;
+      const ehAdmin = permissoes.ehSuperAdmin(req);
 
       if (!ehAdmin && !idCondominioToken) {
         return res.status(403).json({
@@ -10809,7 +10997,7 @@ class CondominioController {
       const idPerfilToken = this._toInt(req.IdPerfil, null);
       const idCondominioToken = this._toInt(req.id_condominio, null);
       const idUsuarioToken = this._toInt(req.idcliente, null);
-      const ehAdmin = idPerfilToken === 1;
+      const ehAdmin = permissoes.ehSuperAdmin(req);
       const ehMorador = idPerfilToken === 2;
 
       if (!ehAdmin && !idCondominioToken) {
@@ -12577,7 +12765,7 @@ class CondominioController {
       }
 
       const idPerfilToken = this._toInt(req.IdPerfil, null);
-      const ehAdmin = idPerfilToken === 1;
+      const ehAdmin = permissoes.ehSuperAdmin(req);
 
       const idUsuario = this._toInt(req.params.id_usuario, null);
       if (!idUsuario) {
@@ -12680,7 +12868,7 @@ class CondominioController {
       }
 
       const idPerfilToken = this._toInt(req.IdPerfil, null);
-      const ehAdmin = idPerfilToken === 1;
+      const ehAdmin = permissoes.ehSuperAdmin(req);
 
       const idNotificacao = this._toInt(req.params.id, null);
       if (!idNotificacao) {
@@ -13511,17 +13699,22 @@ class CondominioController {
         return res.status(400).json({ message: 'Id do aceite invalido.' });
       }
 
+      // Só o próprio usuário (revogar o seu aceite) ou a gestão.
+      const gestorAceite = permissoes.ehGestor(req);
       const remove = await postgres.query(
         `DELETE FROM "condominio-bh".tb_regulamento_aceite a
           USING "condominio-bh".tb_regulamento r
           WHERE a.id = :id
             AND r.id = a.id_regulamento
             AND r.id_condominio = :id_condominio
+            AND (:gestor = true OR a.id_usuario = :id_usuario)
         RETURNING a.id, a.id_regulamento, a.id_usuario, a.aceito_em, a.ip`,
         {
           replacements: {
             id,
-            id_condominio: idCondominioToken
+            id_condominio: idCondominioToken,
+            gestor: gestorAceite,
+            id_usuario: this._toInt(req.idcliente, 0) || 0
           }
         }
       );
@@ -14020,6 +14213,7 @@ class CondominioController {
       }
 
       if (itens.length === 0) {
+        await registrarAuditoria({ req, acao: 'mensagens_lote_enfileiradas', entidade: 'mensagem_fila', entidadeId: null, detalhes: { perfil_ids: req.body?.perfil_ids || null, canais: req.body?.canais || req.body?.tipos || null } });
         return res.status(200).json({
           message: 'Nenhum destinatário elegível para os canais selecionados.',
           destinatarios: usuarios.length,
@@ -14112,6 +14306,15 @@ class CondominioController {
       }
 
       const idUsuarioDestino = this._toInt(id_usuario_destino, null);
+      // WhatsApp/Telegram para OUTRO usuário: só gestão ou Portaria. Os demais
+      // perfis só enfileiram para si mesmos.
+      const podeEnviarATerceiros =
+        this._ehGestorMensagens(req) || permissoes.temPerfil(req, permissoes.PERFIL.PORTARIA);
+      if (!podeEnviarATerceiros && idUsuarioDestino !== this._toInt(req.idcliente, null)) {
+        return res.status(403).json({
+          message: 'Seu perfil só pode enviar mensagens para o próprio usuário.'
+        });
+      }
       const destinoRows = await postgres.query(
         `SELECT id FROM "condominio-bh"."tb-usuarios"
           WHERE id = :id AND id_condominio = :id_condominio
@@ -14512,16 +14715,34 @@ class CondominioController {
     }
   }
 
+  _urlWebhookTelegramOficial() {
+    const valor = String(process.env.TELEGRAM_WEBHOOK_URL || '').trim();
+    if (!valor) return null;
+    try {
+      const url = new URL(valor);
+      if (url.protocol !== 'https:' || url.username || url.password) return null;
+      return url.toString();
+    } catch (_) {
+      return null;
+    }
+  }
+
   async configurarWebhookTelegram(req, res) {
     try {
-      const idPerfilToken = this._toInt(req.IdPerfil, null);
-      if (idPerfilToken !== 1) {
-        return res.status(403).json({ message: 'Apenas Admin pode configurar o webhook do Telegram.' });
+      // Incidente 22/11/2026: o webhook_url vinha do body, e um Admin podia
+      // apontar o bot para um servidor de terceiros (que receberia todos os
+      // updates e o TELEGRAM_WEBHOOK_SECRET). Agora a URL é fixa, configurada
+      // em TELEGRAM_WEBHOOK_URL (https), e só o super-admin aciona.
+      if (!permissoes.ehSuperAdmin(req)) {
+        return res.status(403).json({ message: 'Apenas o administrador da plataforma pode configurar o webhook do Telegram.' });
       }
 
       const botToken = process.env.TELEGRAM_BOT_TOKEN;
       const webhookSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
-      const webhookUrl = req.body?.webhook_url;
+      const webhookUrl = this._urlWebhookTelegramOficial();
+      if (req.body?.webhook_url !== undefined && req.body.webhook_url !== webhookUrl) {
+        console.warn('[telegramWebhook] webhook_url do body ignorado; usando TELEGRAM_WEBHOOK_URL.');
+      }
 
       if (!botToken) {
         return res.status(500).json({ message: 'TELEGRAM_BOT_TOKEN não configurado.' });
@@ -14530,7 +14751,7 @@ class CondominioController {
         return res.status(500).json({ message: 'TELEGRAM_WEBHOOK_SECRET não configurado.' });
       }
       if (!webhookUrl) {
-        return res.status(422).json({ message: 'Campo webhook_url é obrigatório.' });
+        return res.status(500).json({ message: 'TELEGRAM_WEBHOOK_URL não configurado (precisa ser https).' });
       }
 
       const resp = await fetch(`https://api.telegram.org/bot${botToken}/setWebhook`, {
@@ -14547,6 +14768,13 @@ class CondominioController {
           detail: data?.description || `HTTP ${resp.status}`
         });
       }
+
+      await registrarAuditoria({
+        req,
+        acao: 'telegram_webhook_configurado',
+        entidade: 'telegram',
+        detalhes: { host: new URL(webhookUrl).host }
+      });
 
       return res.status(200).json({ message: 'Webhook do Telegram configurado com sucesso.', data });
     } catch (error) {

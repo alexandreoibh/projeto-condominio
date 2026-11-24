@@ -8,7 +8,13 @@ const { body } = require('express-validator');
 
 const IntegracaoBancariaController = require('../controllers/integracaoBancariaController');
 const auth = require('../helpers/auth');
-const { exigirGestor } = require('../helpers/permissoes');
+const { exigirGestor, exigirPerfis, PERFIL } = require('../helpers/permissoes');
+const { exigirSenhaAtual } = require('../helpers/reautenticacao');
+
+// Incidente 22/11/2026: conectar, alterar ou desativar a integração bancária
+// decide para onde vão os pagamentos. Exige Admin (local) ou Síndico e a
+// senha do próprio usuário (senha_atual) — um JWT roubado não basta.
+const exigirGestaoBancaria = [exigirPerfis(PERFIL.ADMIN, PERFIL.SINDICO)];
 const validate = require('../helpers/validate');
 
 const controller = new IntegracaoBancariaController();
@@ -52,6 +58,8 @@ router.post(
     { name: 'chave_privada', maxCount: 1 },
   ]),
   validarUploads('certificado'),
+  ...exigirGestaoBancaria,
+  exigirSenhaAtual('integracao_bancaria'),
   [
     body('client_id').notEmpty().withMessage('client_id é obrigatório.'),
     body('client_secret').notEmpty().withMessage('client_secret é obrigatório.'),
@@ -72,6 +80,8 @@ router.post(
     { name: 'chave_privada', maxCount: 1 },
   ]),
   validarUploads('certificado'),
+  ...exigirGestaoBancaria,
+  exigirSenhaAtual('integracao_bancaria'),
   [
     body('client_id').notEmpty().withMessage('client_id é obrigatório.'),
     body('client_secret').notEmpty().withMessage('client_secret é obrigatório.'),
@@ -91,6 +101,8 @@ router.post(
     { name: 'chave_privada', maxCount: 1 },
   ]),
   validarUploads('certificado'),
+  ...exigirGestaoBancaria,
+  exigirSenhaAtual('integracao_bancaria'),
   [
     body('client_id').notEmpty().withMessage('client_id é obrigatório.'),
     body('client_secret').notEmpty().withMessage('client_secret é obrigatório.'),
@@ -106,6 +118,8 @@ router.post(
 router.put(
   '/:id',
   auth,
+  ...exigirGestaoBancaria,
+  exigirSenhaAtual('integracao_bancaria'),
   validacoesMultaJuros,
   validate,
   controller.atualizarRegrasCobranca.bind(controller)
@@ -116,6 +130,6 @@ router.put(
 router.post('/:id/testar', auth, exigirGestor, controller.testarIntegracao.bind(controller));
 router.get('/:id/saldo', auth, exigirGestor, controller.consultarSaldo.bind(controller));
 router.get('/:id/extrato', auth, exigirGestor, controller.consultarExtrato.bind(controller));
-router.delete('/:id', auth, controller.desativarIntegracao.bind(controller));
+router.delete('/:id', auth, ...exigirGestaoBancaria, exigirSenhaAtual('integracao_bancaria'), controller.desativarIntegracao.bind(controller));
 
 module.exports = router;

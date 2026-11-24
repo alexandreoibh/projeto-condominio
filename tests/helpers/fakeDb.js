@@ -32,6 +32,14 @@ async function query(sql, options = {}) {
   const replacements = options.replacements || {};
   state.calls.push({ sql, options, replacements });
 
+  // Qualquer UPDATE que incremente token_version (sozinho ou junto com a
+  // senha, na mesma instrução) altera o estado de sessão do usuário.
+  const incrementaVersao = /token_version = COALESCE\(token_version, 0\) \+ 1/.test(sql);
+  if (incrementaVersao && /WHERE id = :id(?![_a-z])/.test(sql)) {
+    const usuario = state.usuarios.get(Number(replacements.id));
+    if (usuario) usuario.token_version += 1;
+  }
+
   for (let i = state.handlers.length - 1; i >= 0; i -= 1) {
     const handler = state.handlers[i];
     if (handler.regex.test(sql)) {
@@ -45,8 +53,6 @@ async function query(sql, options = {}) {
     return usuario ? [usuario] : [];
   }
   if (/SET token_version = COALESCE\(token_version, 0\) \+ 1/.test(sql)) {
-    const usuario = state.usuarios.get(Number(replacements.id));
-    if (usuario) usuario.token_version += 1;
     return [[], 1];
   }
 

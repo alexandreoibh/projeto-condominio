@@ -76,10 +76,21 @@ describe('SSRF / vazamento do token do Blob', () => {
 
   test('blob de outro condomínio ou financeiro não é servido pelo proxy de imagem', () => {
     const base = 'https://teststore.private.blob.vercel-storage.com';
-    expect(resolveBlobUrl(`${base}/prod/condominios/2/usuarios/5/avatar/v1.png`, { idCondominio: 1 })).toBeNull();
-    expect(resolveBlobUrl(`${base}/prod/condominios/1/financeiro/despesas/1/nf.pdf`, { idCondominio: 1 })).toBeNull();
-    expect(resolveBlobUrl(`${base}/cobranca/boletos/condominio-1/202611/x.pdf`, { idCondominio: 1 })).toBeNull();
-    expect(resolveBlobUrl(`${base}/prod/condominios/1/usuarios/5/avatar/v1.png`, { idCondominio: 1 })).toBe(`${base}/prod/condominios/1/usuarios/5/avatar/v1.png`);
+    expect(resolveBlobUrl(`${base}/prod/condominios/2/usuarios/5/avatar/v1.png`, { idCondominio: 1, area: 'avatar' })).toBeNull();
+    expect(resolveBlobUrl(`${base}/prod/condominios/1/financeiro/despesas/1/nf.pdf`, { idCondominio: 1, area: 'avatar' })).toBeNull();
+    expect(resolveBlobUrl(`${base}/cobranca/boletos/condominio-1/202611/x.pdf`, { idCondominio: 1, area: 'avatar' })).toBeNull();
+    expect(resolveBlobUrl(`${base}/prod/condominios/1/usuarios/5/avatar/v1.png`, { idCondominio: 1, area: 'avatar' })).toBe(`${base}/prod/condominios/1/usuarios/5/avatar/v1.png`);
+  });
+
+  test('proxy exige a área certa, extensão de imagem e caminho com condomínio', () => {
+    const base = 'https://teststore.private.blob.vercel-storage.com';
+    const avatar = `${base}/prod/condominios/1/usuarios/5/avatar/v1.png`;
+    expect(resolveBlobUrl(avatar, { idCondominio: 1 })).toBeNull(); // sem área
+    expect(resolveBlobUrl(avatar, { idCondominio: 1, area: 'consumo' })).toBeNull();
+    expect(resolveBlobUrl(`${base}/prod/condominios/1/usuarios/5/avatar/sh.php`, { idCondominio: 1, area: 'avatar' })).toBeNull();
+    expect(resolveBlobUrl(`${base}/prod/condominios/1/usuarios/5/avatar/xxe.svg`, { idCondominio: 1, area: 'avatar' })).toBeNull();
+    expect(resolveBlobUrl(`${base}/sh.php`, { idCondominio: 1, area: 'avatar' })).toBeNull(); // legado sem condomínio
+    expect(resolveBlobUrl(avatar.replace('.com/', '.com.evil.tld/'), { idCondominio: 1, area: 'avatar' })).toBeNull();
   });
 });
 

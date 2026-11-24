@@ -82,7 +82,14 @@ Detalhes em `docs/seguranca/relatorio-auditoria-2026-11-23.md`.
   - `auth.js` só aceita o JWT de login (HS256, com `id` e sem `tipo`/`flow`/`aud`). Tokens de imagem (`aud: 'image'`), convite e recuperação nunca valem como sessão.
   - Revogação por `"tb-usuarios".token_version`, comparado com o claim `tv` (`src/helpers/sessao.js`, cache de 60s). Usuário com status ≠ `ativo` perde a sessão.
   - Chame `incrementarTokenVersion(id)` sempre que senha, perfil, status ou e-mail mudarem.
-- **Perfis:** autorização SEMPRE por id numérico (`req.IdPerfil`), via `src/helpers/permissoes.js` (`ehGestor`, `ehAdmin`, `exigirGestor`, `exigirAdmin`, `podeAtribuirPerfil`). Nunca use `req.nomePerfil`/`tipo`, que vêm de coluna editável.
+- **Perfis:** autorização SEMPRE por id numérico (`req.IdPerfil`), via `src/helpers/permissoes.js` (`ehGestor`, `ehAdmin`, `ehSuperAdmin`, `escopoCondominio`, `exigirGestor`, `exigirSuperAdmin`, `exigirPerfis`, `podeAtribuirPerfil`). Nunca use `req.nomePerfil`/`tipo`, que vêm de coluna editável.
+- **Super-admin (pós-incidente 24/11/2026):** perfil 1 **não** é mais global. Só ids em `SUPERADMIN_USER_IDS` atuam entre condomínios, criam Admin e mexem em config global (menu, tipos de dashboard, WhatsApp, criar condomínio, Telegram). Os demais Admins ficam no condomínio do token. Para "Admin override", use `permissoes.escopoCondominio(req, idInformado)`.
+- **JWT de sessão só em header** (`Authorization`, `x-access-token`, `token`) e com claim `tv` obrigatório. `?token=` só vale para token de imagem.
+- **Login só bcrypt:** senha em texto puro, `NULL` ou marcador nunca autenticam. Para forçar a redefinição, use um bcrypt aleatório (ver `src/database/sql/incidente-2026-11-revogacao-e-reset.sql`).
+- **Blob:** buscas com token usam `validarUrlBlobDoCondominio` + `buscarBlobPrivado` (`redirect: 'error'`) + `enviarArquivoBlob` (Content-Type fixo). Os proxies de imagem exigem `area`. Caminhos de imagem vindos do body passam por `_erroCaminhoImagemBody`.
+- **Reautenticação:** `exigirSenhaAtual(contexto)` (`src/helpers/reautenticacao.js`) nas rotas de credencial bancária.
+- **Testes sem rede:** `tests/setup-mocks.js` bloqueia `fetch`/`node-fetch`. Faça mock explícito em cada teste que precisar de HTTP.
+- Relatório das correções: `docs/seguranca/relatorio-correcoes-2026-11-24.md`.
 - **Recuperação de senha:** código por e-mail → reset token opaco (só o sha256 em `tb_recovery_tokens.reset_token_hash`, uso único, 15 min) → `/api/auth/recovery/reset`. Nenhum endpoint devolve token sem o código. `invite_token` não altera senha, e-mail, CPF, perfil ou status.
 - **`authOrInviteToken`:** valida o convite no próprio middleware e entrega `req.inviteAuth.payload` ao handler.
 - **URLs do Blob:** toda URL buscada pelo servidor passa por `parseUrlBlob` (`src/helpers/blobUrl.js`), que compara o host exato. Os proxies de imagem exigem `/condominios/<id>/`. Links de boleto enviados por e-mail são assinados (`assinarLinkDownload`).

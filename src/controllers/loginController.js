@@ -47,56 +47,46 @@ class Login {
     };
   }
 
+  // Só bcrypt. Incidente 22/11/2026: a senha legada em texto puro deixou de
+  // ser aceita — qualquer valor não-bcrypt em senha_hash (ex.: 'RESET' ou um
+  // marcador de "trocar senha") viraria uma senha válida. Usuários com senha
+  // legada (ou NULL/vazia) entram pelo "Esqueci minha senha".
   async _isPasswordValid(password, passwordHash) {
-    if (!passwordHash) {
+    if (!this._ehHashBcrypt(passwordHash)) {
+      await bcrypt.compare(String(password || ""), DUMMY_BCRYPT_HASH);
       return false;
     }
-
-    if (this._ehHashBcrypt(passwordHash)) {
-      return bcrypt.compare(password, passwordHash);
-    }
-
-    // Legado: senha gravada em texto puro. Comparação em tempo constante; se
-    // conferir, o login regrava como bcrypt (ver _migrarSenhaLegada).
-    const a = crypto.createHash("sha256").update(String(password)).digest();
-    const b = crypto.createHash("sha256").update(String(passwordHash)).digest();
-    return crypto.timingSafeEqual(a, b);
+    return bcrypt.compare(String(password), passwordHash);
   }
 
   _ehHashBcrypt(passwordHash) {
-    const valor = String(passwordHash || "");
-    return valor.startsWith("$2a$") || valor.startsWith("$2b$") || valor.startsWith("$2y$");
+    return /^\$2[aby]\$\d{2}\$/.test(String(passwordHash || ""));
   }
 
-  async _migrarSenhaLegada(idUsuario, password) {
+  // Rate limit persistente, contado em tb_sgw_log_acesso. A identidade é
+  // normalizada: com o usuário resolvido, conta as falhas pelo id_usuario
+  // (e-mail e CPF do mesmo usuário somam juntos — antes, tentar pelo CPF
+  // não contava nas falhas gravadas com o e-mail). Retorna
+  // { bloqueado, erro }: se a consulta falhar, o login é recusado (fail closed).
+  async _excedeuLimiteFalhas(req, login, idUsuario = null) {
     try {
-      const novoHash = await bcrypt.hash(String(password), 10);
-      await postgres.query(
-        `UPDATE "condominio-bh"."tb-usuarios" SET senha_hash = :senha_hash WHERE id = :id`,
-        { replacements: { id: idUsuario, senha_hash: novoHash }, type: QueryTypes.UPDATE }
-      );
-    } catch (error) {
-      console.error("[login] Falha ao migrar senha legada para bcrypt:", error?.message);
-    }
-  }
-
-  async _excedeuLimiteFalhas(req, login) {
-    try {
-      // Via proxy confiável (back-cond.php), o IP do cliente; null se o proxy
-      // não informou (vale só o limite por login). Ver helpers/ipCliente.js.
       const { ip } = ipEfetivo(req);
+      const idRef = Number.isInteger(idUsuario) ? idUsuario : 0;
       const rows = await postgres.query(
         `SELECT
-            SUM(CASE WHEN lower(email_informado) = :login THEN 1 ELSE 0 END) AS falhas_login,
+            SUM(CASE WHEN (:id_usuario > 0 AND id_usuario = :id_usuario)
+                       OR lower(email_informado) = :login THEN 1 ELSE 0 END) AS falhas_login,
             SUM(CASE WHEN ip = :ip THEN 1 ELSE 0 END) AS falhas_ip
            FROM "condominio-bh".tb_sgw_log_acesso
           WHERE acao = 'LOGIN'
             AND sucesso = false
             AND data_evento > now() - CAST(:janela AS interval)
-            AND (lower(email_informado) = :login OR ip = :ip)`,
+            AND ((:id_usuario > 0 AND id_usuario = :id_usuario)
+                 OR lower(email_informado) = :login OR ip = :ip)`,
         {
           replacements: {
             login: String(login || "").toLowerCase(),
+            id_usuario: idRef,
             ip,
             janela: `${LOGIN_RATE_WINDOW_MINUTES} minutes`
           },
@@ -107,11 +97,10 @@ class Login {
       const falhasLogin = Number.parseInt(row.falhas_login, 10) || 0;
       // Sem IP efetivo (proxy que não informou o cliente): só o limite por login.
       const falhasIp = ip ? Number.parseInt(row.falhas_ip, 10) || 0 : 0;
-      return falhasLogin >= LOGIN_MAX_FALHAS_POR_LOGIN || falhasIp >= LOGIN_MAX_FALHAS_POR_IP;
+      return { bloqueado: falhasLogin >= LOGIN_MAX_FALHAS_POR_LOGIN || falhasIp >= LOGIN_MAX_FALHAS_POR_IP, erro: false };
     } catch (error) {
-      // Falha ao consultar o limite não bloqueia o login.
-      console.error("[login] Falha ao consultar rate limit:", error?.message);
-      return false;
+      console.error("[login] Falha ao consultar rate limit (login recusado):", error?.message);
+      return { bloqueado: true, erro: true };
     }
   }
 
@@ -238,9 +227,16 @@ class Login {
       } else if (ipPayload && ipPayload !== ipHeader) {
         mensagemFinal = `${mensagem || ""} [ip_informado=${ipPayload}]`.trim().slice(0, 1000);
       }
-      const dispositivo = dispositivoPayload || dispositivoInferido;
-      const sistemaOperacional = soPayload || soInferido;
-      const navegador = navegadorPayload || navegadorInferido;
+      // Dispositivo/SO/navegador/localização declarados só valem vindos do
+      // proxy confiável (back-cond.php). De cliente direto, são inferidos do
+      // User-Agent; o valor declarado vai só para a mensagem (ex.: "x").
+      const dispositivo = (viaProxy && dispositivoPayload) || dispositivoInferido;
+      const sistemaOperacional = (viaProxy && soPayload) || soInferido;
+      const navegador = (viaProxy && navegadorPayload) || navegadorInferido;
+      if (!viaProxy && (dispositivoPayload || soPayload || navegadorPayload || localizacaoPayload)) {
+        const declarado = [dispositivoPayload, soPayload, navegadorPayload].map((v) => v || "-").join("/");
+        mensagemFinal = `${mensagemFinal || ""} [cliente_declarado=${declarado}]`.trim().slice(0, 1000);
+      }
       const emailNormalizado = this._normalizarTextoOuNull(emailInformado, 255);
       const emailParaLog = emailNormalizado || loginPayload;
 
@@ -286,14 +282,15 @@ class Login {
             dispositivo,
             sistema_operacional: sistemaOperacional,
             navegador,
-            localizacao_aproximada: localizacaoPayload,
+            localizacao_aproximada: viaProxy ? localizacaoPayload : null,
             mensagem: mensagemFinal
           },
           type: QueryTypes.INSERT
         }
       );
     } catch (logError) {
-      // O log de acesso não deve impedir o fluxo de autenticação.
+      // O log de acesso não impede a autenticação, mas a falha fica visível.
+      console.error(`[login] Falha ao gravar log de acesso (${acao}):`, logError?.message);
     }
   }
 
@@ -364,20 +361,6 @@ class Login {
         });
       }
 
-      if (await this._excedeuLimiteFalhas(req, login)) {
-        await this._registrarLogAcesso(req, {
-          idUsuario: null,
-          idCondominio: null,
-          emailInformado: login,
-          sucesso: false,
-          mensagem: "Bloqueado por excesso de tentativas."
-        });
-        return res.status(429).send({
-          check: false,
-          message: "Muitas tentativas de login. Aguarde alguns minutos e tente novamente."
-        });
-      }
-
       const user = await postgres.query(
         `SELECT
             tu.id,
@@ -411,19 +394,44 @@ class Login {
                ON tcu.id_condominio = tu.id_condominio
               AND tcu.unidades_bloco = tu.apartamento
               AND tcu.bloco = NULLIF(tu.bloco, '')::int
-          WHERE (lower(tu.email) = :loginEmail OR tu.cpf = :loginCpf)
+          WHERE (lower(tu.email) = :loginEmail OR (:loginCpf <> '' AND tu.cpf = :loginCpf))
             AND tu.status in ('ativo','Ativo')
+          ORDER BY tu.id
           LIMIT 1`,
         {
           replacements: {
             loginEmail: login,
-            loginCpf: cpf
+            // Só um CPF completo identifica: e-mail sem dígitos não pode casar
+            // usuários com cpf vazio.
+            loginCpf: cpf.length === 11 ? cpf : ''
           },
           type: QueryTypes.SELECT
         }
       );
 
       const result = user && user.length > 0 ? user[0] : null;
+
+      const limite = await this._excedeuLimiteFalhas(req, login, result ? Number.parseInt(result.id, 10) : null);
+      if (limite.bloqueado) {
+        await this._registrarLogAcesso(req, {
+          idUsuario: result ? result.id : null,
+          idCondominio: result ? Number.parseInt(result.id_condominio, 10) || null : null,
+          emailInformado: login,
+          sucesso: false,
+          mensagem: limite.erro ? "Rate limit indisponível; login recusado." : "Bloqueado por excesso de tentativas."
+        });
+        if (limite.erro) {
+          return res.status(503).send({
+            check: false,
+            message: "Não foi possível validar o login agora. Tente novamente em instantes."
+          });
+        }
+        return res.status(429).send({
+          check: false,
+          message: "Muitas tentativas de login. Aguarde alguns minutos e tente novamente."
+        });
+      }
+
       if (!result) {
         await bcrypt.compare(password, DUMMY_BCRYPT_HASH);
         await this._registrarLogAcesso(req, {
@@ -455,10 +463,6 @@ class Login {
           check: false,
           message: "Usuário ou senha inválidos."
         });
-      }
-
-      if (!this._ehHashBcrypt(result.senha_hash)) {
-        await this._migrarSenhaLegada(result.id, password);
       }
 
       const tokenVersion = await lerTokenVersion(result.id);

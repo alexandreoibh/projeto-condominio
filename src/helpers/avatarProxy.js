@@ -44,25 +44,28 @@ const _resolveBlobUrlCandidata = (avatarPath) => {
   return joinUrl(blobStorageUrl, avatarPath);
 };
 
-// Com `idCondominio`, o arquivo precisa estar sob /condominios/<id>/ (formato
-// atual de upload) e nunca em áreas financeiras/boletos. Caminhos legados sem
-// segmento de condomínio continuam aceitos se não forem financeiros.
-const _caminhoPermitidoParaCondominio = (pathname, idCondominio) => {
-  if (idCondominio === undefined || idCondominio === null) {
-    return true;
-  }
-  const caminho = String(pathname || '');
-  if (/\/financeiro\//i.test(caminho) || /(^|\/)cobranca\//i.test(caminho)) {
-    return false;
-  }
-  const match = caminho.match(/\/condominios\/(\d+)\//);
-  if (!match) {
-    return true;
-  }
+// Áreas de imagem servidas pelos proxies. O caminho precisa ser o gerado pelo
+// upload do backend: <env>/condominios/<id>/<área>/.../imagem|avatar/vN.<ext>
+// com extensão de imagem. Incidente 22/11/2026: antes, qualquer caminho sem
+// segmento de condomínio era aceito e o conteúdo era servido com o
+// Content-Type do Blob (ex.: sh.php, xxe.svg apontados via path_avatar).
+const REGEX_AREA = {
+  avatar: /^\/[^/]+\/condominios\/(\d+)\/usuarios\/\d+\/avatar\/[^/]+\.(?:jpe?g|png|webp|gif|heic)$/i,
+  consumo: /^\/[^/]+\/condominios\/(\d+)\/consumo\/registros\/\d+\/imagem\/[^/]+\.(?:jpe?g|png|webp|gif|heic)$/i,
+  dashboard: /^\/[^/]+\/condominios\/(\d+)\/dashboard\/registros\/tipo\d+\/\d+\/imagem\/[^/]+\.(?:jpe?g|png|webp|gif|heic)$/i
+};
+
+const _caminhoPermitido = (pathname, idCondominio, area) => {
+  const regex = REGEX_AREA[area];
+  if (!regex) return false;
+  const match = String(pathname || '').match(regex);
+  if (!match) return false;
+  if (idCondominio === undefined || idCondominio === null) return false;
   return Number.parseInt(match[1], 10) === Number.parseInt(idCondominio, 10);
 };
 
-const resolveBlobUrl = (pathAvatar, { idCondominio = null } = {}) => {
+// `area` é obrigatória ('avatar' | 'consumo' | 'dashboard').
+const resolveBlobUrl = (pathAvatar, { idCondominio = null, area = null } = {}) => {
   const avatarPath = normalizeText(pathAvatar);
   if (!avatarPath) {
     return null;
@@ -70,10 +73,32 @@ const resolveBlobUrl = (pathAvatar, { idCondominio = null } = {}) => {
 
   const candidata = _resolveBlobUrlCandidata(avatarPath);
   const blob = candidata ? parseUrlBlob(candidata, { aceitarQualquerStoreVercel: true }) : null;
-  if (!blob || !_caminhoPermitidoParaCondominio(blob.pathname, idCondominio)) {
+  if (!blob || !_caminhoPermitido(blob.pathname, idCondominio, area)) {
     return null;
   }
   return blob.url.toString();
+};
+
+// Valor de path_avatar/origem_imagem/origem recebido no body: só aceita
+// vazio ou um caminho que o próprio proxy serviria para aquele condomínio.
+const caminhoImagemValidoParaGravar = (valor, { idCondominio, area }) => {
+  const texto = normalizeText(valor);
+  if (!texto) return true;
+  if (isAvatarProxyUrl(texto)) return true;
+  return resolveBlobUrl(texto, { idCondominio, area }) !== null;
+};
+
+const CONTENT_TYPE_IMAGEM = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif', heic: 'image/heic' };
+
+const contentTypeImagemSegura = (url) => {
+  let pathname = '';
+  try {
+    pathname = new URL(String(url)).pathname;
+  } catch (_) {
+    pathname = String(url || '');
+  }
+  const ext = (pathname.split('.').pop() || '').toLowerCase();
+  return CONTENT_TYPE_IMAGEM[ext] || 'application/octet-stream';
 };
 
 const isAvatarProxyUrl = (value) => {
@@ -194,5 +219,7 @@ module.exports = {
   buildDashboardImagemProxyUrl,
   getBlobReadToken,
   isAvatarProxyUrl,
-  resolveBlobUrl
+  resolveBlobUrl,
+  caminhoImagemValidoParaGravar,
+  contentTypeImagemSegura
 };

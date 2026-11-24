@@ -99,11 +99,52 @@ describe('Login', () => {
     expect(senhaErrada.body.check).toBe(false);
   });
 
-  test('bloqueia após excesso de falhas (rate limit persistente) → 429', async () => {
+  test('bloqueia após excesso de falhas (rate limit persistente) → 429, sem conferir a senha', async () => {
+    const hash = await bcrypt.hash('certa', 4);
     on(SQL_RATE, () => [{ falhas_login: 10, falhas_ip: 0 }]);
-    const res = await request(app).post('/api/login').send({ login: 'existe@teste.local', password: 'x' });
+    on(SQL_LOGIN, () => [{ id: 10, id_condominio: 1, email: 'existe@teste.local', senha_hash: hash, status: 'ativo', tipo_perfil_id: 2 }]);
+    const res = await request(app).post('/api/login').send({ login: 'existe@teste.local', password: 'certa' });
     expect(res.status).toBe(429);
-    expect(callsMatching(SQL_LOGIN)).toHaveLength(0);
+    expect(res.body.token).toBeUndefined();
+  });
+
+  test('rate limit por identidade normalizada: falhas contam pelo id_usuario (CPF e e-mail somam)', async () => {
+    on(SQL_RATE, (r) => [{ falhas_login: r.id_usuario === 10 ? 10 : 0, falhas_ip: 0 }]);
+    on(SQL_LOGIN, () => [{ id: 10, id_condominio: 1, email: 'existe@teste.local', cpf: '52998224725', senha_hash: '$2a$04$x', status: 'ativo', tipo_perfil_id: 2 }]);
+    const res = await request(app).post('/api/login').send({ login: '529.982.247-25', password: 'x' });
+    expect(res.status).toBe(429);
+    expect(callsMatching(SQL_RATE)[0].replacements.id_usuario).toBe(10);
+  });
+
+  test('falha ao consultar o rate limit recusa o login (fail closed) → 503', async () => {
+    const hash = await bcrypt.hash('certa', 4);
+    on(SQL_RATE, () => { throw new Error('db down'); });
+    on(SQL_LOGIN, () => [{ id: 10, id_condominio: 1, email: 'existe@teste.local', senha_hash: hash, status: 'ativo', tipo_perfil_id: 2 }]);
+    const res = await request(app).post('/api/login').send({ login: 'existe@teste.local', password: 'certa' });
+    expect(res.status).toBe(503);
+    expect(res.body.token).toBeUndefined();
+  });
+
+  test('e-mail sem dígitos não casa usuário com cpf vazio', async () => {
+    on(SQL_RATE, () => [{ falhas_login: 0, falhas_ip: 0 }]);
+    on(SQL_LOGIN, () => []);
+    await request(app).post('/api/login').send({ login: 'semdigitos@teste.local', password: 'x' });
+    expect(callsMatching(SQL_LOGIN)[0].replacements.loginCpf).toBe('');
+    expect(callsMatching(SQL_LOGIN)[0].sql).toContain(":loginCpf <> ''");
+  });
+
+  test('dispositivo/SO/navegador declarados por cliente direto não vão para as colunas', async () => {
+    on(SQL_RATE, () => [{ falhas_login: 0, falhas_ip: 0 }]);
+    on(SQL_LOGIN, () => []);
+    await request(app).post('/api/login')
+      .set('X-Forwarded-For', '203.0.113.9')
+      .set('User-Agent', 'Mozilla/5.0 (Windows NT 10.0) Chrome/120.0')
+      .send({ login: 'a@teste.local', password: 'x', dispositivo: 'x', sistema_operacional: 'x', navegador: 'x' });
+    const log = callsMatching(/INSERT INTO "condominio-bh"\.tb_sgw_log_acesso/)[0];
+    expect(log.replacements.dispositivo).toBe('desktop');
+    expect(log.replacements.sistema_operacional).toBe('Windows');
+    expect(log.replacements.navegador).toBe('Chrome');
+    expect(log.replacements.mensagem).toContain('cliente_declarado=x/x/x');
   });
 
   test('IP enviado pelo navegador não substitui o IP observado no log', async () => {
@@ -166,14 +207,29 @@ describe('Login', () => {
     });
   });
 
-  test('senha legada em texto puro é migrada para bcrypt e o JWT traz tv', async () => {
+  test('login com bcrypt válido devolve JWT com tv atual', async () => {
+    const hash = await bcrypt.hash('senha123', 4);
     on(SQL_RATE, () => [{ falhas_login: 0, falhas_ip: 0 }]);
-    on(SQL_LOGIN, () => [{ id: 10, id_condominio: 1, email: 'a@teste.local', senha_hash: 'senha123', status: 'ativo', tipo_perfil_id: 2 }]);
+    on(SQL_LOGIN, () => [{ id: 10, id_condominio: 1, email: 'a@teste.local', senha_hash: hash, status: 'ativo', tipo_perfil_id: 2 }]);
     fakeDb._fake.setUsuarioSessao(10, { token_version: 4 });
     const res = await request(app).post('/api/login').send({ login: 'a@teste.local', password: 'senha123' });
     expect(res.body.check).toBe(true);
     expect(jwt.decode(res.body.token).tv).toBe(4);
-    const migracao = callsMatching(/SET senha_hash = :senha_hash WHERE id = :id/)[0];
-    expect(migracao.replacements.senha_hash).toMatch(/^\$2[aby]\$/);
+  });
+
+  // Primeiro acesso / redefinição forçada: senha_hash NULL, vazio, marcador ou
+  // senha legada em texto puro nunca autenticam (o caminho é a recuperação).
+  test.each([
+    ['NULL', null, 'qualquer'],
+    ['vazio', '', ''],
+    ['marcador RESET', 'RESET', 'RESET'],
+    ['texto puro legado', 'senha123', 'senha123']
+  ])('senha_hash %s não autentica', async (_nome, senhaHash, senhaDigitada) => {
+    on(SQL_RATE, () => [{ falhas_login: 0, falhas_ip: 0 }]);
+    on(SQL_LOGIN, () => [{ id: 10, id_condominio: 1, email: 'a@teste.local', senha_hash: senhaHash, status: 'ativo', tipo_perfil_id: 2 }]);
+    const res = await request(app).post('/api/login').send({ login: 'a@teste.local', password: senhaDigitada || 'x' });
+    expect(res.body.check).toBe(false);
+    expect(res.body.token).toBeUndefined();
+    expect(callsMatching(/SET senha_hash = :senha_hash WHERE id = :id/)).toHaveLength(0);
   });
 });

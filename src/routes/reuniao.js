@@ -8,6 +8,7 @@ const { body, param, query } = require("express-validator");
 const ReuniaoController = require("../controllers/reuniaoController");
 const auth = require("../helpers/auth");
 const validate = require("../helpers/validate");
+const { exigirGestor } = require("../helpers/permissoes");
 
 const controller = new ReuniaoController();
 const uploadAnexo = multer({
@@ -69,6 +70,9 @@ router.get(
 router.post(
   "/",
   auth,
+  // Incidente 22/11/2026: escrita em reunião (convoca e notifica todos)
+  // era aberta a qualquer perfil.
+  exigirGestor,
   [
     body("titulo")
       .notEmpty()
@@ -118,6 +122,9 @@ router.post(
 router.put(
   "/:id(\\d+)",
   auth,
+  // Incidente 22/11/2026: escrita em reunião (convoca e notifica todos)
+  // era aberta a qualquer perfil.
+  exigirGestor,
   [
     param("id").isInt({ min: 1 }).withMessage("Parametro id invalido."),
     body("titulo")
@@ -146,6 +153,9 @@ router.put(
 router.patch(
   "/:id(\\d+)",
   auth,
+  // Incidente 22/11/2026: escrita em reunião (convoca e notifica todos)
+  // era aberta a qualquer perfil.
+  exigirGestor,
   [
     param("id").isInt({ min: 1 }).withMessage("Parametro id invalido."),
     body().custom((value, { req }) => {
@@ -172,6 +182,9 @@ router.patch(
 router.delete(
   "/:id(\\d+)",
   auth,
+  // Incidente 22/11/2026: escrita em reunião (convoca e notifica todos)
+  // era aberta a qualquer perfil.
+  exigirGestor,
   [param("id").isInt({ min: 1 }).withMessage("Parametro id invalido.")],
   validate,
   controller.cancelar.bind(controller)
@@ -229,6 +242,9 @@ router.get(
 router.post(
   "/:id(\\d+)/anexo",
   auth,
+  // Incidente 22/11/2026: escrita em reunião (convoca e notifica todos)
+  // era aberta a qualquer perfil.
+  exigirGestor,
   uploadAnexo.single("arquivo"),
   validarUploads('documento'),
   [
@@ -246,6 +262,9 @@ router.post(
 router.delete(
   "/:id(\\d+)/anexo/:id_anexo(\\d+)",
   auth,
+  // Incidente 22/11/2026: escrita em reunião (convoca e notifica todos)
+  // era aberta a qualquer perfil.
+  exigirGestor,
   [
     param("id").isInt({ min: 1 }).withMessage("Parametro id invalido."),
     param("id_anexo").isInt({ min: 1 }).withMessage("Parametro id_anexo invalido.")

@@ -2188,9 +2188,9 @@ class FinanceiroController {
         if (token) {
           try {
             const sessao = await verificarTokenDeSessao(token);
-            const reqSessao = { IdPerfil: sessao.IdPerfil };
+            const reqSessao = { IdPerfil: sessao.IdPerfil, idcliente: sessao.id, authTipo: 'sessao' };
             autorizado =
-              permissoes.ehAdmin(reqSessao) ||
+              permissoes.ehSuperAdmin(reqSessao) ||
               (permissoes.ehGestor(reqSessao) && this._toInt(sessao.id_condominio, null) === idCondominioArquivo);
           } catch (_) {
             autorizado = false;
@@ -2970,6 +2970,16 @@ class FinanceiroController {
       const anexosUrls = Array.isArray(req.body.anexos_urls)
         ? req.body.anexos_urls.map((valor) => String(valor).trim()).filter(Boolean)
         : [];
+      // Só assina boletos do próprio condomínio (o link assinado dispensa
+      // login e era aceito para qualquer condomínio).
+      const regexBoletoDoCondominio = new RegExp(`^/cobranca/boletos/condominio-${idCondominio}/[^/]+/[^/]+$`);
+      const anexoInvalido = anexosUrls.find((url) => {
+        const blob = parseUrlBlob(url);
+        return !blob || !regexBoletoDoCondominio.test(blob.pathname);
+      });
+      if (anexoInvalido) {
+        return res.status(422).json({ message: 'anexos_urls deve conter apenas boletos deste condomínio.', error_code: 'anexo_invalido' });
+      }
       const observacao = this._normalizarTextoOuNull(req.body.observacao);
 
       const idsConsulta = [idReceita, ...outrasPendenciasIds];

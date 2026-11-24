@@ -7,6 +7,8 @@ const postgres = require("../database/postgres");
 const pushNotificationService = require("../service/pushNotificationService");
 const { despacharEmail } = require("../service/emailDispatchService");
 const { waitUntil } = require("@vercel/functions");
+const { validarUrlBlobDoCondominio, buscarBlobPrivado, enviarArquivoBlob } = require("../helpers/blobUrl");
+const { registrarAuditoria } = require("../helpers/auditoria");
 
 const TIPOS_REUNIAO = new Set(["ordinaria", "extraordinaria"]);
 const STATUS_REUNIAO = new Set(["CRIADA", "CONVOCADA", "EM_ANDAMENTO", "FINALIZADA", "CANCELADA"]);
@@ -324,6 +326,7 @@ class ReuniaoController {
         })());
       }
 
+      await registrarAuditoria({ req, acao: "reuniao_criada", entidade: "reuniao", entidadeId: idReuniao, detalhes: { titulo, enviar_email: enviarEmail, notificar_moradores: notificarMoradores } });
       return res.status(201).json({ id: idReuniao, message: "Reuniao criada com sucesso." });
     } catch (error) {
       return res.status(500).json({ message: "Erro ao criar reuniao.", detail: error.message });
@@ -379,6 +382,7 @@ class ReuniaoController {
       );
 
       if (affectedRows === 0) return res.status(404).json({ message: "Reuniao nao encontrada." });
+      await registrarAuditoria({ req, acao: "reuniao_editada", entidade: "reuniao", entidadeId: req.params.id, detalhes: { campos: Object.keys(req.body || {}).slice(0, 30) } });
       return res.status(200).json({ message: "Reuniao atualizada com sucesso." });
     } catch (error) {
       return res.status(500).json({ message: "Erro ao atualizar reuniao.", detail: error.message });
@@ -434,6 +438,7 @@ class ReuniaoController {
       );
 
       if (affectedRows === 0) return res.status(404).json({ message: "Reuniao nao encontrada." });
+      await registrarAuditoria({ req, acao: "reuniao_editada", entidade: "reuniao", entidadeId: req.params.id, detalhes: { campos: Object.keys(req.body || {}).slice(0, 30) } });
       return res.status(200).json({ message: "Reuniao atualizada com sucesso." });
     } catch (error) {
       return res.status(500).json({ message: "Erro ao atualizar reuniao.", detail: error.message });
@@ -456,6 +461,7 @@ class ReuniaoController {
       );
 
       if (affectedRows === 0) return res.status(404).json({ message: "Reuniao nao encontrada ou ja cancelada." });
+      await registrarAuditoria({ req, acao: "reuniao_cancelada", entidade: "reuniao", entidadeId: id });
       return res.status(200).json({ message: "Reuniao cancelada com sucesso." });
     } catch (error) {
       return res.status(500).json({ message: "Erro ao cancelar reuniao.", detail: error.message });
@@ -684,6 +690,7 @@ class ReuniaoController {
         }
       );
 
+      await registrarAuditoria({ req, acao: "reuniao_anexo_enviado", entidade: "reuniao", entidadeId: idReuniao, detalhes: { tipo, extensao: ext, tamanho: arquivo.size } });
       return res.status(201).json(docRows[0]);
     } catch (error) {
       return res.status(500).json({ message: "Falha ao fazer upload do anexo.", detail: error.message });
@@ -724,6 +731,7 @@ class ReuniaoController {
         { replacements: { id: idAnexo } }
       );
 
+      await registrarAuditoria({ req, acao: "reuniao_anexo_removido", entidade: "reuniao_anexo", entidadeId: idAnexo });
       return res.status(200).json({ message: "Anexo removido." });
     } catch (error) {
       return res.status(500).json({ message: "Falha ao remover anexo.", detail: error.message });
@@ -740,36 +748,42 @@ class ReuniaoController {
       const idCondominio = this._toInt(req.id_condominio, null);
       if (!idCondominio) return res.status(403).json({ message: "Token sem id_condominio." });
 
+      // Incidente 22/11/2026: url.startsWith(BLOB_STORAGE_URL) aceitava
+      // "<store>...com.atacante.tld" e "<store>...com@atacante.tld", e o token
+      // do Blob era enviado a esse host. Agora: host exato (parseUrlBlob),
+      // caminho do condomínio do token e anexo cadastrado numa reunião dele.
       const url = String(req.query.url || "");
-      const baseBlobUrl = process.env.BLOB_STORAGE_URL || "";
-
-      if (!url || !baseBlobUrl || !url.startsWith(baseBlobUrl) || !url.includes("/reunioes/")) {
+      const blob = validarUrlBlobDoCondominio(url, {
+        regexPath: /^\/[^/]+\/condominios\/\d+\/reunioes\/\d+\/[^/]+$/,
+        idCondominio
+      });
+      if (!blob) {
         return res.status(400).json({ message: "Parametro url invalido." });
       }
 
-      const idReuniaoNaUrl = this._extrairIdReuniaoDoPath(url);
-      const [reuniao] = await postgres.query(
-        `SELECT id FROM "condominio-bh".tb_reuniao WHERE id = :id AND id_condominio = :id_condominio LIMIT 1`,
-        { replacements: { id: idReuniaoNaUrl, id_condominio: idCondominio }, type: QueryTypes.SELECT }
+      const idReuniaoNaUrl = this._extrairIdReuniaoDoPath(blob.pathname);
+      const [anexo] = await postgres.query(
+        `SELECT a.id
+           FROM "condominio-bh".tb_reuniao_anexo a
+           JOIN "condominio-bh".tb_reuniao r ON r.id = a.id_reuniao
+          WHERE a.url = :url AND r.id = :id_reuniao AND r.id_condominio = :id_condominio
+          LIMIT 1`,
+        {
+          replacements: { url, id_reuniao: idReuniaoNaUrl, id_condominio: idCondominio },
+          type: QueryTypes.SELECT
+        }
       );
-      if (!reuniao) {
+      if (!anexo) {
         return res.status(403).json({ message: "Sem permissao para baixar este anexo." });
       }
 
-      const blobResponse = await fetch(url, {
-        headers: { Authorization: `Bearer ${process.env.BLOB_READ_WRITE_TOKEN}` }
-      });
-
+      const blobResponse = await buscarBlobPrivado(blob);
       if (!blobResponse.ok) {
-        return res.status(blobResponse.status).json({ message: "Falha ao obter o anexo." });
+        return res.status(blobResponse.status === 404 ? 404 : 502).json({ message: "Falha ao obter o anexo." });
       }
 
-      const nomeArquivo = url.split("/").pop() || "anexo";
       const buffer = Buffer.from(await blobResponse.arrayBuffer());
-
-      res.setHeader("Content-Type", blobResponse.headers.get("content-type") || "application/octet-stream");
-      res.setHeader("Content-Disposition", `inline; filename="${nomeArquivo}"`);
-      return res.status(200).send(buffer);
+      return enviarArquivoBlob(res, buffer, blob.pathname, { nomePadrao: "anexo" });
     } catch (error) {
       return res.status(500).json({ message: "Falha ao baixar anexo.", detail: error.message });
     }
