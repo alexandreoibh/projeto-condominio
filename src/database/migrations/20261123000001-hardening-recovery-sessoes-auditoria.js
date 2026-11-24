@@ -23,7 +23,8 @@ async function _addColunaSeNaoExiste(queryInterface, tabela, coluna, definicao) 
         SELECT 1 FROM information_schema.columns
          WHERE table_schema = 'condominio-bh' AND table_name = '${tabela}' AND column_name = '${coluna}'
       ) THEN
-        ALTER TABLE "condominio-bh"."${tabela}" ADD COLUMN ${coluna} ${definicao};
+        
+        ABLE "condominio-bh"."${tabela}" ADD COLUMN ${coluna} ${definicao};
       END IF;
     END $$;
   `);
