@@ -18,6 +18,24 @@ const { normalizarCpf, cpfValido } = require('../helpers/cpf');
 const { getInviteTokenSecret } = require('../helpers/segredos');
 const { incrementarTokenVersion, invalidarCacheSessao } = require('../helpers/sessao');
 const { registrarAuditoria, ipDaRequisicao } = require('../helpers/auditoria');
+const { resolverIpRecuperacao } = require('../helpers/ipRecuperacao');
+const {
+  consumir: consumirRateLimit,
+  devolver: devolverRateLimit,
+  cooldown: cooldownRateLimit,
+  limparRateLimit
+} = require('../helpers/rateLimit');
+const {
+  normalizarLogin: normalizarLoginRecuperacao,
+  hmacLogin: hmacLoginRecuperacao,
+  hashCodigo: hashCodigoRecuperacao,
+  conferirCodigo: conferirCodigoRecuperacao,
+  emitirIdentificador: emitirIdentificadorRecuperacao,
+  abrirIdentificador: abrirIdentificadorRecuperacao,
+  ehIdentificador: ehIdentificadorRecuperacao,
+  validarNovaSenha: validarNovaSenhaRecuperacao,
+  exigirSegredo: exigirSegredoRecuperacao
+} = require('../helpers/recuperacaoCripto');
 const permissoes = require('../helpers/permissoes');
 
 const INVITE_TOKEN_SECRET = getInviteTokenSecret();
@@ -34,15 +52,7 @@ const RECOVERY_OTP_TTL_MS = 10 * 60 * 1000; // 10 minutos
 const RECOVERY_RESET_TOKEN_TTL_MS = 15 * 60 * 1000; // reset token de uso único
 const RECOVERY_RESET_TOKEN_TTL_LABEL = '15m';
 const RECOVERY_MAX_TENTATIVAS = 5; // tentativas de código por desafio
-const RECOVERY_MAX_POR_USUARIO = 3; // desafios por usuário na janela abaixo
-const RECOVERY_JANELA_USUARIO_MIN = 60;
-const RECOVERY_MAX_POR_IP = 10; // desafios por IP na janela abaixo
-const RECOVERY_JANELA_IP_MIN = 15;
-// Verificação de código: além das 5 tentativas por desafio, limite por IP e
-// global (contados em tb_auditoria_seguranca, acao 'recuperacao_codigo_falho').
-const RECOVERY_VERIFY_JANELA_MIN = 15;
-const RECOVERY_VERIFY_MAX_POR_IP = 20;
-const RECOVERY_VERIFY_MAX_GLOBAL = 300;
+// Limites de rate limit da recuperação: CondominioController.LIMITES_RECUPERACAO.
 // Flows de token assinados com INVITE_TOKEN_SECRET que NUNCA valem como
 // convite (recuperação de senha antiga).
 const INVITE_FLOWS_PROIBIDOS = ['password_recovery'];
@@ -8741,31 +8751,53 @@ class CondominioController {
   // ---------------------------------------------------------------------------
   // Recuperação de senha — fluxo único (app React e frontend PHP)
   //
-  // 1. request/lookup: gera um código de 6 dígitos (bcrypt em
-  //    tb_recovery_tokens) e envia por e-mail. A resposta é sempre genérica e
-  //    NUNCA contém token.
-  // 2. verify/verify-code: confere o código (máx. 5 tentativas) e devolve um
-  //    reset token opaco de uso único (15 min). Só o sha256 é gravado.
-  // 3. reset: consome o reset token de forma atômica, troca a senha e revoga
-  //    todas as sessões do usuário (token_version).
+  // O backend + PostgreSQL são a ÚNICA autoridade de segurança deste fluxo
+  // (o rate limit local do PHP deixa de ser necessário). Hardening 25/11/2026:
+  //  - rate limit persistente e atômico (helpers/rateLimit.js), fail closed (503);
+  //  - limites por IP, login normalizado (HMAC), conta (id_usuario), desafio e
+  //    global; cooldown de 60 s entre envios para a mesma conta;
+  //  - IP real: proxy PHP autenticado por X-Proxy-Key (helpers/ipRecuperacao.js);
+  //  - resposta idêntica exista ou não a conta (identificador opaco rh1);
+  //  - código guardado como HMAC vinculado ao desafio (helpers/recuperacaoCripto.js);
+  //  - reset: consumo do token + troca de senha + token_version na mesma transação.
   // ---------------------------------------------------------------------------
 
-  async _buscarUsuarioParaRecuperacao(loginRaw) {
-    const login = String(loginRaw || '').trim();
+  static get LIMITES_RECUPERACAO() {
+    return {
+      HORA: 3600,
+      SOLICITACAO_POR_IP: 10,
+      SOLICITACAO_POR_LOGIN: 3,
+      SOLICITACAO_POR_CONTA: 3,
+      SOLICITACAO_GLOBAL: 500,
+      COOLDOWN_ENVIO_SEG: 60,
+      FALHAS_VERIFY_POR_IP: 30,
+      FALHAS_VERIFY_POR_LOGIN: 10,
+      FALHAS_VERIFY_POR_CONTA: 10,
+      VERIFY_GLOBAL: 1000,
+      RESET_POR_IP: 20,
+      RESET_GLOBAL: 500
+    };
+  }
+
+  async _buscarUsuarioParaRecuperacao(loginNormalizado) {
+    const login = String(loginNormalizado || '').trim();
     if (!login) {
       return null;
     }
-    const loginEmail = login.toLowerCase();
-    const loginCpf = login.replace(/\D/g, '');
+    const loginEmail = login.includes('@') ? login.toLowerCase() : '';
+    const loginCpf = /^\d{11}$/.test(login) ? login : '';
+    if (!loginEmail && !loginCpf) {
+      return null;
+    }
 
     const [usuario] = await postgres.query(
       `SELECT tu.id, tu.id_condominio, tu.nome, tu.sobrenome, tu.email, tu.status,
               tc.ativo AS condominio_ativo
          FROM "condominio-bh"."tb-usuarios" tu
          LEFT JOIN "condominio-bh"."tb-condominios" tc ON tc.id::text = tu.id_condominio::text
-        WHERE (lower(tu.email) = :email OR (:cpf <> '' AND tu.cpf = :cpf))
+        WHERE ((:email <> '' AND lower(tu.email) = :email) OR (:cpf <> '' AND tu.cpf = :cpf))
         ORDER BY tu.id DESC LIMIT 1`,
-      { replacements: { email: loginEmail, cpf: loginCpf.length === 11 ? loginCpf : '' }, type: QueryTypes.SELECT }
+      { replacements: { email: loginEmail, cpf: loginCpf }, type: QueryTypes.SELECT }
     );
 
     return usuario || null;
@@ -8780,72 +8812,120 @@ class CondominioController {
     );
   }
 
-  async _recuperacaoExcedeuLimite({ idUsuario, ip }) {
-    const [row] = await postgres.query(
-      `SELECT
-          SUM(CASE WHEN id_usuario = :id_usuario AND created_at > NOW() - CAST(:janela_usuario AS interval) THEN 1 ELSE 0 END) AS por_usuario,
-          SUM(CASE WHEN request_ip = :ip AND created_at > NOW() - CAST(:janela_ip AS interval) THEN 1 ELSE 0 END) AS por_ip
-         FROM "condominio-bh".tb_recovery_tokens
-        WHERE created_at > NOW() - CAST(:janela_usuario AS interval)
-          AND (id_usuario = :id_usuario OR request_ip = :ip)`,
-      {
-        replacements: {
-          id_usuario: idUsuario,
-          ip: ip || '',
-          janela_usuario: `${RECOVERY_JANELA_USUARIO_MIN} minutes`,
-          janela_ip: `${RECOVERY_JANELA_IP_MIN} minutes`
-        },
-        type: QueryTypes.SELECT
-      }
-    );
-    const porUsuario = Number.parseInt(row?.por_usuario, 10) || 0;
-    // Sem IP do cliente (proxy que não informou X-Client-IP): só o limite por usuário.
-    const porIp = ip ? Number.parseInt(row?.por_ip, 10) || 0 : 0;
-    return porUsuario >= RECOVERY_MAX_POR_USUARIO || porIp >= RECOVERY_MAX_POR_IP;
+  // Tempo mínimo de resposta (com variação) para reduzir a diferença de tempo
+  // entre conta existente e inexistente. 0 desliga (testes).
+  async _aguardarTempoMinimoRecuperacao(inicio) {
+    const minimo = Number.parseInt(process.env.RECOVERY_TEMPO_MINIMO_MS ?? '400', 10);
+    if (!Number.isFinite(minimo) || minimo <= 0) return;
+    const alvo = minimo + crypto.randomInt(0, 100);
+    const restante = alvo - (Date.now() - inicio);
+    if (restante > 0) {
+      await new Promise((resolve) => setTimeout(resolve, restante));
+    }
   }
 
-  // Cria um novo desafio (código por e-mail). Os desafios pendentes anteriores
-  // são encerrados (consumed_at), não apagados, para manter a contagem do
-  // rate limit e a trilha de investigação.
+  // Limpeza oportunista da tb_rate_limit (retenção de 48 h, lotes pequenos).
+  _limparRateLimitOportunista() {
+    if (crypto.randomInt(0, 100) >= 2) return;
+    waitUntil(limparRateLimit().catch((error) => {
+      console.error('[recovery] Falha na limpeza do rate limit:', error?.message);
+    }));
+  }
+
+  // Responde erro de infraestrutura do fluxo (rate limit ou segredo ausente):
+  // 503, sem prosseguir. Retorna true se tratou o erro.
+  _respostaRecuperacaoIndisponivel(req, res, error, etapa) {
+    if (!error || error.status !== 503) return false;
+    console.error(`[recovery/${etapa}] Indisponível (fail closed):`, error.causa || error.message);
+    waitUntil(registrarAuditoria({
+      req,
+      acao: 'recuperacao_rate_limit_indisponivel',
+      entidade: 'recuperacao',
+      detalhes: { etapa }
+    }));
+    res.status(503).json({
+      success: false,
+      code: 'SERVICE_UNAVAILABLE',
+      message: 'Recuperação de senha temporariamente indisponível. Tente novamente em instantes.'
+    });
+    return true;
+  }
+
+  _respostaRateLimitRecuperacao(req, res, etapa, limite) {
+    waitUntil(registrarAuditoria({
+      req,
+      acao: 'recuperacao_bloqueada_rate_limit',
+      entidade: 'recuperacao',
+      detalhes: { etapa, limite }
+    }));
+    return res.status(429).json({
+      success: false,
+      code: 'MAX_ATTEMPTS',
+      message: 'Muitas tentativas. Aguarde alguns minutos e tente novamente.'
+    });
+  }
+
+  // Consome várias reservas; devolve a primeira que estourou (ou null).
+  async _consumirLimites(lista) {
+    const reservas = [];
+    for (const { chave, limite, janela, nome } of lista) {
+      const reserva = await consumirRateLimit(chave, limite, janela);
+      reservas.push(reserva);
+      if (!reserva.permitido) {
+        return { estourou: nome, reservas };
+      }
+    }
+    return { estourou: null, reservas };
+  }
+
+  // Cria um novo desafio (código por e-mail). Emissão atômica por usuário:
+  // advisory lock + encerramento dos pendentes + INSERT na mesma transação.
   async _criarDesafioRecuperacao({ usuario, ip }) {
     const idUsuario = this._toInt(usuario.id, null);
     const idCondominio = this._toInt(usuario.id_condominio, null);
 
-    if (await this._recuperacaoExcedeuLimite({ idUsuario, ip })) {
-      console.warn(`[recovery] Limite de solicitações atingido id_usuario=${idUsuario} ip=${ip || '-'}`);
-      return { criado: false, motivo: 'rate_limit' };
-    }
-
     const otpCode = String(crypto.randomInt(100000, 1000000));
-    const codeHash = await bcrypt.hash(otpCode, 10);
+    const codeHash = hashCodigoRecuperacao(idUsuario, otpCode);
     const expiresAt = new Date(Date.now() + RECOVERY_OTP_TTL_MS);
 
-    await postgres.query(
-      `UPDATE "condominio-bh".tb_recovery_tokens
-          SET consumed_at = NOW(), updated_at = NOW()
-        WHERE id_usuario = :id_usuario AND consumed_at IS NULL`,
-      { replacements: { id_usuario: idUsuario }, type: QueryTypes.UPDATE }
-    );
-
-    await postgres.query(
-      `INSERT INTO "condominio-bh".tb_recovery_tokens
-         (id_usuario, id_condominio, code_hash, invite_token, expires_at, attempts, request_ip, created_at, updated_at)
-       VALUES (:id_usuario, :id_condominio, :code_hash, NULL, :expires_at, 0, :request_ip, NOW(), NOW())`,
-      {
-        replacements: {
-          id_usuario: idUsuario,
-          id_condominio: idCondominio,
-          code_hash: codeHash,
-          expires_at: expiresAt,
-          request_ip: ip || null
-        },
-        type: QueryTypes.INSERT
-      }
-    );
+    const transaction = await postgres.transaction();
+    try {
+      await postgres.query(
+        `SELECT pg_advisory_xact_lock(hashtext(:chave_lock))`,
+        { replacements: { chave_lock: `recovery:${idUsuario}` }, type: QueryTypes.SELECT, transaction }
+      );
+      await postgres.query(
+        `UPDATE "condominio-bh".tb_recovery_tokens
+            SET consumed_at = NOW(), updated_at = NOW()
+          WHERE id_usuario = :id_usuario AND consumed_at IS NULL`,
+        { replacements: { id_usuario: idUsuario }, type: QueryTypes.UPDATE, transaction }
+      );
+      await postgres.query(
+        `INSERT INTO "condominio-bh".tb_recovery_tokens
+           (id_usuario, id_condominio, code_hash, invite_token, expires_at, attempts, request_ip, created_at, updated_at)
+         VALUES (:id_usuario, :id_condominio, :code_hash, NULL, :expires_at, 0, :request_ip, NOW(), NOW())`,
+        {
+          replacements: {
+            id_usuario: idUsuario,
+            id_condominio: idCondominio,
+            code_hash: codeHash,
+            expires_at: expiresAt,
+            request_ip: ip || null
+          },
+          type: QueryTypes.INSERT,
+          transaction
+        }
+      );
+      await transaction.commit();
+    } catch (error) {
+      try { await transaction.rollback(); } catch (_) { /* noop */ }
+      throw error;
+    }
 
     const emailUsuario = this._normalizarEmailOuNull(usuario.email);
     const nomeCompleto = this._normalizarNomeCapitalizado(`${usuario.nome || ''} ${usuario.sobrenome || ''}`.trim()) || null;
 
+    // Destinatário: SEMPRE o e-mail gravado no banco.
     waitUntil((async () => {
       try {
         await despacharEmail({
@@ -8860,56 +8940,143 @@ class CondominioController {
       }
     })());
 
-    await registrarAuditoria({
+    waitUntil(registrarAuditoria({
       acao: 'recuperacao_solicitada',
       entidade: 'usuario',
       entidadeId: idUsuario,
       idUsuarioAtor: idUsuario,
       idCondominio,
       detalhes: { ip: ip || null }
-    });
+    }));
 
     return { criado: true, idUsuario, expiresAt };
   }
 
-  // Confere o código do desafio pendente mais recente do usuário. Em caso de
-  // sucesso, encerra o desafio e emite o reset token de uso único.
-  // Fail closed: se a contagem falhar, a exceção sobe e o handler responde 500.
-  async _verificacaoCodigoExcedeuLimite(req) {
-    const ip = ipDaRequisicao(req);
-    const [row] = await postgres.query(
-      `SELECT
-          COUNT(*) AS total,
-          SUM(CASE WHEN :ip <> '' AND ip = :ip THEN 1 ELSE 0 END) AS por_ip
-         FROM "condominio-bh".tb_auditoria_seguranca
-        WHERE acao = 'recuperacao_codigo_falho'
-          AND created_at > NOW() - CAST(:janela AS interval)`,
-      {
-        replacements: { ip: ip || '', janela: `${RECOVERY_VERIFY_JANELA_MIN} minutes` },
-        type: QueryTypes.SELECT
-      }
-    );
-    const total = Number.parseInt(row?.total, 10) || 0;
-    const porIp = ip ? Number.parseInt(row?.por_ip, 10) || 0 : 0;
-    return porIp >= RECOVERY_VERIFY_MAX_POR_IP || total >= RECOVERY_VERIFY_MAX_GLOBAL;
-  }
+  // Etapa 1 (lookup PHP e request do app). Mesmo trabalho e mesma resposta
+  // para conta existente ou não. Retorna { status, corpo } ou lança 503.
+  async _processarSolicitacaoRecuperacao(req, loginBruto) {
+    const L = CondominioController.LIMITES_RECUPERACAO;
+    const ipInfo = resolverIpRecuperacao(req);
+    if (!ipInfo.ok) {
+      return { status: ipInfo.status, corpo: { success: false, code: ipInfo.code, message: ipInfo.message } };
+    }
+    exigirSegredoRecuperacao();
+    this._limparRateLimitOportunista();
 
-  async _validarCodigoEEmitirResetToken({ idUsuario, code, req = null }) {
-    if (req && (await this._verificacaoCodigoExcedeuLimite(req))) {
-      console.warn(`[recovery] Limite de verificação de código atingido ip=${ipDaRequisicao(req) || '-'}`);
-      return { ok: false, status: 429, code: 'MAX_ATTEMPTS', message: 'Muitas tentativas. Aguarde alguns minutos e tente novamente.' };
+    const login = normalizarLoginRecuperacao(loginBruto);
+    const chaveLogin = hmacLoginRecuperacao(login);
+
+    const geral = await this._consumirLimites([
+      { nome: 'ip', chave: `rec:req:ip:${ipInfo.ip}`, limite: L.SOLICITACAO_POR_IP, janela: L.HORA },
+      { nome: 'global', chave: 'rec:req:global', limite: L.SOLICITACAO_GLOBAL, janela: L.HORA }
+    ]);
+    if (geral.estourou) {
+      return { status: 429, rateLimit: geral.estourou };
     }
 
-    const resultado = await this._validarCodigoEEmitirResetTokenInterno({ idUsuario, code });
-    await registrarAuditoria({
+    // Limites por login: estourados, a resposta continua genérica (não revela nada).
+    const porLogin = await this._consumirLimites([
+      { nome: 'login', chave: `rec:req:login:${chaveLogin}`, limite: L.SOLICITACAO_POR_LOGIN, janela: L.HORA }
+    ]);
+    let enviar = !porLogin.estourou && (await cooldownRateLimit(`rec:cd:login:${chaveLogin}`, L.COOLDOWN_ENVIO_SEG)).permitido;
+
+    const usuario = await this._buscarUsuarioParaRecuperacao(login);
+    if (enviar && this._usuarioAptoParaRecuperacao(usuario)) {
+      const idUsuario = this._toInt(usuario.id, null);
+      // Limite por conta: e-mail e CPF da mesma conta somam aqui.
+      const porConta = await this._consumirLimites([
+        { nome: 'conta', chave: `rec:req:user:${idUsuario}`, limite: L.SOLICITACAO_POR_CONTA, janela: L.HORA }
+      ]);
+      enviar = !porConta.estourou && (await cooldownRateLimit(`rec:cd:user:${idUsuario}`, L.COOLDOWN_ENVIO_SEG)).permitido;
+      if (enviar) {
+        await this._criarDesafioRecuperacao({ usuario, ip: ipInfo.ip });
+      }
+    }
+
+    return {
+      status: 200,
+      corpo: {
+        success: true,
+        message: 'Se houver uma conta elegível, você receberá um código por e-mail.',
+        user_id: emitirIdentificadorRecuperacao(login),
+        expires_at: new Date(Date.now() + RECOVERY_OTP_TTL_MS).toISOString()
+      }
+    };
+  }
+
+  // Resolve a conta a partir de user_id (rh1 opaco ou id numérico legado),
+  // login ou email. Retorna { idUsuario|null, loginNormalizado|null }.
+  async _resolverContaRecuperacao(req) {
+    const userId = req.body?.user_id;
+    if (ehIdentificadorRecuperacao(userId)) {
+      const login = abrirIdentificadorRecuperacao(userId);
+      if (!login) return { idUsuario: null, loginNormalizado: null };
+      const usuario = await this._buscarUsuarioParaRecuperacao(login);
+      return { idUsuario: usuario ? this._toInt(usuario.id, null) : null, loginNormalizado: login };
+    }
+    const idNumerico = this._toInt(userId, null);
+    if (idNumerico && idNumerico > 0) {
+      // Compatibilidade: PHP após verify-code e versões antigas do app.
+      return { idUsuario: idNumerico, loginNormalizado: null };
+    }
+    const bruto = req.body?.login ?? req.body?.email;
+    if (!bruto) return { idUsuario: null, loginNormalizado: null };
+    const login = normalizarLoginRecuperacao(bruto);
+    const usuario = await this._buscarUsuarioParaRecuperacao(login);
+    return { idUsuario: usuario ? this._toInt(usuario.id, null) : null, loginNormalizado: login };
+  }
+
+  // Etapa 2: confere o código. Toda tentativa reserva 1 "falha" em cada limite
+  // (IP, login, conta e global); no acerto as reservas são devolvidas na
+  // mesma janela. Falhas de qualquer natureza respondem igual (INVALID_CODE).
+  async _processarVerificacaoRecuperacao(req, conta, code) {
+    const L = CondominioController.LIMITES_RECUPERACAO;
+    const ipInfo = resolverIpRecuperacao(req);
+    if (!ipInfo.ok) {
+      return { ok: false, status: ipInfo.status, code: ipInfo.code, message: ipInfo.message };
+    }
+    exigirSegredoRecuperacao();
+    this._limparRateLimitOportunista();
+
+    const limites = [
+      { nome: 'ip', chave: `rec:vf:ip:${ipInfo.ip}`, limite: L.FALHAS_VERIFY_POR_IP, janela: L.HORA },
+      { nome: 'global', chave: 'rec:vf:global', limite: L.VERIFY_GLOBAL, janela: L.HORA }
+    ];
+    if (conta.loginNormalizado) {
+      limites.push({ nome: 'login', chave: `rec:vf:login:${hmacLoginRecuperacao(conta.loginNormalizado)}`, limite: L.FALHAS_VERIFY_POR_LOGIN, janela: L.HORA });
+    }
+    if (conta.idUsuario) {
+      limites.push({ nome: 'conta', chave: `rec:vf:user:${conta.idUsuario}`, limite: L.FALHAS_VERIFY_POR_CONTA, janela: L.HORA });
+    }
+
+    const consumo = await this._consumirLimites(limites);
+    if (consumo.estourou) {
+      return { ok: false, rateLimit: consumo.estourou };
+    }
+
+    const invalido = { ok: false, status: 401, code: 'INVALID_CODE', message: 'Código inválido ou expirado. Solicite um novo código.' };
+    if (!conta.idUsuario) {
+      return invalido;
+    }
+
+    const resultado = await this._validarCodigoEEmitirResetTokenInterno({ idUsuario: conta.idUsuario, code });
+    waitUntil(registrarAuditoria({
       req,
       acao: resultado.ok ? 'recuperacao_codigo_validado' : 'recuperacao_codigo_falho',
       entidade: 'usuario',
-      entidadeId: idUsuario,
-      idUsuarioAtor: idUsuario,
-      idCondominio: null,
-      detalhes: resultado.ok ? null : { motivo: resultado.code }
-    });
+      entidadeId: conta.idUsuario,
+      idUsuarioAtor: conta.idUsuario,
+      detalhes: resultado.ok ? { ip: ipInfo.ip } : { motivo: resultado.code, ip: ipInfo.ip }
+    }));
+
+    if (!resultado.ok) {
+      return invalido;
+    }
+
+    // Acerto: as reservas de "falha" desta tentativa são devolvidas.
+    for (const reserva of consumo.reservas) {
+      await devolverRateLimit(reserva);
+    }
     return resultado;
   }
 
@@ -8924,14 +9091,13 @@ class CondominioController {
     );
 
     if (!record) {
-      return { ok: false, status: 401, code: 'INVALID_CODE', message: 'Código inválido ou expirado.' };
+      return { ok: false, code: 'NO_CHALLENGE' };
     }
-
     if (new Date(record.expires_at) < new Date()) {
-      return { ok: false, status: 401, code: 'CODE_EXPIRED', message: 'Código expirado. Solicite um novo.' };
+      return { ok: false, code: 'CODE_EXPIRED' };
     }
 
-    // Incremento atômico: duas requisições paralelas não ganham tentativas extras.
+    // Incremento atômico: requisições paralelas não ganham tentativas extras.
     const [incrementado] = await postgres.query(
       `UPDATE "condominio-bh".tb_recovery_tokens
           SET attempts = attempts + 1, updated_at = NOW()
@@ -8939,19 +9105,20 @@ class CondominioController {
         RETURNING id`,
       { replacements: { id: record.id, max: RECOVERY_MAX_TENTATIVAS }, type: QueryTypes.SELECT }
     );
-
     if (!incrementado) {
-      return { ok: false, status: 429, code: 'MAX_ATTEMPTS', message: 'Limite de tentativas atingido. Solicite um novo código.' };
+      return { ok: false, code: 'MAX_ATTEMPTS' };
     }
 
-    const codeValido = await bcrypt.compare(String(code || ''), record.code_hash);
+    const codeValido = await conferirCodigoRecuperacao(record.code_hash, idUsuario, String(code || ''));
     if (!codeValido) {
-      return { ok: false, status: 401, code: 'INVALID_CODE', message: 'Código incorreto.' };
+      return { ok: false, code: 'WRONG_CODE' };
     }
 
     const resetToken = crypto.randomBytes(32).toString('base64url');
     const resetTokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
 
+    // Consumo do desafio + emissão do reset token numa única instrução: com
+    // verifies paralelos do código certo, só um emite o token.
     const [emitido] = await postgres.query(
       `UPDATE "condominio-bh".tb_recovery_tokens
           SET consumed_at = NOW(),
@@ -8969,9 +9136,8 @@ class CondominioController {
         type: QueryTypes.SELECT
       }
     );
-
     if (!emitido) {
-      return { ok: false, status: 401, code: 'INVALID_CODE', message: 'Código inválido ou expirado.' };
+      return { ok: false, code: 'ALREADY_USED' };
     }
 
     return { ok: true, resetToken };
@@ -8979,7 +9145,7 @@ class CondominioController {
 
   _respostaResetToken(resetToken) {
     // Campos invite_token/token mantidos por compatibilidade com o app; o valor
-    // agora é um reset token opaco de uso único (não é mais JWT).
+    // é um reset token opaco de uso único (não é JWT).
     return {
       success: true,
       message: 'Código validado.',
@@ -8991,138 +9157,136 @@ class CondominioController {
     };
   }
 
-  async _resolverIdUsuarioRecuperacao(req) {
-    const idInformado = this._toInt(req.body?.user_id, null);
-    if (idInformado) {
-      return idInformado;
-    }
-    const login = req.body?.login ?? req.body?.email;
-    if (!login) {
-      return null;
-    }
-    const usuario = await this._buscarUsuarioParaRecuperacao(login);
-    return usuario ? this._toInt(usuario.id, null) : null;
-  }
-
-  // POST /api/condominio/auth-recovery-lookup(.php) — usado pelo frontend PHP.
-  // Agora apenas dispara o código por e-mail. Não devolve token nem dados do
-  // usuário, e responde igual exista ou não o cadastro.
+  // POST /api/condominio/auth-recovery-lookup(.php) — frontend PHP.
   async authRecoveryLookup(req, res) {
-    const respostaGenerica = {
-      success: true,
-      message: 'Se os dados estiverem cadastrados, você receberá um código por e-mail.'
-    };
+    const inicio = Date.now();
     try {
       const loginRaw = this._normalizarTextoOuNull(req.body?.login);
       if (!loginRaw) {
         return res.status(400).json({ success: false, message: 'Campo login é obrigatório.' });
       }
-
-      const usuario = await this._buscarUsuarioParaRecuperacao(loginRaw);
-      if (this._usuarioAptoParaRecuperacao(usuario)) {
-        await this._criarDesafioRecuperacao({ usuario, ip: ipDaRequisicao(req) });
+      const resultado = await this._processarSolicitacaoRecuperacao(req, loginRaw);
+      await this._aguardarTempoMinimoRecuperacao(inicio);
+      if (resultado.rateLimit) {
+        return this._respostaRateLimitRecuperacao(req, res, 'solicitacao', resultado.rateLimit);
       }
-
-      return res.status(200).json(respostaGenerica);
+      if (resultado.status !== 200) {
+        return res.status(resultado.status).json(resultado.corpo);
+      }
+      return res.status(200).json({
+        success: true,
+        message: 'Se os dados estiverem cadastrados, você receberá um código por e-mail.'
+      });
     } catch (error) {
+      await this._aguardarTempoMinimoRecuperacao(inicio);
+      if (this._respostaRecuperacaoIndisponivel(req, res, error, 'lookup')) return undefined;
       console.error('[recovery/lookup] Erro:', error?.message);
       return res.status(500).json({ success: false, message: 'Falha ao processar recuperação de senha.' });
     }
   }
 
-  // POST /api/condominio/auth-recovery-verify-code — usado pelo frontend PHP.
-  async authRecoveryVerifyOtp(req, res) {
-    try {
-      const email = this._normalizarEmailOuNull(req.body?.email);
-      const code = req.body?.code !== undefined ? String(req.body.code).trim() : null;
-
-      if (!email || !code) {
-        return res.status(400).json({ success: false, message: 'Campos email e code são obrigatórios.' });
-      }
-
-      const usuario = await this._buscarUsuarioParaRecuperacao(email);
-      if (!usuario) {
-        return res.status(422).json({ success: false, message: 'Código inválido ou expirado.' });
-      }
-
-      const resultado = await this._validarCodigoEEmitirResetToken({ idUsuario: this._toInt(usuario.id, null), code, req });
-      if (!resultado.ok) {
-        // Mantém os status históricos deste endpoint (422/429).
-        const status = resultado.status === 429 ? 429 : 422;
-        return res.status(status).json({ success: false, code: resultado.code, message: resultado.message });
-      }
-
-      return res.status(200).json({ ...this._respostaResetToken(resultado.resetToken), user_id: this._toInt(usuario.id, null) });
-    } catch (error) {
-      console.error('[recovery/verify-code] Erro:', error?.message);
-      return res.status(500).json({ success: false, message: 'Falha ao verificar código.' });
-    }
-  }
-
   // POST /api/auth/recovery/request — app React.
   async recoveryRequest(req, res) {
+    const inicio = Date.now();
     try {
-      const usuario = await this._buscarUsuarioParaRecuperacao(req.body.login);
-
-      // Resposta genérica para não vazar se o usuário existe.
-      if (!this._usuarioAptoParaRecuperacao(usuario)) {
-        return res.status(200).json({ success: true, message: 'Se o e-mail estiver cadastrado, você receberá o código.' });
+      const resultado = await this._processarSolicitacaoRecuperacao(req, req.body.login);
+      await this._aguardarTempoMinimoRecuperacao(inicio);
+      if (resultado.rateLimit) {
+        return this._respostaRateLimitRecuperacao(req, res, 'solicitacao', resultado.rateLimit);
       }
-
-      const desafio = await this._criarDesafioRecuperacao({ usuario, ip: ipDaRequisicao(req) });
-
-      // user_id mantido apenas por compatibilidade com versões publicadas do
-      // app (ele é enviado de volta no verify). Versões novas usam `login`.
-      return res.status(200).json({
-        success: true,
-        message: 'Se o e-mail estiver cadastrado, você receberá o código.',
-        user_id: this._toInt(usuario.id, null),
-        ...(desafio.expiresAt ? { expires_at: desafio.expiresAt.toISOString() } : {})
-      });
+      return res.status(resultado.status).json(resultado.corpo);
     } catch (error) {
+      await this._aguardarTempoMinimoRecuperacao(inicio);
+      if (this._respostaRecuperacaoIndisponivel(req, res, error, 'request')) return undefined;
       console.error('[recovery/request] Erro:', error?.message);
       return res.status(500).json({ success: false, code: 'INTERNAL_ERROR', message: 'Erro interno ao processar recuperação.' });
     }
   }
 
-  // POST /api/auth/recovery/verify — app React. Aceita user_id (legado) ou login.
-  async recoveryVerify(req, res) {
+  // POST /api/condominio/auth-recovery-verify-code — frontend PHP (email + code).
+  async authRecoveryVerifyOtp(req, res) {
     try {
-      const idUsuario = await this._resolverIdUsuarioRecuperacao(req);
-      const code = String(req.body.code || '').trim();
-
-      if (!idUsuario) {
-        return res.status(401).json({ success: false, code: 'INVALID_CODE', message: 'Código inválido ou expirado.' });
+      const email = this._normalizarEmailOuNull(req.body?.email);
+      const code = req.body?.code !== undefined ? String(req.body.code).trim() : null;
+      if (!email || !code) {
+        return res.status(400).json({ success: false, message: 'Campos email e code são obrigatórios.' });
       }
 
-      const resultado = await this._validarCodigoEEmitirResetToken({ idUsuario, code, req });
+      const login = normalizarLoginRecuperacao(email);
+      const usuario = await this._buscarUsuarioParaRecuperacao(login);
+      const conta = { idUsuario: usuario ? this._toInt(usuario.id, null) : null, loginNormalizado: login };
+      const resultado = await this._processarVerificacaoRecuperacao(req, conta, code);
+      if (resultado.rateLimit) {
+        return this._respostaRateLimitRecuperacao(req, res, 'verificacao', resultado.rateLimit);
+      }
+      if (!resultado.ok) {
+        // Status histórico deste endpoint para código inválido: 422.
+        const status = resultado.status === 401 ? 422 : resultado.status;
+        return res.status(status).json({ success: false, code: resultado.code, message: resultado.message });
+      }
+      return res.status(200).json({ ...this._respostaResetToken(resultado.resetToken), user_id: conta.idUsuario });
+    } catch (error) {
+      if (this._respostaRecuperacaoIndisponivel(req, res, error, 'verify-code')) return undefined;
+      console.error('[recovery/verify-code] Erro:', error?.message);
+      return res.status(500).json({ success: false, message: 'Falha ao verificar código.' });
+    }
+  }
+
+  // POST /api/auth/recovery/verify — app React (user_id rh1/numérico ou login).
+  async recoveryVerify(req, res) {
+    try {
+      const conta = await this._resolverContaRecuperacao(req);
+      const code = String(req.body.code || '').trim();
+      const resultado = await this._processarVerificacaoRecuperacao(req, conta, code);
+      if (resultado.rateLimit) {
+        return this._respostaRateLimitRecuperacao(req, res, 'verificacao', resultado.rateLimit);
+      }
       if (!resultado.ok) {
         return res.status(resultado.status).json({ success: false, code: resultado.code, message: resultado.message });
       }
-
-      return res.status(200).json({ ...this._respostaResetToken(resultado.resetToken), user_id: idUsuario });
+      // user_id devolvido é o mesmo identificador recebido (opaco ou numérico).
+      return res.status(200).json({ ...this._respostaResetToken(resultado.resetToken), user_id: req.body.user_id ?? conta.idUsuario });
     } catch (error) {
+      if (this._respostaRecuperacaoIndisponivel(req, res, error, 'verify')) return undefined;
       console.error('[recovery/verify] Erro:', error?.message);
       return res.status(500).json({ success: false, code: 'INTERNAL_ERROR', message: 'Erro interno ao verificar código.' });
     }
   }
 
   // POST /api/auth/recovery/reset — app React e frontend PHP.
-  // Exige o reset token emitido pelo verify. JWTs de recuperação antigos
-  // (invite_token "password_recovery") não são mais aceitos.
+  // Exige o reset token emitido pelo verify. Consumo do token, troca da senha
+  // e token_version + 1 acontecem na mesma transação.
   async recoveryReset(req, res) {
     let transaction = null;
     try {
-      const idUsuario = await this._resolverIdUsuarioRecuperacao(req);
+      const L = CondominioController.LIMITES_RECUPERACAO;
+      const ipInfo = resolverIpRecuperacao(req);
+      if (!ipInfo.ok) {
+        return res.status(ipInfo.status).json({ success: false, code: ipInfo.code, message: ipInfo.message });
+      }
+      exigirSegredoRecuperacao();
+
+      const consumo = await this._consumirLimites([
+        { nome: 'ip', chave: `rec:rs:ip:${ipInfo.ip}`, limite: L.RESET_POR_IP, janela: L.HORA },
+        { nome: 'global', chave: 'rec:rs:global', limite: L.RESET_GLOBAL, janela: L.HORA }
+      ]);
+      if (consumo.estourou) {
+        return this._respostaRateLimitRecuperacao(req, res, 'reset', consumo.estourou);
+      }
+
+      const conta = await this._resolverContaRecuperacao(req);
+      const idUsuario = conta.idUsuario;
       const resetToken = String(req.body.reset_token || req.body.invite_token || req.body.token || '').trim();
       const novaSenha = String(req.body.password || '');
 
-      if (!idUsuario || !resetToken) {
-        return res.status(401).json({ success: false, code: 'INVALID_TOKEN', message: 'Token inválido ou expirado.' });
+      const politica = validarNovaSenhaRecuperacao(novaSenha);
+      if (!politica.ok) {
+        const { ok, ...corpo } = politica;
+        return res.status(422).json({ success: false, ...corpo });
       }
 
-      if (novaSenha.trim().length < 6) {
-        return res.status(422).json({ success: false, code: 'WEAK_PASSWORD', message: 'password deve ter no mínimo 6 caracteres.' });
+      if (!idUsuario || !resetToken) {
+        return res.status(401).json({ success: false, code: 'INVALID_TOKEN', message: 'Token inválido ou expirado.' });
       }
 
       const resetTokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
@@ -9161,7 +9325,7 @@ class CondominioController {
       if (!atualizado || atualizado.length === 0) {
         await transaction.rollback();
         transaction = null;
-        return res.status(404).json({ success: false, code: 'NOT_FOUND', message: 'Usuário não encontrado.' });
+        return res.status(401).json({ success: false, code: 'INVALID_TOKEN', message: 'Token inválido ou expirado.' });
       }
 
       // Encerra qualquer outro desafio/token pendente do usuário.
@@ -9177,8 +9341,7 @@ class CondominioController {
       await transaction.commit();
       transaction = null;
 
-      // As sessões anteriores já foram revogadas no mesmo UPDATE da senha
-      // (token_version + 1, atômico). Só limpa o cache local.
+      // Sessões anteriores já revogadas no mesmo UPDATE da senha.
       invalidarCacheSessao(idUsuario);
 
       await registrarAuditoria({
@@ -9187,7 +9350,8 @@ class CondominioController {
         entidade: 'usuario',
         entidadeId: idUsuario,
         idUsuarioAtor: idUsuario,
-        idCondominio: this._toInt(atualizado[0].id_condominio, null)
+        idCondominio: this._toInt(atualizado[0].id_condominio, null),
+        detalhes: { ip: ipInfo.ip }
       });
 
       return res.status(200).json({ success: true, message: 'Senha redefinida com sucesso.' });
@@ -9195,6 +9359,7 @@ class CondominioController {
       if (transaction) {
         try { await transaction.rollback(); } catch (_) { /* noop */ }
       }
+      if (this._respostaRecuperacaoIndisponivel(req, res, error, 'reset')) return undefined;
       console.error('[recovery/reset] Erro:', error?.message);
       return res.status(500).json({ success: false, code: 'INTERNAL_ERROR', message: 'Erro interno ao redefinir senha.' });
     }

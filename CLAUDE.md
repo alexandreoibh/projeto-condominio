@@ -91,6 +91,12 @@ Detalhes em `docs/seguranca/relatorio-auditoria-2026-11-23.md`.
 - **Testes sem rede:** `tests/setup-mocks.js` bloqueia `fetch`/`node-fetch`. Faça mock explícito em cada teste que precisar de HTTP.
 - Relatório das correções: `docs/seguranca/relatorio-correcoes-2026-11-24.md`.
 - **Recuperação de senha:** código por e-mail → reset token opaco (só o sha256 em `tb_recovery_tokens.reset_token_hash`, uso único, 15 min) → `/api/auth/recovery/reset`. Nenhum endpoint devolve token sem o código. `invite_token` não altera senha, e-mail, CPF, perfil ou status.
+  - Desde 25/11/2026 o backend é a única autoridade do rate limit (`src/helpers/rateLimit.js` sobre `"condominio-bh".tb_rate_limit`, migration `20261125000001`). Ele é atômico e falha fechado (503).
+  - Os limites ficam em `CondominioController.LIMITES_RECUPERACAO`.
+  - O IP vem de `src/helpers/ipRecuperacao.js`: o proxy PHP exige `X-Proxy-Key` = `PROXY_SHARED_SECRET`, e chamadas diretas ignoram `X-Client-IP`. O `ipCliente.js` do login não foi alterado.
+  - A criptografia está em `src/helpers/recuperacaoCripto.js` (`RECOVERY_CODE_SECRET`): o código é guardado como HMAC `h1:nonce:mac`, o `user_id` devolvido ao app é opaco (`rh1.`, AES-GCM, 15 min) e a nova senha exige no mínimo 15 caracteres e no máximo 72 bytes.
+  - Contrato: `docs/seguranca/contrato-recuperacao-senha-php.md`.
+  - Teste de concorrência real: `TEST_PG_URL=<postgres local descartável> npx jest --runInBand tests/pg` (em série: os arquivos recriam o mesmo schema).
 - **`authOrInviteToken`:** valida o convite no próprio middleware e entrega `req.inviteAuth.payload` ao handler.
 - **URLs do Blob:** toda URL buscada pelo servidor passa por `parseUrlBlob` (`src/helpers/blobUrl.js`), que compara o host exato. Os proxies de imagem exigem `/condominios/<id>/`. Links de boleto enviados por e-mail são assinados (`assinarLinkDownload`).
 - **Uploads:** toda rota multer usa `validarUploads(contexto)` (`src/helpers/uploadPolicy.js`, magic bytes). Grave `arquivo.extensaoSegura` e `arquivo.mimetype` (já validados), nunca a extensão do `originalname`.

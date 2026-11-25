@@ -2023,7 +2023,9 @@ router.post(
 router.post(
 	'/auth-recovery-verify-code',
 	[
-		body('email').notEmpty().isEmail().withMessage('Campo email inválido.').normalizeEmail(),
+		// Sem normalizeEmail(): ele remove pontos de endereços Gmail e a busca
+		// deixaria de casar com o e-mail cadastrado.
+		body('email').notEmpty().isEmail().withMessage('Campo email inválido.'),
 		body('code')
 			.notEmpty().withMessage('Campo code é obrigatório.')
 			.isLength({ min: 6, max: 6 }).withMessage('Campo code deve ter exatamente 6 dígitos.')

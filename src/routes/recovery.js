@@ -27,9 +27,15 @@ router.post(
   controller.recoveryRequest.bind(controller)
 );
 
-// user_id (app legado) ou login (e-mail/CPF) identifica o usuário.
+// user_id: identificador opaco "rh1." devolvido pelo /request (app atual)
+// ou id numérico (legado / PHP após verify-code); ou login (e-mail/CPF).
 const userIdOuLogin = [
-  body('user_id').optional({ nullable: true, checkFalsy: true }).isInt({ min: 1 }).withMessage('Campo user_id inválido.'),
+  body('user_id').optional({ nullable: true, checkFalsy: true }).custom((valor) => {
+    const texto = String(valor);
+    if (/^rh1\.[A-Za-z0-9_-]{40,700}$/.test(texto)) return true;
+    if (/^\d{1,12}$/.test(texto) && Number(texto) >= 1) return true;
+    throw new Error('Campo user_id inválido.');
+  }),
   body('login').optional({ nullable: true, checkFalsy: true }).isLength({ max: 255 }).withMessage('Campo login inválido.'),
   body().custom((value, { req }) => {
     if (!req.body?.user_id && !req.body?.login) {
@@ -64,9 +70,11 @@ router.post(
       }
       return true;
     }),
+    // Política (mín. 15 caracteres, máx. 72 bytes) aplicada no controller,
+    // com code WEAK_PASSWORD / PASSWORD_TOO_LONG.
     body('password')
       .notEmpty().withMessage('Campo password é obrigatório.')
-      .isLength({ min: 6 }).withMessage('password deve ter no mínimo 6 caracteres.')
+      .isString().withMessage('Campo password inválido.')
   ],
   validate,
   controller.recoveryReset.bind(controller)
