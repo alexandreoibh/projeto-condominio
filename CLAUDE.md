@@ -216,7 +216,28 @@ Três Maps no `CondominioController` sobrevivem apenas enquanto o processo estiv
   - **Canais:** `tipo` ∈ `whatsapp` | `telegram` | `email`. A coluna `assunto` é usada só pelo e-mail (migration `20260930000002`).
   - **E-mail:** despacha pelo template `mensagem_morador` com `{ assunto, texto, remetente_nome, condominio_nome }`. Enfileirar `email` (individual) e usar `POST /mensagens/fila/lote` exige perfil 1/3/4; WhatsApp e Telegram individuais seguem abertos.
   - **Lote:** resolve os usuários ativos por `perfil_ids` e só enfileira os canais viáveis (tem o contato e o canal não foi desativado). A resposta traz os contadores de ignorados.
-  - **Retorno do envio:** `despacharEmail` retorna `{ ok, status, message }` e nunca lança erro. A fila usa esse retorno para marcar falha (status 3).
+  - **Status:**
+    - 1 = pendente.
+    - 2 = **aceito pelo fornecedor**. Não é entrega confirmada.
+    - 3 = falha confirmada; nada foi enviado.
+    - 4 = em processamento (reservado).
+    - 5 = indeterminado: timeout, erro de rede, 502/504, ou aceito sem conseguir gravar o 2.
+    - Só o status 1 é processado. Os status 4 e 5 **nunca voltam a 1 sozinhos**: a revisão é manual, com as consultas em `src/database/sql/20261126000001-fila-mensagens-revisao.sql`.
+  - **Reserva atômica:** um item por vez, com `UPDATE ... SET status = 4 WHERE id = (SELECT ... FOR UPDATE SKIP LOCKED) RETURNING *`. Não há transação aberta durante o HTTP. São no máximo 50 itens por execução, dentro do orçamento `FILA_TEMPO_MAX_MS` (padrão 25000).
+  - **Envio:** a fila usa `enviarEmailFila`, `enviarTelegramFila` e `enviarWhatsappFila` (`service/dispatchResultado.js`).
+    - Cada uma faz uma única tentativa, sem retry, porque repetir após timeout poderia duplicar a mensagem.
+    - Valida o sucesso de negócio (`success`/`ok`), não só o HTTP.
+    - Retorna `{ resultado, http_status, codigo }` e nunca lança erro.
+    - `despacharEmail` e `despacharTelegram` (webhook) mantêm o contrato antigo.
+    - E-mail e WhatsApp enviam `X-Idempotency-Key: fila_<id>`, mas a deduplicação depende do endpoint PHP. O Telegram não tem idempotência.
+  - **WhatsApp:** fica desligado salvo `WHATSAPP_ENABLED=true`. Desligado, o enfileiramento individual responde 422, o lote o ignora (`ignoradas.whatsapp_canal_desativado`) e o processamento marca status 3.
+  - **Logs e `falha`:** só guardam códigos sanitizados, sem token, chave, URL, e-mail, telefone ou conteúdo.
+  - **Pendências — 01/12/2026:**
+    - Revisar a classificação de HTTP 500/503 (hoje = falha confirmada, status 3) como indeterminado quando não houver garantia de ausência de envio.
+    - Separar as credenciais da fila, das receitas recorrentes e da reconciliação bancária (hoje todas usam `CRON_QUEUE_KEY`).
+    - Validar com o frontend o contrato de resposta: os novos campos `indeterminadas` e `presas_em_processamento`, o 422 do WhatsApp desativado e `ignoradas.whatsapp_canal_desativado`.
+    - Validar a idempotência dos endpoints PHP (`X-Idempotency-Key`) e definir a rotina de revisão manual dos status 4 e 5.
+    - Implementar autenticação exclusiva para os demais crons.
   - **Boas-vindas automáticas:** todo cadastro novo (`criarUsuario` e `cadastrarUsuarioPorConvite`) de perfil 2/3/4 com e-mail enfileira um e-mail (`modulo='boas_vindas'`, texto em `MENSAGEM_BOAS_VINDAS_MORADOR`) via `_enfileirarBoasVindasMorador`.
     - É best effort: uma falha nesse enfileiramento não quebra o cadastro.
     - No convite, o remetente é quem gerou o convite (`id_usuario_criacao` no JWT de `gerarConviteMorador`).
@@ -262,6 +283,8 @@ Três Maps no `CondominioController` sobrevivem apenas enquanto o processo estiv
 | `PUBLIC_EMAIL_DISPATCH_KEY` | Bearer token do serviço de e-mails |
 | `WHATSAPP_DISPATCH_URL` | URL do serviço de despacho de WhatsApp (`public-whatsapp-dispatch.php`, front PHP/Evolution API) |
 | `PUBLIC_WHATSAPP_DISPATCH_KEY` | Bearer token do serviço de WhatsApp — opcional; se ausente, usa `PUBLIC_EMAIL_DISPATCH_KEY` como fallback |
+| `WHATSAPP_ENABLED` | `true` liga o canal WhatsApp (enfileiramento e envio). Ausente/qualquer outro valor = desligado |
+| `FILA_TEMPO_MAX_MS` | Orçamento de tempo por execução de `/mensagens/fila/processar` (padrão 25000, mínimo 1000) |
 | `ENCOMENDA_ENTREGA_EMAIL_URL` | URL do serviço de e-mail de "encomenda entregue" (`encomenda-entrega-email.php`, endpoint PHP dedicado, separado de `public-email-dispatch.php`) |
 
 ## Convenções

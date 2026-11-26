@@ -13,7 +13,8 @@ jest.mock('node-fetch', () => (...args) => global.fetch(...args));
 
 jest.mock('../src/service/emailDispatchService', () => {
   const despacharEmail = jest.fn(async () => ({ ok: true, status: 200 }));
-  return { despacharEmail, despacharEmailReserva: despacharEmail };
+  const enviarEmailFila = jest.fn(async () => ({ resultado: 'aceito', http_status: 200, codigo: null }));
+  return { despacharEmail, despacharEmailReserva: despacharEmail, enviarEmailFila };
 });
 
 jest.mock('../src/service/pushNotificationService', () => new Proxy({}, {

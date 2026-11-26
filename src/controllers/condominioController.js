@@ -7,10 +7,11 @@ const { put } = require('@vercel/blob');
 const fetch = require('node-fetch');
 const { QueryTypes } = require('sequelize');
 const pushNotificationService = require('../service/pushNotificationService');
-const { despacharEmail, despacharEmailReserva } = require('../service/emailDispatchService');
+const { despacharEmail, despacharEmailReserva, enviarEmailFila } = require('../service/emailDispatchService');
 const { despacharEncomendaEntregaEmail } = require('../service/encomendaEntregaEmailService');
-const { despacharWhatsapp } = require('../service/whatsappDispatchService');
-const { despacharTelegram } = require('../service/telegramDispatchService');
+const { whatsappHabilitado, enviarWhatsappFila } = require('../service/whatsappDispatchService');
+const { despacharTelegram, enviarTelegramFila } = require('../service/telegramDispatchService');
+const { RESULTADO: RESULTADO_ENVIO, sanitizarErro } = require('../service/dispatchResultado');
 const { waitUntil } = require('@vercel/functions');
 const { buildAvatarProxyUrl, buildConsumoImagemProxyUrl, buildDashboardImagemProxyUrl, getBlobReadToken, isAvatarProxyUrl, resolveBlobUrl, contentTypeImagemSegura, caminhoImagemValidoParaGravar } = require('../helpers/avatarProxy');
 const { normalizarCpf, cpfValido } = require('../helpers/cpf');
@@ -14357,16 +14358,19 @@ class CondominioController {
         email_sem_endereco: 0,
         whatsapp_sem_telefone: 0,
         whatsapp_desativado: 0,
+        whatsapp_canal_desativado: 0,
         telegram_nao_vinculado: 0,
         telegram_desativado: 0
       };
       const itens = [];
+      const whatsappAtivo = whatsappHabilitado();
 
       for (const usuario of usuarios) {
         for (const tipo of tipos) {
           if (tipo === 'email') {
             if (!this._normalizarTextoOuNull(usuario.email)) { ignoradas.email_sem_endereco += 1; continue; }
           } else if (tipo === 'whatsapp') {
+            if (!whatsappAtivo) { ignoradas.whatsapp_canal_desativado += 1; continue; }
             if (usuario.mensagem_whatsapp === false) { ignoradas.whatsapp_desativado += 1; continue; }
             if (!this._normalizarTextoOuNull(usuario.telefone)) { ignoradas.whatsapp_sem_telefone += 1; continue; }
           } else if (tipo === 'telegram') {
@@ -14431,10 +14435,8 @@ class CondominioController {
       if (transaction && !transaction.finished) {
         await transaction.rollback().catch(() => {});
       }
-      return res.status(500).json({
-        message: 'Falha ao enfileirar mensagens em lote.',
-        detail: error.message
-      });
+      console.error('[filaMensagens] Falha ao enfileirar lote:', sanitizarErro(error && error.message));
+      return res.status(500).json({ message: 'Falha ao enfileirar mensagens em lote.' });
     }
   }
 
@@ -14480,6 +14482,10 @@ class CondominioController {
           message: 'Seu perfil só pode enviar mensagens para o próprio usuário.'
         });
       }
+
+      if (tipoNormalizado === 'whatsapp' && !whatsappHabilitado()) {
+        return res.status(422).json({ message: 'Canal WhatsApp desativado.' });
+      }
       const destinoRows = await postgres.query(
         `SELECT id FROM "condominio-bh"."tb-usuarios"
           WHERE id = :id AND id_condominio = :id_condominio
@@ -14510,204 +14516,272 @@ class CondominioController {
         data: registro
       });
     } catch (error) {
-      return res.status(500).json({
-        message: 'Falha ao enfileirar mensagem.',
-        detail: error.message
-      });
+      console.error('[filaMensagens] Falha ao enfileirar mensagem:', sanitizarErro(error && error.message));
+      return res.status(500).json({ message: 'Falha ao enfileirar mensagem.' });
     }
   }
 
+  // Fila de mensagens (cron externo). Status:
+  //   1 pendente | 2 aceito pelo fornecedor (NÃO é entrega confirmada)
+  //   3 falha confirmada (nada enviado) | 4 em processamento (reservado)
+  //   5 resultado indeterminado (pode ter sido enviado) — revisão manual.
+  // Reserva atômica item a item (UPDATE ... FOR UPDATE SKIP LOCKED), fora de
+  // transação: só quem recebeu o RETURNING envia. 4 e 5 nunca voltam a 1
+  // automaticamente; 2 e 3 nunca são reprocessados.
   async processarFilaMensagens(req, res) {
-    try {
-      const pendentes = await postgres.query(
-        // SELECT * (e não lista de colunas) para não depender de `assunto`
-        // existir — migration 20260930000002.
-        `SELECT *
-           FROM "condominio-bh".tb_mensagens_fila
-          WHERE status = 1
-          ORDER BY created_at ASC
-          LIMIT 50`,
-        { type: QueryTypes.SELECT }
-      );
+    const LIMITE = 50;
+    const tempoMaxMs = Math.max(1000, Number.parseInt(process.env.FILA_TEMPO_MAX_MS, 10) || 25000);
+    const inicio = Date.now();
+    const contadores = { sucesso: 0, falha: 0, indeterminadas: 0 };
 
-      if (!pendentes || pendentes.length === 0) {
-        return res.status(200).json({ processadas: 0, sucesso: 0, falha: 0 });
+    try {
+      for (let i = 0; i < LIMITE; i += 1) {
+        // Orçamento de tempo: se a função for interrompida, no máximo o item
+        // em andamento fica em status 4.
+        if (Date.now() - inicio >= tempoMaxMs) break;
+
+        const reservados = await postgres.query(
+          `UPDATE "condominio-bh".tb_mensagens_fila
+              SET status = 4,
+                  updated_at = now()
+            WHERE status = 1
+              AND id = (
+                SELECT id
+                  FROM "condominio-bh".tb_mensagens_fila
+                 WHERE status = 1
+                 ORDER BY created_at ASC, id ASC
+                 LIMIT 1
+                 FOR UPDATE SKIP LOCKED
+              )
+          RETURNING *`,
+          { type: QueryTypes.SELECT }
+        );
+        const item = reservados && reservados[0];
+        if (!item) break;
+
+        const desfecho = await this._processarItemFila(item);
+        if (desfecho === 'sucesso') contadores.sucesso += 1;
+        else if (desfecho === 'falha') contadores.falha += 1;
+        else contadores.indeterminadas += 1;
       }
 
-      let sucesso = 0;
-      let falha = 0;
-
-      for (const item of pendentes) {
-        try {
-          const reserva = await postgres.query(
-            `UPDATE "condominio-bh".tb_mensagens_fila
-                SET updated_at = now()
-              WHERE id = :id
-                AND status = 1
-            RETURNING id`,
-            { replacements: { id: item.id }, type: QueryTypes.UPDATE }
-          );
-
-          if (!reserva[0] || reserva[0].length === 0) {
-            // outra chamada concorrente já pegou esta linha entre o SELECT e agora
-            continue;
-          }
-
-          const destinatarioRows = await postgres.query(
-            `SELECT telefone, email, chat_id_telegram, nome, sobrenome, apartamento, bloco, tipo_perfil_id
-               FROM "condominio-bh"."tb-usuarios"
-              WHERE id = :id
-                AND id_condominio = :id_condominio
-              LIMIT 1`,
-            {
-              replacements: { id: item.id_usuario_destino, id_condominio: item.id_condominio },
-              type: QueryTypes.SELECT
-            }
-          );
-
-          let mensagemFinal = item.mensagem_tratada_ia || item.mensagem_bruta;
-          let parseModeTelegram = null;
-
-          if (item.tipo === 'whatsapp') {
-            const telefone = destinatarioRows?.[0]?.telefone;
-            if (!telefone) {
-              throw new Error('Usuário destino sem telefone cadastrado.');
-            }
-            await despacharWhatsapp({ telefones: [telefone], mensagem: mensagemFinal, _ref: `fila_${item.id}` });
-          } else if (item.tipo === 'email') {
-            const email = this._normalizarTextoOuNull(destinatarioRows?.[0]?.email);
-            if (!email) {
-              throw new Error('Usuário destino sem e-mail cadastrado.');
-            }
-
-            const { remetenteNome, condominioNome } = await this._resolverRemetenteECondominioFila(item);
-            // Template `mensagem_morador` já existe no public-email-dispatch.php.
-            const resultadoEmail = await despacharEmail({
-              _ref: `fila_${item.id}`,
-              template: 'mensagem_morador',
-              emails: [email],
-              mensagem: {
-                assunto: item.assunto || '',
-                texto: item.mensagem_bruta,
-                remetente_nome: remetenteNome,
-                condominio_nome: condominioNome || ''
-              }
-            });
-            if (!resultadoEmail?.ok) {
-              throw new Error(`Falha no envio de e-mail: ${resultadoEmail?.message || 'erro desconhecido'}`);
-            }
-          } else if (item.tipo === 'telegram') {
-            const chatId = destinatarioRows?.[0]?.chat_id_telegram;
-            if (!chatId) {
-              throw new Error('TELEGRAM_NAO_VINCULADO: usuário ainda não vinculou o Telegram.');
-            }
-
-            if (!item.mensagem_tratada_ia) {
-              try {
-                const destinatario = destinatarioRows[0];
-                const destinatarioNomeCompleto = [destinatario?.nome, destinatario?.sobrenome]
-                  .filter(Boolean)
-                  .join(' ')
-                  .trim() || 'morador';
-
-                const remetenteInfo = await this._resolverRemetenteECondominioFila(item);
-                const remetenteNomeCompleto = remetenteInfo.remetenteNome;
-                const remetentePerfil = remetenteInfo.remetentePerfil;
-                const condominioNome = remetenteInfo.condominioNome || 'seu condomínio';
-
-                const { icone, rotulo } = this._iconeModuloTelegram(item.modulo);
-
-                const linhaLocalizacao = destinatario?.apartamento
-                  ? ` — Apto ${this._escapeHtmlTelegram(destinatario.apartamento)}${
-                      destinatario?.bloco ? `, Bloco ${this._escapeHtmlTelegram(destinatario.bloco)}` : ''
-                    }`
-                  : '';
-
-                const linhas = [
-                  `Olá ${this._escapeHtmlTelegram(destinatarioNomeCompleto)} 👋, do ${this._escapeHtmlTelegram(condominioNome)}.`,
-                  `Eu sou o e-Morador e tenho uma nova notificação para você:`,
-                  '',
-                  `${icone} <b>${this._escapeHtmlTelegram(rotulo)}</b>`,
-                  '',
-                  `✍️ <b>Enviado por:</b> ${this._escapeHtmlTelegram(remetenteNomeCompleto)}${
-                    remetentePerfil ? ` (${this._escapeHtmlTelegram(remetentePerfil)})` : ''
-                  }`,
-                  `📍 <b>Para:</b> ${this._escapeHtmlTelegram(destinatarioNomeCompleto)}${linhaLocalizacao}`,
-                  `🏢 <b>Condomínio:</b> ${this._escapeHtmlTelegram(condominioNome)}`,
-                  '',
-                  `💬 ${this._escapeHtmlTelegram(item.mensagem_bruta)}`
-                ];
-
-                const mensagemEnriquecida = linhas.join('\n');
-
-                await postgres.query(
-                  `UPDATE "condominio-bh".tb_mensagens_fila
-                      SET mensagem_tratada_ia = :mensagem_tratada_ia,
-                          updated_at = now()
-                    WHERE id = :id`,
-                  {
-                    replacements: { id: item.id, mensagem_tratada_ia: mensagemEnriquecida },
-                    type: QueryTypes.UPDATE
-                  }
-                );
-
-                mensagemFinal = mensagemEnriquecida;
-                parseModeTelegram = 'HTML';
-              } catch (formatarError) {
-                console.error('[telegramDispatch] Falha ao formatar mensagem enriquecida, usando texto simples:', formatarError.message);
-              }
-            } else {
-              parseModeTelegram = 'HTML';
-            }
-
-            await despacharTelegram({
-              chat_id: chatId,
-              mensagem: mensagemFinal,
-              parse_mode: parseModeTelegram,
-              _ref: `fila_${item.id}`
-            });
-          } else {
-            throw new Error(`Tipo de mensagem não suportado: ${item.tipo}`);
-          }
-
-          await postgres.query(
-            `UPDATE "condominio-bh".tb_mensagens_fila
-                SET status = 2,
-                    falha = NULL,
-                    data_cron_execucao = now(),
-                    updated_at = now()
-              WHERE id = :id`,
-            { replacements: { id: item.id }, type: QueryTypes.UPDATE }
-          );
-          sucesso += 1;
-        } catch (itemError) {
-          await postgres.query(
-            `UPDATE "condominio-bh".tb_mensagens_fila
-                SET status = 3,
-                    falha = :falha,
-                    data_cron_execucao = now(),
-                    updated_at = now()
-              WHERE id = :id`,
-            {
-              replacements: { id: item.id, falha: String(itemError.message || itemError).slice(0, 800) },
-              type: QueryTypes.UPDATE
-            }
-          );
-          falha += 1;
-        }
+      let presas = 0;
+      try {
+        const [linha] = await postgres.query(
+          `SELECT count(*) AS total
+             FROM "condominio-bh".tb_mensagens_fila
+            WHERE status = 4
+              AND updated_at < now() - interval '15 minutes'`,
+          { type: QueryTypes.SELECT }
+        );
+        presas = Number.parseInt(linha && linha.total, 10) || 0;
+      } catch (_) {
+        presas = 0;
       }
 
       return res.status(200).json({
-        processadas: sucesso + falha,
-        sucesso,
-        falha
+        processadas: contadores.sucesso + contadores.falha + contadores.indeterminadas,
+        sucesso: contadores.sucesso,
+        falha: contadores.falha,
+        indeterminadas: contadores.indeterminadas,
+        presas_em_processamento: presas
       });
     } catch (error) {
-      return res.status(500).json({
-        message: 'Falha ao processar fila de mensagens.',
-        detail: error.message
-      });
+      console.error('[filaMensagens] Falha ao processar fila:', sanitizarErro(error && error.message));
+      return res.status(500).json({ message: 'Falha ao processar fila de mensagens.' });
     }
+  }
+
+  // Grava o desfecho de um item reservado (só sai do status 4).
+  async _finalizarItemFila(id, status, falha) {
+    await postgres.query(
+      `UPDATE "condominio-bh".tb_mensagens_fila
+          SET status = :status,
+              falha = :falha,
+              data_cron_execucao = now(),
+              updated_at = now()
+        WHERE id = :id
+          AND status = 4`,
+      {
+        replacements: { id, status, falha: falha ? String(falha).slice(0, 800) : null },
+        type: QueryTypes.UPDATE
+      }
+    );
+  }
+
+  // Processa um item já reservado. Retorna 'sucesso' | 'falha' | 'indeterminado'.
+  // Nunca lança: o erro de um item não interrompe o lote.
+  async _processarItemFila(item) {
+    const ref = `fila_${item.id}`;
+    let envio;
+
+    try {
+      const preparado = await this._prepararEnvioFila(item);
+      if (preparado.falha) {
+        // Pré-condição não atendida: nada foi enviado.
+        await this._finalizarItemFila(item.id, 3, preparado.falha);
+        return 'falha';
+      }
+      envio = await preparado.enviar(); // os *Fila nunca lançam
+    } catch (error) {
+      // Erro antes de qualquer envio (ex.: consulta ao banco): falha confirmada.
+      try {
+        await this._finalizarItemFila(item.id, 3, `ERRO_PREPARACAO: ${sanitizarErro(error && error.message)}`);
+        return 'falha';
+      } catch (_) {
+        console.error(`[filaMensagens] ref=${ref} preso em processamento (status 4) após erro de preparação`);
+        return 'indeterminado';
+      }
+    }
+
+    if (envio.resultado === RESULTADO_ENVIO.ACEITO) {
+      try {
+        await this._finalizarItemFila(item.id, 2, null);
+        return 'sucesso';
+      } catch (_) {
+        // Aceito pelo fornecedor, mas o status 2 não foi gravado: indeterminado
+        // para revisão. Nunca volta a 1 (não reenvia).
+        try {
+          await this._finalizarItemFila(item.id, 5, 'ACEITO_SEM_CONFIRMACAO_DB');
+        } catch (_) {
+          console.error(`[filaMensagens] ref=${ref} aceito pelo fornecedor e preso em processamento (status 4)`);
+        }
+        return 'indeterminado';
+      }
+    }
+
+    const status = envio.resultado === RESULTADO_ENVIO.INDETERMINADO ? 5 : 3;
+    try {
+      await this._finalizarItemFila(item.id, status, envio.codigo || `RESULTADO_${String(envio.resultado).toUpperCase()}`);
+    } catch (_) {
+      console.error(`[filaMensagens] ref=${ref} preso em processamento (status 4) após resultado=${envio.resultado}`);
+      return 'indeterminado';
+    }
+    return status === 5 ? 'indeterminado' : 'falha';
+  }
+
+  // Resolve destinatário e conteúdo. Retorna { falha } (nada a enviar) ou
+  // { enviar: () => Promise<{ resultado, codigo }> }. Isolamento: destinatário
+  // e remetente sempre filtrados por item.id_condominio.
+  async _prepararEnvioFila(item) {
+    const ref = `fila_${item.id}`;
+
+    if (!['whatsapp', 'email', 'telegram'].includes(item.tipo)) {
+      return { falha: 'TIPO_NAO_SUPORTADO' };
+    }
+    if (item.tipo === 'whatsapp' && !whatsappHabilitado()) {
+      return { falha: 'WHATSAPP_DESATIVADO' };
+    }
+
+    const destinatarioRows = await postgres.query(
+      `SELECT telefone, email, chat_id_telegram, nome, sobrenome, apartamento, bloco, tipo_perfil_id
+         FROM "condominio-bh"."tb-usuarios"
+        WHERE id = :id
+          AND id_condominio = :id_condominio
+        LIMIT 1`,
+      {
+        replacements: { id: item.id_usuario_destino, id_condominio: item.id_condominio },
+        type: QueryTypes.SELECT
+      }
+    );
+    const destinatario = destinatarioRows && destinatarioRows[0];
+    if (!destinatario) {
+      return { falha: 'DESTINATARIO_NAO_ENCONTRADO_NO_CONDOMINIO' };
+    }
+
+    if (item.tipo === 'whatsapp') {
+      const telefone = this._normalizarTextoOuNull(destinatario.telefone);
+      if (!telefone) return { falha: 'WHATSAPP_SEM_TELEFONE' };
+      const mensagem = item.mensagem_tratada_ia || item.mensagem_bruta;
+      return { enviar: () => enviarWhatsappFila({ telefone, mensagem, ref }) };
+    }
+
+    if (item.tipo === 'email') {
+      const email = this._normalizarTextoOuNull(destinatario.email);
+      if (!email) return { falha: 'EMAIL_SEM_ENDERECO' };
+      const { remetenteNome, condominioNome } = await this._resolverRemetenteECondominioFila(item);
+      // Template `mensagem_morador` já existe no public-email-dispatch.php.
+      return {
+        enviar: () => enviarEmailFila({
+          _ref: ref,
+          template: 'mensagem_morador',
+          emails: [email],
+          mensagem: {
+            assunto: item.assunto || '',
+            texto: item.mensagem_bruta,
+            remetente_nome: remetenteNome,
+            condominio_nome: condominioNome || ''
+          }
+        })
+      };
+    }
+
+    // telegram
+    const chatId = destinatario.chat_id_telegram;
+    if (!chatId) return { falha: 'TELEGRAM_NAO_VINCULADO' };
+
+    let mensagemFinal = item.mensagem_tratada_ia || item.mensagem_bruta;
+    let parseMode = item.mensagem_tratada_ia ? 'HTML' : null;
+
+    if (!item.mensagem_tratada_ia) {
+      try {
+        const destinatarioNomeCompleto = [destinatario.nome, destinatario.sobrenome]
+          .filter(Boolean)
+          .join(' ')
+          .trim() || 'morador';
+
+        const remetenteInfo = await this._resolverRemetenteECondominioFila(item);
+        const remetenteNomeCompleto = remetenteInfo.remetenteNome;
+        const remetentePerfil = remetenteInfo.remetentePerfil;
+        const condominioNome = remetenteInfo.condominioNome || 'seu condomínio';
+
+        const { icone, rotulo } = this._iconeModuloTelegram(item.modulo);
+
+        const linhaLocalizacao = destinatario.apartamento
+          ? ` — Apto ${this._escapeHtmlTelegram(destinatario.apartamento)}${
+              destinatario.bloco ? `, Bloco ${this._escapeHtmlTelegram(destinatario.bloco)}` : ''
+            }`
+          : '';
+
+        const linhas = [
+          `Olá ${this._escapeHtmlTelegram(destinatarioNomeCompleto)} 👋, do ${this._escapeHtmlTelegram(condominioNome)}.`,
+          `Eu sou o e-Morador e tenho uma nova notificação para você:`,
+          '',
+          `${icone} <b>${this._escapeHtmlTelegram(rotulo)}</b>`,
+          '',
+          `✍️ <b>Enviado por:</b> ${this._escapeHtmlTelegram(remetenteNomeCompleto)}${
+            remetentePerfil ? ` (${this._escapeHtmlTelegram(remetentePerfil)})` : ''
+          }`,
+          `📍 <b>Para:</b> ${this._escapeHtmlTelegram(destinatarioNomeCompleto)}${linhaLocalizacao}`,
+          `🏢 <b>Condomínio:</b> ${this._escapeHtmlTelegram(condominioNome)}`,
+          '',
+          `💬 ${this._escapeHtmlTelegram(item.mensagem_bruta)}`
+        ];
+
+        const mensagemEnriquecida = linhas.join('\n');
+
+        await postgres.query(
+          `UPDATE "condominio-bh".tb_mensagens_fila
+              SET mensagem_tratada_ia = :mensagem_tratada_ia,
+                  updated_at = now()
+            WHERE id = :id
+              AND status = 4`,
+          {
+            replacements: { id: item.id, mensagem_tratada_ia: mensagemEnriquecida },
+            type: QueryTypes.UPDATE
+          }
+        );
+
+        mensagemFinal = mensagemEnriquecida;
+        parseMode = 'HTML';
+      } catch (_) {
+        console.error(`[filaMensagens] ref=${ref} falha ao formatar mensagem enriquecida; usando texto simples`);
+      }
+    }
+
+    return {
+      enviar: () => enviarTelegramFila({ chat_id: chatId, mensagem: mensagemFinal, parse_mode: parseMode, ref })
+    };
   }
 
   async gerarVinculoTelegram(req, res) {

@@ -64,4 +64,33 @@ async function despacharEmail(payload) {
 // Alias mantido por compatibilidade com chamadas existentes
 const despacharEmailReserva = despacharEmail;
 
-module.exports = { despacharEmail, despacharEmailReserva };
+// Envio da fila de mensagens: uma única tentativa (sem retry após timeout, que
+// poderia duplicar), env lida no momento da chamada, valida `success` no corpo.
+// Retorna { resultado, http_status, codigo }; nunca lança. "aceito" não é entrega.
+async function enviarEmailFila(payload) {
+  const { RESULTADO, enviarUmaVez } = require('./dispatchResultado');
+  const url = process.env.EMAIL_DISPATCH_URL;
+  const chave = process.env.PUBLIC_EMAIL_DISPATCH_KEY;
+  if (!url || !chave) {
+    return { resultado: RESULTADO.NAO_CONFIGURADO, http_status: null, codigo: 'EMAIL_NAO_CONFIGURADO' };
+  }
+  const ref = payload._ref ?? '?';
+  return enviarUmaVez({
+    canal: 'EMAIL',
+    ref,
+    url,
+    headers: {
+      'Authorization': `Bearer ${chave}`,
+      'X-Public-Email-Key': chave,
+      // Repassado ao endpoint PHP; deduplicação só existe se ele a implementar.
+      'X-Idempotency-Key': String(ref)
+    },
+    body: payload,
+    timeoutMs: TIMEOUT_MS,
+    sucessoNegocio: (data) => data.success === true,
+    descricao: (data) => data.message,
+    segredos: [chave]
+  });
+}
+
+module.exports = { despacharEmail, despacharEmailReserva, enviarEmailFila };
