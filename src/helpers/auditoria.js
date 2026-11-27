@@ -5,6 +5,7 @@
 // de negócio. Nunca registrar senhas, tokens, certificados ou segredos.
 
 const { QueryTypes } = require('sequelize');
+const { fingerprint, classificarSuspeito, CHARSET_SEGURO } = require('./logSeguro');
 const postgres = require('../database/postgres');
 const { ipEfetivo } = require('./ipCliente');
 
@@ -39,7 +40,10 @@ function _sanitizar(valor, profundidade = 0) {
   }
   if (typeof valor === 'string') {
     if (_valorSensivel(valor)) return '[omitido]';
-    if (valor.length > 500) return `${valor.slice(0, 500)}...`;
+    // Fora do charset seguro (<, >, aspas, controle): fingerprint, nunca o
+    // conteúdo — evita gravar payloads de XSS/SQLi (incidente 27/11/2026).
+    if (!CHARSET_SEGURO.test(valor)) return `${fingerprint(valor)} [suspeito=${classificarSuspeito(valor)}]`;
+    if (valor.length > 200) return `${valor.slice(0, 200)}...`;
   }
   return valor;
 }

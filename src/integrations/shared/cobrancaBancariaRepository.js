@@ -110,22 +110,46 @@ async function _notificarCobrancaPaga(cobranca) {
  */
 async function aplicarSituacao(cobranca, situacaoNormalizada) {
   if (situacaoNormalizada === 'pago' && cobranca.situacao !== 'paga') {
-    await postgres.query(
-      `UPDATE "condominio-bh".tb_fin_cobranca_bancaria
-          SET situacao = 'paga', data_pagamento = NOW(), valor_pago = valor, updated_at = NOW()
-        WHERE id = :id`,
-      { replacements: { id: cobranca.id }, type: QueryTypes.UPDATE }
-    );
+    // Baixa da cobrança + receita numa única transação. O UPDATE condicional
+    // é atômico (lock de linha; um concorrente reavalia o WHERE e afeta 0
+    // linhas), então dois webhooks/reconciliações só baixam uma vez. A receita
+    // e o condomínio vêm da própria linha da cobrança (RETURNING), nunca do
+    // payload recebido.
+    const transaction = await postgres.transaction();
+    let baixada;
+    try {
+      const baixadas = await postgres.query(
+        `UPDATE "condominio-bh".tb_fin_cobranca_bancaria
+            SET situacao = 'paga', data_pagamento = NOW(), valor_pago = valor, updated_at = NOW()
+          WHERE id = :id AND situacao <> 'paga'
+          RETURNING id, id_receita, id_condominio`,
+        { replacements: { id: cobranca.id }, type: QueryTypes.SELECT, transaction }
+      );
+      baixada = baixadas && baixadas[0];
+      if (!baixada) {
+        await transaction.rollback();
+        return false;
+      }
 
-    // Reaproveita o mesmo padrão de baixa manual já usado em
-    // financeiroController.atualizarReceita (UPDATE direto em
-    // tb_fin_receitas com situacao='pago' + data_pagamento).
-    await postgres.query(
-      `UPDATE "condominio-bh".tb_fin_receitas
-          SET situacao = 'pago', data_pagamento = NOW(), updated_at = NOW()
-        WHERE id = :idReceita AND id_condominio = :idCondominio`,
-      { replacements: { idReceita: cobranca.id_receita, idCondominio: cobranca.id_condominio }, type: QueryTypes.UPDATE }
-    );
+      // Mesmo padrão de baixa manual de financeiroController.atualizarReceita.
+      await postgres.query(
+        `UPDATE "condominio-bh".tb_fin_receitas
+            SET situacao = 'pago', data_pagamento = NOW(), updated_at = NOW()
+          WHERE id = :idReceita AND id_condominio = :idCondominio`,
+        {
+          replacements: {
+            idReceita: baixada.id_receita ?? cobranca.id_receita,
+            idCondominio: baixada.id_condominio ?? cobranca.id_condominio,
+          },
+          type: QueryTypes.UPDATE,
+          transaction,
+        }
+      );
+      await transaction.commit();
+    } catch (erro) {
+      if (!transaction.finished) await transaction.rollback();
+      throw erro;
+    }
 
     // Notificação por e-mail (morador + síndico, conteúdos distintos) —
     // roda para qualquer provider bancário, pois aplicarSituacao já é o
@@ -138,13 +162,14 @@ async function aplicarSituacao(cobranca, situacaoNormalizada) {
   }
 
   if (situacaoNormalizada === 'cancelado' && cobranca.situacao !== 'cancelada') {
-    await postgres.query(
+    const canceladas = await postgres.query(
       `UPDATE "condominio-bh".tb_fin_cobranca_bancaria
           SET situacao = 'cancelada', updated_at = NOW()
-        WHERE id = :id`,
-      { replacements: { id: cobranca.id }, type: QueryTypes.UPDATE }
+        WHERE id = :id AND situacao <> 'cancelada'
+        RETURNING id`,
+      { replacements: { id: cobranca.id }, type: QueryTypes.SELECT }
     );
-    return true;
+    return Boolean(canceladas && canceladas.length > 0);
   }
 
   return false;

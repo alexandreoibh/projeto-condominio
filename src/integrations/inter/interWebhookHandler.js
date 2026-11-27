@@ -76,4 +76,37 @@ async function processarWebhook(credencial, payload) {
     .map((evento) => _normalizarEvento(evento));
 }
 
-module.exports = { processarWebhook };
+// Contrato do callback de Cobrança v3 (campos observados no sandbox, acima).
+// Campo desconhecido, tipo errado ou tamanho excessivo → payload recusado
+// antes de qualquer gravação (routes/webhookBancario.js).
+const CAMPOS_PERMITIDOS = new Set([
+  'codigoSolicitacao', 'seuNumero', 'situacao', 'dataHoraSituacao', 'valorTotalRecebido',
+  'origemRecebimento', 'nossoNumero', 'codigoBarras', 'linhaDigitavel', 'txid', 'pixCopiaECola',
+]);
+const SITUACOES_CONHECIDAS = new Set([...SITUACOES_PAGAS, ...SITUACOES_CANCELADAS, 'A_RECEBER', 'ATRASADO']);
+const MAX_EVENTOS = 50;
+const MAX_TAMANHO_CAMPO = 200;
+
+function validarPayload(payload) {
+  if (!Array.isArray(payload)) return { ok: false, motivo: 'corpo_nao_array' };
+  if (payload.length < 1 || payload.length > MAX_EVENTOS) return { ok: false, motivo: 'quantidade_eventos' };
+  for (const evento of payload) {
+    if (!evento || typeof evento !== 'object' || Array.isArray(evento)) return { ok: false, motivo: 'evento_invalido' };
+    for (const [campo, valor] of Object.entries(evento)) {
+      if (!CAMPOS_PERMITIDOS.has(campo)) return { ok: false, motivo: 'campo_inesperado' };
+      if (valor === null) continue;
+      if (typeof valor === 'number') {
+        if (!Number.isFinite(valor)) return { ok: false, motivo: 'tipo_invalido' };
+        continue;
+      }
+      if (typeof valor !== 'string' || valor.length > MAX_TAMANHO_CAMPO) return { ok: false, motivo: 'tipo_invalido' };
+    }
+    if (typeof evento.codigoSolicitacao !== 'string' || !/^[A-Za-z0-9-]{1,64}$/.test(evento.codigoSolicitacao)) {
+      return { ok: false, motivo: 'codigo_solicitacao_invalido' };
+    }
+    if (!SITUACOES_CONHECIDAS.has(evento.situacao)) return { ok: false, motivo: 'situacao_invalida' };
+  }
+  return { ok: true };
+}
+
+module.exports = { processarWebhook, validarPayload };

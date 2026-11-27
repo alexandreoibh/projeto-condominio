@@ -5,10 +5,16 @@ const bcrypt = require("bcryptjs");
 const { QueryTypes } = require("sequelize");
 const postgres = require("../database/postgres");
 const crypto = require("crypto");
-const { ipEfetivo } = require("../helpers/ipCliente");
+const { ipEfetivo, ipObservado } = require("../helpers/ipCliente");
 const { buildAvatarProxyUrl } = require("../helpers/avatarProxy");
 const { getJwtSecret } = require("../helpers/segredos");
 const { lerTokenVersion, incrementarTokenVersion } = require("../helpers/sessao");
+const { valorParaLog, idRequisicao } = require("../helpers/logSeguro");
+const rateLimit = require("../helpers/rateLimit");
+
+// Login gravado em tb_sgw_log_acesso só se tiver formato de e-mail/CPF/usuário;
+// fora disso vai um fingerprint (ver helpers/logSeguro.js).
+const CHARSET_LOGIN_LOG = /^[A-Za-z0-9._%+\-@]{1,255}$/;
 
 // Hash bcrypt fixo usado só para equalizar o tempo de resposta quando o login
 // não existe (evita enumeração de usuários por timing).
@@ -85,7 +91,8 @@ class Login {
                  OR lower(email_informado) = :login OR ip = :ip)`,
         {
           replacements: {
-            login: String(login || "").toLowerCase(),
+            // Mesmo identificador gravado no log (fingerprint para login malformado).
+            login: String(this._identificadorLoginLog(login) || "").toLowerCase(),
             id_usuario: idRef,
             ip,
             janela: `${LOGIN_RATE_WINDOW_MINUTES} minutes`
@@ -95,8 +102,18 @@ class Login {
       );
       const row = rows && rows[0] ? rows[0] : {};
       const falhasLogin = Number.parseInt(row.falhas_login, 10) || 0;
-      // Sem IP efetivo (proxy que não informou o cliente): só o limite por login.
-      const falhasIp = ip ? Number.parseInt(row.falhas_ip, 10) || 0 : 0;
+      let falhasIp = ip ? Number.parseInt(row.falhas_ip, 10) || 0 : 0;
+      // Sem IP efetivo (proxy confiável que não informou o cliente): todas essas
+      // requisições dividem um balde persistente (tb_rate_limit), por tentativa,
+      // chaveado pelo IP do proxy observado — nunca por header do cliente.
+      if (!ip) {
+        const reserva = await rateLimit.consumir(
+          `login-${this._chaveLimiteIp(req)}`,
+          LOGIN_MAX_FALHAS_POR_IP,
+          LOGIN_RATE_WINDOW_MINUTES * 60
+        );
+        if (!reserva.permitido) falhasIp = LOGIN_MAX_FALHAS_POR_IP;
+      }
       return { bloqueado: falhasLogin >= LOGIN_MAX_FALHAS_POR_LOGIN || falhasIp >= LOGIN_MAX_FALHAS_POR_IP, erro: false };
     } catch (error) {
       console.error("[login] Falha ao consultar rate limit (login recusado):", error?.message);
@@ -178,6 +195,52 @@ class Login {
     return text;
   }
 
+  // Chave de limite por origem: IP efetivo; sem ele (proxy confiável que não
+  // informou o cliente), um balde único por proxy observado. Header enviado
+  // pelo cliente nunca entra na chave.
+  _chaveLimiteIp(req) {
+    const { ip } = ipEfetivo(req);
+    if (ip) return `ip:${String(ip).slice(0, 64)}`;
+    const proxy = ipObservado(req);
+    return `proxy-sem-ip:${String(proxy || "desconhecido").slice(0, 64)}`;
+  }
+
+  // Durante ataque, falhas já bloqueadas ou entradas inválidas só são gravadas
+  // até o limite por origem da janela. Contador persistente (tb_rate_limit),
+  // compartilhado entre instâncias; indisponível → não grava.
+  async _podeGravarFalha(req, tipo = "bloqueado") {
+    try {
+      const reserva = await rateLimit.consumir(
+        `log-login-${tipo}:${this._chaveLimiteIp(req)}`,
+        LOGIN_MAX_FALHAS_POR_IP,
+        LOGIN_RATE_WINDOW_MINUTES * 60
+      );
+      return reserva.permitido;
+    } catch (erro) {
+      return false;
+    }
+  }
+
+  // Validação do /api/login falhou (422): a tentativa conta no rate limit
+  // (vira uma falha de LOGIN no log, com fingerprint) e IP já bloqueado
+  // recebe 429. Nunca chega à consulta de autenticação.
+  async registrarEntradaInvalida(req) {
+    const login = typeof req.body?.login === "string" ? req.body.login.trim().toLowerCase() : req.body?.login;
+    const limite = await this._excedeuLimiteFalhas(req, typeof login === "string" ? login : JSON.stringify(login ?? null));
+    if (await this._podeGravarFalha(req, "invalido")) {
+      await this._registrarLogAcesso(req, {
+        emailInformado: typeof login === "string" ? login : null,
+        sucesso: false,
+        mensagem: "Entrada inválida no login."
+      });
+    }
+    return limite;
+  }
+
+  _identificadorLoginLog(login) {
+    return valorParaLog(login, 255, CHARSET_LOGIN_LOG).valor;
+  }
+
   async _registrarLogAcesso(req, {
     idUsuario = null,
     idCondominio = null,
@@ -189,29 +252,26 @@ class Login {
     try {
       const payload = req.body && typeof req.body === "object" ? req.body : {};
       const headers = req.headers && typeof req.headers === "object" ? req.headers : {};
-      const userAgent = req.headers?.["user-agent"] ? String(req.headers["user-agent"]) : null;
+      // Todo valor vindo do cliente passa por valorParaLog: fora do charset
+      // seguro, grava fingerprint + categoria (nunca o payload).
+      const suspeitas = new Set();
+      const seguro = (valor, max, charset) => {
+        const r = valorParaLog(valor, max, charset);
+        if (r.suspeito) suspeitas.add(r.suspeito);
+        return r.valor;
+      };
+      const userAgentBruto = req.headers?.["user-agent"] ? String(req.headers["user-agent"]) : null;
+      const userAgent = seguro(userAgentBruto, 255);
       const ipHeader = this._resolveRequestIp(req);
       const { dispositivo: dispositivoInferido, sistemaOperacional: soInferido, navegador: navegadorInferido } =
-        this._extractClientInfo(userAgent);
+        this._extractClientInfo(userAgentBruto);
 
-      const loginPayload = this._normalizarTextoOuNull(payload.login ?? payload.email, 255);
-      const ipPayload = this._normalizarTextoOuNull(
-        payload.ip ?? headers["x-client-ip"] ?? headers["x-ip"],
-        64
-      );
-      const dispositivoPayload = this._normalizarTextoOuNull(
-        payload.dispositivo ?? headers["x-client-device"] ?? headers["x-dispositivo"],
-        120
-      );
-      const soPayload = this._normalizarTextoOuNull(
-        payload.sistema_operacional ?? headers["x-client-os"] ?? headers["x-sistema-operacional"],
-        120
-      );
-      const navegadorPayload = this._normalizarTextoOuNull(
-        payload.navegador ?? headers["x-client-browser"] ?? headers["x-navegador"],
-        120
-      );
-      const localizacaoPayload = this._normalizarTextoOuNull(
+      const loginPayload = seguro(payload.login ?? payload.email, 255, CHARSET_LOGIN_LOG);
+      const ipPayload = seguro(payload.ip ?? headers["x-client-ip"] ?? headers["x-ip"], 64);
+      const dispositivoPayload = seguro(payload.dispositivo ?? headers["x-client-device"] ?? headers["x-dispositivo"], 120);
+      const soPayload = seguro(payload.sistema_operacional ?? headers["x-client-os"] ?? headers["x-sistema-operacional"], 120);
+      const navegadorPayload = seguro(payload.navegador ?? headers["x-client-browser"] ?? headers["x-navegador"], 120);
+      const localizacaoPayload = seguro(
         payload.localizacao_aproximada ?? headers["x-client-location"] ?? headers["x-localizacao-aproximada"],
         255
       );
@@ -220,7 +280,7 @@ class Login {
       // cliente que ele informou. Um IP declarado por cliente direto só vai na
       // mensagem, como ip_informado.
       const { ip: ipCliente, viaProxy } = ipEfetivo(req);
-      const ip = viaProxy ? ipCliente || ipHeader || null : ipHeader || null;
+      const ip = seguro(viaProxy ? ipCliente || ipHeader || null : ipHeader || null, 64);
       let mensagemFinal = mensagem;
       if (viaProxy) {
         mensagemFinal = `${mensagem || ""} [via_proxy=${viaProxy}]`.trim().slice(0, 1000);
@@ -230,15 +290,19 @@ class Login {
       // Dispositivo/SO/navegador/localização declarados só valem vindos do
       // proxy confiável (back-cond.php). De cliente direto, são inferidos do
       // User-Agent; o valor declarado vai só para a mensagem (ex.: "x").
-      const dispositivo = (viaProxy && dispositivoPayload) || dispositivoInferido;
-      const sistemaOperacional = (viaProxy && soPayload) || soInferido;
-      const navegador = (viaProxy && navegadorPayload) || navegadorInferido;
+      const dispositivo = (viaProxy && dispositivoPayload) || seguro(dispositivoInferido, 120);
+      const sistemaOperacional = (viaProxy && soPayload) || seguro(soInferido, 120);
+      const navegador = (viaProxy && navegadorPayload) || seguro(navegadorInferido, 120);
       if (!viaProxy && (dispositivoPayload || soPayload || navegadorPayload || localizacaoPayload)) {
         const declarado = [dispositivoPayload, soPayload, navegadorPayload].map((v) => v || "-").join("/");
         mensagemFinal = `${mensagemFinal || ""} [cliente_declarado=${declarado}]`.trim().slice(0, 1000);
       }
-      const emailNormalizado = this._normalizarTextoOuNull(emailInformado, 255);
+      const emailNormalizado = seguro(emailInformado, 255, CHARSET_LOGIN_LOG);
       const emailParaLog = emailNormalizado || loginPayload;
+      const rota = String(req.originalUrl || req.url || "").split("?")[0].replace(/[^A-Za-z0-9/._-]/g, "").slice(0, 80);
+      const marcadores = [`[rota=${rota}]`, `[req=${idRequisicao(req)}]`];
+      if (suspeitas.size > 0) marcadores.push(`[suspeito=${[...suspeitas].join(",")}]`);
+      mensagemFinal = `${mensagemFinal || ""} ${marcadores.join(" ")}`.trim().slice(0, 1000);
 
       await postgres.query(
         `INSERT INTO "condominio-bh".tb_sgw_log_acesso (
@@ -413,13 +477,15 @@ class Login {
 
       const limite = await this._excedeuLimiteFalhas(req, login, result ? Number.parseInt(result.id, 10) : null);
       if (limite.bloqueado) {
-        await this._registrarLogAcesso(req, {
-          idUsuario: result ? result.id : null,
-          idCondominio: result ? Number.parseInt(result.id_condominio, 10) || null : null,
-          emailInformado: login,
-          sucesso: false,
-          mensagem: limite.erro ? "Rate limit indisponível; login recusado." : "Bloqueado por excesso de tentativas."
-        });
+        if (limite.erro || (await this._podeGravarFalha(req, "bloqueado"))) {
+          await this._registrarLogAcesso(req, {
+            idUsuario: result ? result.id : null,
+            idCondominio: result ? Number.parseInt(result.id_condominio, 10) || null : null,
+            emailInformado: login,
+            sucesso: false,
+            mensagem: limite.erro ? "Rate limit indisponível; login recusado." : "Bloqueado por excesso de tentativas."
+          });
+        }
         if (limite.erro) {
           return res.status(503).send({
             check: false,

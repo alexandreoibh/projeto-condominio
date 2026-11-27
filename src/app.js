@@ -46,14 +46,29 @@ app.use(cors(corsOptions));
 
 // Em produção, respostas 5xx não expõem detalhes internos (mensagens de erro
 // SQL, stack, nomes de tabela). O detalhe vai para o log do servidor.
-const ocultarDetalhesDeErro = String(process.env.EXPOR_DETALHE_ERRO || '').toLowerCase() !== 'true';
+// Auditoria SQLi 27/11/2026 (F7): em produção (VERCEL_ENV ou NODE_ENV =
+// production) EXPOR_DETALHE_ERRO é ignorada — o detalhe nunca sai.
+const ambienteProducao = String(process.env.VERCEL_ENV || '').toLowerCase() === 'production'
+    || String(process.env.NODE_ENV || '').toLowerCase() === 'production';
+const ocultarDetalhesDeErro = ambienteProducao || String(process.env.EXPOR_DETALHE_ERRO || '').toLowerCase() !== 'true';
+// Campos que carregam SQL, mensagem do driver ou stack (Sequelize: sql,
+// original, parent, parameters; pg: hint, position, where, routine...).
+const CAMPOS_INTERNOS_ERRO = ['detail', 'stack', 'sql', 'original', 'parent', 'parameters', 'hint', 'position', 'internalQuery', 'where', 'routine', 'file', 'line', 'schema', 'table', 'column', 'constraint'];
 app.use((req, res, next) => {
     const jsonOriginal = res.json.bind(res);
     res.json = (corpo) => {
         if (ocultarDetalhesDeErro && res.statusCode >= 500 && corpo && typeof corpo === 'object' && !Array.isArray(corpo)) {
-            if (corpo.detail !== undefined || corpo.stack !== undefined) {
-                console.error(`[erro ${res.statusCode}] ${req.method} ${req.originalUrl.split('?')[0]}:`, corpo.detail || corpo.stack);
-                const { detail, stack, ...seguro } = corpo;
+            const rota = `${req.method} ${String(req.originalUrl || '').split('?')[0]}`;
+            // Objeto Error enviado inteiro (ex.: res.send(err)): nada dele vai ao cliente.
+            if (corpo instanceof Error) {
+                console.error(`[erro ${res.statusCode}] ${rota}:`, corpo.stack || corpo.message);
+                return jsonOriginal({ error: 'Erro interno.' });
+            }
+            const internos = CAMPOS_INTERNOS_ERRO.filter((campo) => corpo[campo] !== undefined);
+            if (internos.length > 0) {
+                console.error(`[erro ${res.statusCode}] ${rota}:`, corpo.detail || corpo.stack || corpo.sql || corpo.original || corpo.parent);
+                const seguro = { ...corpo };
+                for (const campo of internos) delete seguro[campo];
                 return jsonOriginal(seguro);
             }
         }
@@ -78,6 +93,8 @@ const webhookBancarioRoute = require('./routes/webhookBancario');
 
 app.use(bodyparser.json());
 app.use(bodyparser.urlencoded({ extended: false }));
+// Query com array/objeto → 400 antes de qualquer consulta (auditoria SQLi F2).
+app.use(require('./helpers/entradaSegura').rejeitarQueryNaoEscalar);
 
 app.get('/api/health', (req, res) => {
     return res.status(200).json({ status: 'ok', service: 'backend-condominio' });

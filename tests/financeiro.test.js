@@ -68,53 +68,7 @@ describe('Integração bancária: autenticação e perfil', () => {
   });
 });
 
-describe('Webhook bancário', () => {
-  const cobrancaEmitida = { id_cobranca: 7, id_condominio: 1, id_receita: 3, cb_provider: 'inter', situacao: 'emitida', id_externo: 'abc' };
-
-  test('payload forjado "PAGO" não dá baixa se o banco diz que está em aberto', async () => {
-    on(/INSERT INTO "condominio-bh"\.tb_webhook_bancario_log/, () => [[{ id: 1 }], 1]);
-    on(/FROM "condominio-bh"\.tb_fin_cobranca_bancaria cb\s+JOIN/, () => [cobrancaEmitida]);
-    mockConsultarCobranca.mockResolvedValue({ cobranca: { situacao: 'A_RECEBER' } });
-
-    const res = await request(app).post('/api/webhook/bancario/inter').send([{ codigoSolicitacao: 'abc', situacao: 'PAGO' }]);
-    expect(res.status).toBe(200);
-    await global.aguardarPendentes();
-
-    expect(mockConsultarCobranca).toHaveBeenCalledTimes(1);
-    expect(callsMatching(/SET situacao = 'paga'/)).toHaveLength(0);
-    expect(callsMatching(/SET situacao = 'pago'/)).toHaveLength(0);
-  });
-
-  test('pagamento confirmado pelo banco é aplicado e auditado', async () => {
-    on(/INSERT INTO "condominio-bh"\.tb_webhook_bancario_log/, () => [[{ id: 1 }], 1]);
-    on(/FROM "condominio-bh"\.tb_fin_cobranca_bancaria cb\s+JOIN/, () => [cobrancaEmitida]);
-    mockConsultarCobranca.mockResolvedValue({ cobranca: { situacao: 'RECEBIDO' } });
-
-    await request(app).post('/api/webhook/bancario/inter').send([{ codigoSolicitacao: 'abc', situacao: 'RECEBIDO' }]);
-    await global.aguardarPendentes();
-
-    expect(callsMatching(/SET situacao = 'paga'/)).toHaveLength(1);
-    expect(callsMatching(/INSERT INTO "condominio-bh"\.tb_auditoria_seguranca/)).toHaveLength(1);
-  });
-
-  test('headers sensíveis não são gravados no log', async () => {
-    on(/INSERT INTO "condominio-bh"\.tb_webhook_bancario_log/, () => [[{ id: 1 }], 1]);
-    await request(app).post('/api/webhook/bancario/inter').set('Authorization', 'Bearer segredo').send([]);
-    const log = callsMatching(/INSERT INTO "condominio-bh"\.tb_webhook_bancario_log/)[0];
-    expect(log.replacements.headersRecebidos).not.toContain('segredo');
-  });
-
-  test('com WEBHOOK_BANCARIO_SECRET definido, chamada sem segredo → 401', async () => {
-    process.env.WEBHOOK_BANCARIO_SECRET = 'segredo-webhook-teste';
-    try {
-      expect((await request(app).post('/api/webhook/bancario/inter').send([])).status).toBe(401);
-      on(/INSERT INTO "condominio-bh"\.tb_webhook_bancario_log/, () => [[{ id: 1 }], 1]);
-      expect((await request(app).post('/api/webhook/bancario/inter?k=segredo-webhook-teste').send([])).status).toBe(200);
-    } finally {
-      delete process.env.WEBHOOK_BANCARIO_SECRET;
-    }
-  });
-});
+// Webhook bancário: ver tests/webhook-bancario.test.js (contrato fail-closed).
 
 describe('Download de boleto (link do e-mail)', () => {
   const url = `${BLOB}/cobranca/boletos/condominio-1/202611/123_abc.pdf`;

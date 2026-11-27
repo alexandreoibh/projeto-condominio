@@ -59,7 +59,9 @@ class FinanceiroController {
 
   _clausulaOrdenacao(req, whitelist, desempate, padrao) {
     const sortKey = req.query.sort;
-    const coluna = whitelist[sortKey];
+    const coluna = typeof sortKey === 'string' && Object.prototype.hasOwnProperty.call(whitelist, sortKey)
+      ? whitelist[sortKey]
+      : null;
     if (!coluna) return padrao;
     const order = String(req.query.order || 'asc').toLowerCase() === 'desc' ? 'DESC' : 'ASC';
     return `${coluna} ${order}, ${desempate}`;

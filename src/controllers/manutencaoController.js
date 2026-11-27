@@ -442,6 +442,7 @@ class ManutencaoController {
       }
       if (req.body.status_rotina !== undefined) {
         campos.push('status_rotina = :status_rotina');
+        if (typeof req.body.status_rotina !== 'string') return res.status(400).json({ message: 'status_rotina inválido.' });
         replacements.status_rotina = req.body.status_rotina;
       }
       if (req.body.ativo !== undefined) {

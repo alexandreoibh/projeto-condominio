@@ -4777,7 +4777,24 @@ class CondominioController {
         null
       );
 
-      const idCondominioFinal = ehAdmin ? idCondominioRequest : (idCondominioToken || idCondominioRequest);
+      // Só o super-admin escolhe o condomínio pelo body; os demais ficam no do token
+      // (antes, token sem id_condominio caía no id do body).
+      const idCondominioFinal = ehAdmin ? idCondominioRequest : idCondominioToken;
+
+      if (!ehAdmin && !idCondominioToken) {
+        await transaction.rollback();
+        return res.status(403).json({ message: 'Token sem id_condominio para criar registro do dashboard.' });
+      }
+
+      // Datas chegam cruas ao INSERT: objeto/array viraria erro SQL (500).
+      const camposDataInvalidos = ['data_inicio', 'data_fim', 'data_referencia'].filter((campo) => {
+        const valor = req.body[campo];
+        return valor !== undefined && valor !== null && typeof valor !== 'string' && typeof valor !== 'number';
+      });
+      if (camposDataInvalidos.length > 0) {
+        await transaction.rollback();
+        return res.status(400).json({ message: `Parâmetro inválido: ${camposDataInvalidos.join(', ')}.` });
+      }
 
       if (!idCondominioFinal) {
         return res.status(400).json({

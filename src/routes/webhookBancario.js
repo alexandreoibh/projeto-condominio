@@ -14,32 +14,78 @@ const crypto = require('crypto');
 const { reconciliarCobrancasBancarias, normalizarSituacaoProvider } = require('../task/reconciliarCobrancasBancarias');
 const { registrarAuditoria } = require('../helpers/auditoria');
 
-const HEADERS_SENSIVEIS = new Set(['authorization', 'cookie', 'x-webhook-secret', 'x-cron-queue-key', 'x-access-token']);
+// ─── Segurança do webhook (auditoria 27/11/2026, F3) ─────────────────────────
+// Fail-closed: desativado por padrão. Só processa se TODAS valerem:
+//   WEBHOOK_BANCARIO_HABILITADO=true, provider listado em
+//   WEBHOOK_BANCARIO_PROVIDERS, validador de contrato para o provider e
+//   WEBHOOK_BANCARIO_SECRET com >= 32 caracteres, enviado no header
+//   X-Webhook-Secret (nunca na query string).
+// O mecanismo oficial de autenticação do webhook do Inter (provável mTLS) não
+// foi confirmado; reativação: ver docs/seguranca/webhook-bancario-reativacao.md.
+const MAX_PAYLOAD_BYTES = 32 * 1024;
+const MIN_TAMANHO_SEGREDO = 32;
+const VALIDADORES_PAYLOAD = {
+  inter: require('../integrations/inter/interWebhookHandler').validarPayload,
+};
 
-function _headersParaLog(headers) {
-  const saida = {};
-  for (const [chave, valor] of Object.entries(headers || {})) {
-    saida[chave] = HEADERS_SENSIVEIS.has(String(chave).toLowerCase()) ? '[omitido]' : valor;
-  }
-  return saida;
+function _providersHabilitados() {
+  if (String(process.env.WEBHOOK_BANCARIO_HABILITADO || '').trim().toLowerCase() !== 'true') return new Set();
+  return new Set(
+    String(process.env.WEBHOOK_BANCARIO_PROVIDERS || '')
+      .split(',')
+      .map((p) => p.trim().toLowerCase())
+      .filter(Boolean)
+  );
 }
 
-// Segredo opcional na URL cadastrada no banco (…/inter?k=<segredo>) ou no
-// header X-Webhook-Secret. Se WEBHOOK_BANCARIO_SECRET estiver definida, passa
-// a ser obrigatório. O Inter não assina o payload, então isto só reduz ruído:
-// a proteção real é a reconsulta da cobrança no banco (ver _processarEvento).
-function _webhookSecretGuard(req, res, next) {
-  const esperado = process.env.WEBHOOK_BANCARIO_SECRET;
-  if (!esperado) {
-    return next();
-  }
-  const recebido = String(req.query?.k || req.header('x-webhook-secret') || '');
-  const a = crypto.createHash('sha256').update(esperado).digest();
+function _segredoConfigurado() {
+  const segredo = String(process.env.WEBHOOK_BANCARIO_SECRET || '');
+  return segredo.length >= MIN_TAMANHO_SEGREDO ? segredo : null;
+}
+
+function _webhookGuard(req, res, next) {
+  const provider = String(req.params.provider || '');
+  const segredo = _segredoConfigurado();
+  const habilitado = segredo
+    && _providersHabilitados().has(provider)
+    && bankingProviderRegistry.listarProvidersDisponiveis().includes(provider)
+    && typeof VALIDADORES_PAYLOAD[provider] === 'function';
+  // Desativado/mal configurado: mesma resposta de rota inexistente, sem gravar nada.
+  if (!habilitado) return res.status(404).json({ message: 'Não encontrado.' });
+
+  const recebido = String(req.header('x-webhook-secret') || '');
+  const a = crypto.createHash('sha256').update(segredo).digest();
   const b = crypto.createHash('sha256').update(recebido).digest();
   if (!recebido || !crypto.timingSafeEqual(a, b)) {
     return res.status(401).json({ message: 'Não autorizado.' });
   }
+
+  if (!req.is('application/json')) {
+    return res.status(415).json({ message: 'Content-Type deve ser application/json.' });
+  }
+  const tamanhoDeclarado = Number.parseInt(req.headers['content-length'] || '0', 10) || 0;
+  const corpoTexto = JSON.stringify(req.body === undefined ? null : req.body);
+  if (tamanhoDeclarado > MAX_PAYLOAD_BYTES || Buffer.byteLength(corpoTexto) > MAX_PAYLOAD_BYTES) {
+    return res.status(413).json({ message: 'Payload excede o tamanho máximo.' });
+  }
+
+  const validacao = VALIDADORES_PAYLOAD[provider](req.body);
+  if (!validacao.ok) {
+    return res.status(400).json({ message: 'Payload inválido.', motivo: validacao.motivo });
+  }
+
+  req.webhook = { provider, corpoSha256: crypto.createHash('sha256').update(corpoTexto).digest('hex') };
   return next();
+}
+
+// Só metadados mínimos; nunca o corpo nem headers arbitrários.
+function _headersParaLog(req) {
+  const limpar = (v, max) => (v ? String(v).replace(/[^A-Za-z0-9 ._:;,/()+=-]/g, '').slice(0, max) : null);
+  return {
+    'content-type': limpar(req.headers['content-type'], 100),
+    'user-agent': limpar(req.headers['user-agent'], 200),
+    'x-request-id': limpar(req.headers['x-request-id'] || req.headers['x-vercel-id'], 100),
+  };
 }
 
 /**
@@ -65,15 +111,26 @@ router.post('/reconciliar', cronQueueKeyGuard, async (req, res) => {
  * devolvida pela API do banco na reconsulta (consultarCobranca), nunca a do
  * corpo recebido. Ver interWebhookHandler.js para o detalhe do payload real.
  */
-router.post('/:provider', _webhookSecretGuard, async (req, res) => {
-  const { provider } = req.params;
+router.post('/:provider', _webhookGuard, async (req, res) => {
+  const { provider } = req.webhook;
 
-  // Gravação ANTES de processar — auditoria garantida mesmo que o
-  // processamento abaixo falhe ou a invocação serverless seja cortada.
+  // Eventos já validados pelo contrato; duplicados no mesmo lote são descartados.
+  const vistos = new Set();
+  const eventosRecebidos = (Array.isArray(req.body) ? req.body : [req.body]).filter((evento) => {
+    if (vistos.has(evento.codigoSolicitacao)) return false;
+    vistos.add(evento.codigoSolicitacao);
+    return true;
+  });
+
+  // Gravação ANTES de processar, só com um resumo (sem payload bruto).
   const logId = await webhookLogRepository.registrar({
     provider,
-    payloadBruto: JSON.stringify(req.body),
-    headersRecebidos: JSON.stringify(_headersParaLog(req.headers)),
+    payloadBruto: JSON.stringify({
+      sha256: req.webhook.corpoSha256,
+      qtd: eventosRecebidos.length,
+      eventos: eventosRecebidos.map((e) => ({ codigoSolicitacao: e.codigoSolicitacao, situacao: e.situacao })),
+    }),
+    headersRecebidos: JSON.stringify(_headersParaLog(req)),
     ipOrigem: req.ip,
   });
 
@@ -84,7 +141,7 @@ router.post('/:provider', _webhookSecretGuard, async (req, res) => {
 
   waitUntil((async () => {
     try {
-      const eventos = await bankingProviderRegistry.getProvider(provider).processarWebhook(null, req.body);
+      const eventos = await bankingProviderRegistry.getProvider(provider).processarWebhook(null, eventosRecebidos);
 
       for (const evento of eventos) {
         await _processarEvento({ provider, logId, evento });
@@ -92,7 +149,7 @@ router.post('/:provider', _webhookSecretGuard, async (req, res) => {
 
       await webhookLogRepository.marcarProcessado(logId, { status: 'processado' });
     } catch (err) {
-      await webhookLogRepository.marcarProcessado(logId, { status: 'erro', erroDetalhe: err.message });
+      await webhookLogRepository.marcarProcessado(logId, { status: 'erro', erroDetalhe: String(err?.message || 'erro').slice(0, 500) });
     }
   })());
 });
@@ -106,17 +163,25 @@ router.post('/:provider', _webhookSecretGuard, async (req, res) => {
 async function _processarEvento({ provider, logId, evento }) {
   const { idExterno, situacao: situacaoInformada } = evento;
 
-  const [linha] = await postgres.query(
+  const linhas = await postgres.query(
     `SELECT cb.id AS id_cobranca, cb.id_condominio, cb.id_receita, cb.provider AS cb_provider,
             cb.situacao, cb.id_externo,
             ib.*
        FROM "condominio-bh".tb_fin_cobranca_bancaria cb
-       JOIN "condominio-bh".tb_fin_integracao_bancaria ib ON ib.id = cb.id_integracao_bancaria
+       JOIN "condominio-bh".tb_fin_integracao_bancaria ib ON ib.id = cb.id_integracao_bancaria AND ib.ativo = true
       WHERE cb.provider = :provider AND cb.id_externo = :idExterno
-      LIMIT 1`,
+      LIMIT 2`,
     { replacements: { provider, idExterno }, type: QueryTypes.SELECT }
   );
 
+  // (provider, id_externo) não é UNIQUE no banco: mais de uma cobrança com o
+  // mesmo id externo é ambíguo e nunca recebe baixa automática.
+  if (linhas.length > 1) {
+    console.warn(`[webhook-bancario] id_externo ambíguo (provider=${provider}); evento ignorado.`);
+    await webhookLogRepository.marcarProcessado(logId, { status: 'ignorado', eventoTipo: evento.tipoEvento, idExterno, erroDetalhe: 'id_externo_ambiguo' });
+    return;
+  }
+  const linha = linhas[0];
   if (!linha) {
     // Cobrança emitida fora deste sistema (ex: manual no Internet Banking)
     // ou ainda não persistida — nada a atualizar aqui além do log.
